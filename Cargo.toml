@@ -1,0 +1,59 @@
+[package]
+name = "systemctl-tui"
+version = "0.1.0"
+edition = "2021"
+authors = ["Reilly Wood"]
+build = "build.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ratatui = {version = "0.21.0"}
+crossterm = { version = "0.26.1", default-features = false, features = [
+  "event-stream",
+] }
+tokio = { version = "1.28.2", features = ["full"] }
+tokio-stream = "0.1.14"
+unicode-segmentation = "1.10.1"
+anyhow = "1.0.71"
+better-panic = "0.3.0"
+clap = { version = "4.3.4", default-features = false, features = [
+  "std",
+  "color",
+  "help",
+  "usage",
+  "error-context",
+  "suggestions",
+  "derive",
+  "cargo",
+  "wrap_help",
+  "unicode",
+  "string",
+  "unstable-styles",
+] }
+clap_complete = "4.3.1"
+futures = "0.3.28"
+tracing-macros = "0.0.0"
+tracing = "0.1.37"
+tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
+env_logger = "0.10.0"
+directories = "5.0.1"
+tui-logger = { version = "0.9.2", default-features = false, features = [
+  "ratatui-support",
+  "tracing-support",
+] }
+colored = "2.0.0"
+log = "0.4.19"
+libc = "0.2.146"
+tui-input = "0.7.1"
+signal-hook = "0.3.15"
+tokio-util = "0.7.8"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+
+[[bin]]
+name = "systemctl-tui"
+path = "src/main.rs"

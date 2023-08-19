@@ -1,0 +1,89 @@
+name: CD
+
+on:
+  push:
+    tags:
+      - v*
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            file: target/release/systemctl-tui
+            args: --best --lzma
+            strip: true
+          - os: windows-latest
+            file: target/release/systemctl-tui.exe
+            args: -9
+            strip: false
+          - os: macos-latest
+            file: target/release/systemctl-tui
+            args: --best
+            strip: true
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          override: true
+          components: rustfmt, clippy
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v2
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache Cargo target
+        uses: actions/cache@v2
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        run: |
+          cargo build --verbose --release
+
+      - name: Compress binaries
+        uses: svenstaro/upx-action@v2
+        with:
+          files: ${{ matrix.file }}
+          args: ${{ matrix.args }}
+          strip: ${{ matrix.strip }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: systemctl-tui-${{ matrix.os }}
+          path: |
+            target/release/systemctl-tui${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Release Asset
+        id: upload-release-asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./target/release/systemctl-tui${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          asset_name: systemctl-tui-${{ matrix.os }}
+          asset_content_type: application/octet-stream
