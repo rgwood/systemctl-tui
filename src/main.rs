@@ -7,13 +7,13 @@ use systemctl_tui::{
 
 // Define the command line arguments structure
 #[derive(Parser, Debug)]
-#[command(version = version(), about = "ratatui template with crossterm and tokio")]
+#[command(version = version(), about = "A simple TUI for systemd services")]
 struct Args {
-  /// App tick rate
+  /// App tick rate in milliseconds
   #[arg(short, long, default_value_t = 1000)]
   app_tick_rate: u64,
-  /// Render tick rate
-  #[arg(short, long, default_value_t = 50)]
+  /// Render tick rate in milliseconds
+  #[arg(short, long, default_value_t = 1000)]
   render_tick_rate: u64,
 }
 

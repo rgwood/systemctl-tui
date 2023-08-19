@@ -1,3 +1,4 @@
+// REILLY TODO: wtf does all this do? It's from the template, can we remove it all?
 fn main() {
   let git_output = std::process::Command::new("git").args(["rev-parse", "--git-dir"]).output().ok();
   let git_dir = git_output.as_ref().and_then(|output| {

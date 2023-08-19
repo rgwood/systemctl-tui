@@ -46,6 +46,8 @@ impl App {
             if let Some(_action) = self.home.lock().await.dispatch(action) {
               action_tx.send(_action)?
             };
+            // Reilly: if we got a keystroke, we probably want to render immediately instead of waiting for the next tick
+            terminal.render()?;
           },
         }
       }

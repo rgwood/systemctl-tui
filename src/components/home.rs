@@ -8,7 +8,7 @@ use ratatui::{
   widgets::{Block, BorderType, Borders, Paragraph},
 };
 use tokio::sync::mpsc::{self, UnboundedSender};
-use tracing::warn;
+use tracing::trace;
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use super::{logger::Logger, Component, Frame};
@@ -38,8 +38,9 @@ impl Home {
     Self::default()
   }
 
+  // TODO: do we need tick at all?
   pub fn tick(&mut self) {
-    warn!("Tick");
+    trace!("Tick");
     self.ticker = self.ticker.saturating_add(1);
   }
 
