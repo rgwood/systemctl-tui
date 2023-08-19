@@ -5,14 +5,14 @@ use ratatui::{
   layout::{Alignment, Constraint, Direction, Layout, Rect},
   style::{Color, Modifier, Style},
   text::{Line, Span},
-  widgets::{Block, BorderType, Borders, Paragraph},
+  widgets::{Block, BorderType, Borders, Paragraph, List, ListItem, ListState},
 };
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tracing::trace;
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use super::{logger::Logger, Component, Frame};
-use crate::action::Action;
+use crate::{action::Action, systemd::UnitStatus};
 
 #[derive(Default, Copy, Clone, PartialEq, Eq)]
 pub enum Mode {
@@ -28,9 +28,62 @@ pub struct Home {
   pub show_logger: bool,
   pub counter: usize,
   pub ticker: usize,
+  pub units: StatefulList<UnitStatus>,
   pub mode: Mode,
   pub input: Input,
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
+}
+
+pub struct StatefulList<T> {
+  state: ListState,
+  items: Vec<T>,
+}
+
+impl Default for StatefulList<UnitStatus> {
+  fn default() -> Self {
+      Self::with_items(vec![])
+  }
+}
+
+impl<T> StatefulList<T> {
+  pub fn with_items(items: Vec<T>) -> StatefulList<T> {
+      StatefulList {
+          state: ListState::default(),
+          items,
+      }
+  }
+
+  fn next(&mut self) {
+      let i = match self.state.selected() {
+          Some(i) => {
+              if i >= self.items.len() - 1 {
+                  0
+              } else {
+                  i + 1
+              }
+          }
+          None => 0,
+      };
+      self.state.select(Some(i));
+  }
+
+  fn previous(&mut self) {
+      let i = match self.state.selected() {
+          Some(i) => {
+              if i == 0 {
+                  self.items.len() - 1
+              } else {
+                  i - 1
+              }
+          }
+          None => 0,
+      };
+      self.state.select(Some(i));
+  }
+
+  fn unselect(&mut self) {
+      self.state.select(None);
+  }
 }
 
 impl Home {
@@ -133,6 +186,8 @@ impl Component for Home {
     None
   }
 
+
+
   fn render(&mut self, f: &mut Frame<'_>, rect: Rect) {
     let rect = if self.show_logger {
       let chunks = Layout::default()
@@ -146,6 +201,22 @@ impl Component for Home {
     };
 
     let rects = Layout::default().constraints([Constraint::Percentage(100), Constraint::Min(3)].as_ref()).split(rect);
+
+    let items: Vec<ListItem> = self
+        .units
+        .items
+        .iter()
+        .map(|i| ListItem::new(&*i.name))
+        .collect();
+
+    // Create a List from all list items and highlight the currently selected one
+    let items = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title("Services"))
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        );
 
     f.render_widget(
       Paragraph::new(format!(
