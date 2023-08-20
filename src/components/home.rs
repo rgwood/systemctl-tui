@@ -318,23 +318,51 @@ impl Component for Home {
     let details_panel = right_panel[0];
     let logs_panel = right_panel[1];
 
-    // this is expensive to rebuild every time, should we cache it?
+    let details_block = Block::default().title("Details").borders(Borders::ALL);
+    let details_panel_panes = Layout::default()
+      .direction(Direction::Horizontal)
+      .constraints([Constraint::Min(14), Constraint::Percentage(100)].as_ref())
+      .split(details_block.inner(details_panel));
+    let props_pane = details_panel_panes[0];
+    let values_pane = details_panel_panes[1];
+
+    let props_lines = vec![
+      Line::from("Description: "),
+      Line::from("Load State: "),
+      Line::from("Active State: "),
+      Line::from("Sub State: "),
+      Line::from("Path: "),
+    ];
+
     let details_text = if let Some(i) = selected_item {
-      fn line<'a>(property: &'a str, value: &'a str) -> Line<'a> {
-        Line::from(vec![
-          Span::styled(property, Style::default().fg(Color::DarkGray)),
-          Span::raw(": "),
-          Span::raw(value),
-        ])
+      fn line_color<'a>(value: &'a str, color: Color) -> Line<'a> {
+        Line::from(vec![Span::styled(value, Style::default().fg(color))])
       }
 
+      let load_color = match i.load_state.as_str() {
+        "loaded" => Color::Green,
+        "error" => Color::Red,
+        _ => Color::Black,
+      };
+
+      let active_color = match i.active_state.as_str() {
+        "active" => Color::Green,
+        "inactive" => Color::Red,
+        _ => Color::Black,
+      };
+
+      let sub_color = match i.sub_state.as_str() {
+        "running" => Color::Green,
+        "exited" => Color::Red,
+        _ => Color::Black,
+      };
+
       let lines = vec![
-        line("Description", &i.description),
-        // TODO: color-code these
-        line("Load State", &i.load_state),
-        line("Active State", &i.active_state),
-        line("Sub State", &i.sub_state),
-        line("Path", &i.path),
+        line_color(&i.description, Color::White),
+        line_color(&i.load_state, load_color),
+        line_color(&i.active_state, active_color),
+        line_color(&i.sub_state, sub_color),
+        line_color(&i.path, Color::White),
       ];
 
       lines
@@ -343,10 +371,14 @@ impl Component for Home {
     };
 
     let paragraph = Paragraph::new(details_text)
-      .block(Block::default().title(Line::from("Details")).borders(Borders::ALL))
       .style(Style::default())
       .wrap(Wrap { trim: true });
-    f.render_widget(paragraph, details_panel);
+
+    let props_widget = Paragraph::new(props_lines).alignment(ratatui::layout::Alignment::Right);
+    f.render_widget(props_widget, props_pane);
+
+    f.render_widget(paragraph, values_pane);
+    f.render_widget(details_block, details_panel);
 
     let log_lines = self
       .logs
