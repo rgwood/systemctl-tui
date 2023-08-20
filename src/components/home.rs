@@ -8,7 +8,7 @@ use ratatui::{
   widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 use tokio::sync::mpsc::{self, UnboundedSender};
-use tracing::info;
+use tracing::{info, warn};
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use super::{logger::Logger, Component, Frame};
@@ -32,6 +32,7 @@ pub struct Home {
   pub mode: Mode,
   pub input: Input,
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
+  pub journalctl_tx: Option<std::sync::mpsc::Sender<String>>,
 }
 
 pub struct StatefulList<T> {
@@ -119,22 +120,10 @@ impl Home {
 
   pub fn get_logs(&mut self) {
     if let Some(selected) = self.filtered_units.selected() {
-      let tx = self.action_tx.clone().unwrap();
       let unit_name = selected.name.to_string();
-
-      tokio::spawn(async move {
-        info!("Getting logs for {}", unit_name);
-        let start = std::time::Instant::now();
-        // TODO: is this the best place to load logs?
-        // TODO: figure out how to stream logs
-        // TODO: debounce?, journald is kinda slow
-        if let Ok(stdout) = cmd!("journalctl", "-u", unit_name.clone(), "--output=short-iso").read() {
-          info!("Got logs for {} in {:?}", unit_name, start.elapsed());
-          tx.send(Action::SetLogs { unit_name, logs: stdout }).unwrap();
-        }
-
-        tx.send(Action::RenderTick).unwrap();
-      });
+      if let Err(e) = self.journalctl_tx.as_ref().unwrap().send(unit_name) {
+        warn!("Error sending unit name to journalctl thread: {}", e);
+      }
     } else {
       self.logs = vec![];
     }
@@ -143,7 +132,34 @@ impl Home {
 
 impl Component for Home {
   fn init(&mut self, tx: UnboundedSender<Action>) -> anyhow::Result<()> {
-    self.action_tx = Some(tx);
+    self.action_tx = Some(tx.clone());
+    let (journalctl_tx, journalctl_rx) = std::sync::mpsc::channel::<String>();
+    self.journalctl_tx = Some(journalctl_tx);
+
+    tokio::task::spawn_blocking(move || {
+      loop {
+        let mut unit_name: String = match journalctl_rx.recv() {
+          Ok(unit) => unit,
+          Err(_) => return,
+        };
+
+        // drain the channel, use the last value
+        while let Ok(service) = journalctl_rx.try_recv() {
+          info!("Skipping logs for {}...", unit_name);
+          unit_name = service;
+        }
+
+        info!("Getting logs for {}", unit_name);
+        let start = std::time::Instant::now();
+        match cmd!("journalctl", "-u", unit_name.clone(), "--output=short-iso", "--lines=100").read() {
+          Ok(stdout) => {
+            info!("Got logs for {} in {:?}", unit_name, start.elapsed());
+            let _ = tx.send(Action::SetLogs { unit_name, logs: stdout });
+          },
+          Err(e) => warn!("Error getting logs for {}: {}", unit_name, e),
+        }
+      }
+    });
     Ok(())
   }
 
