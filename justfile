@@ -28,10 +28,15 @@ publish-to-local-bin: build-release
     cp target/release/{{expected_filename}} ~/bin/
 
 build-linux-x64:
-    cross build --target x86_64-unknown-linux-gnu --release
+    cross build --target x86_64-unknown-linux-musl --release
 
 build-linux-arm64:
-    cross build --target aarch64-unknown-linux-gnu --release
+    cross build --target aarch64-unknown-linux-musl --release
 
 build-windows-on-linux:
     cross build --target x86_64-pc-windows-gnu --release
+
+
+
+publish-potato-pi: build-linux-arm64
+    rsync target/aarch64-unknown-linux-musl/release/systemctl-tui potato-pi:~/bin/
