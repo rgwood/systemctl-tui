@@ -4,9 +4,6 @@ default:
   @just --list
 
 watch:
-    watchexec --exts=rs -- cargo run
-
-watch-serve:
     watchexec --exts=rs --on-busy-update=restart -- cargo run
 
 run:

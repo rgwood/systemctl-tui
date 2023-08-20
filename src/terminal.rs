@@ -10,6 +10,7 @@ use crossterm::{
   terminal::{EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::backend::CrosstermBackend as Backend;
+use signal_hook::{iterator::Signals, low_level};
 use tokio::{
   sync::{mpsc, Mutex},
   task::JoinHandle,
@@ -26,6 +27,16 @@ pub struct Tui {
 impl Tui {
   pub fn new() -> Result<Self> {
     let terminal = ratatui::Terminal::new(Backend::new(std::io::stderr()))?;
+
+    // spin up a signal handler to catch SIGTERM and exit gracefully
+    let _ = std::thread::spawn(move || {
+      const SIGNALS: &[libc::c_int] = &[signal_hook::consts::signal::SIGTERM];
+      let mut sigs = Signals::new(SIGNALS).unwrap();
+      let signal = sigs.into_iter().next().unwrap();
+      let _ = exit();
+      low_level::emulate_default_handler(signal).unwrap();
+    });
+
     Ok(Self { terminal })
   }
 
@@ -35,14 +46,8 @@ impl Tui {
     Ok(())
   }
 
-  pub fn exit(&self) -> Result<()> {
-    crossterm::execute!(std::io::stderr(), LeaveAlternateScreen, DisableMouseCapture, cursor::Show)?;
-    crossterm::terminal::disable_raw_mode()?;
-    Ok(())
-  }
-
   pub fn suspend(&self) -> Result<()> {
-    self.exit()?;
+    exit()?;
     #[cfg(not(windows))]
     signal_hook::low_level::raise(signal_hook::consts::signal::SIGTSTP)?;
     Ok(())
@@ -52,6 +57,12 @@ impl Tui {
     self.enter()?;
     Ok(())
   }
+}
+
+pub fn exit() -> Result<()> {
+  crossterm::execute!(std::io::stderr(), LeaveAlternateScreen, DisableMouseCapture, cursor::Show)?;
+  crossterm::terminal::disable_raw_mode()?;
+  Ok(())
 }
 
 impl Deref for Tui {
@@ -70,7 +81,7 @@ impl DerefMut for Tui {
 
 impl Drop for Tui {
   fn drop(&mut self) {
-    self.exit().unwrap();
+    exit().unwrap();
   }
 }
 
@@ -96,7 +107,7 @@ impl TerminalHandler {
       loop {
         match rx.recv().await {
           Some(Message::Stop) => {
-            t.exit().unwrap_or_default();
+            exit().unwrap_or_default();
             break;
           },
           Some(Message::Suspend) => {
