@@ -5,7 +5,7 @@ use ratatui::{
   layout::{Constraint, Direction, Layout, Rect},
   style::{Color, Modifier, Style},
   text::{Line, Span},
-  widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+  widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap, Clear},
 };
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tracing::{info, warn};
@@ -191,6 +191,10 @@ impl Component for Home {
         KeyCode::Char('l') => return Action::ToggleShowLogger,
         _ => (),
       }
+    }
+
+    if matches!(key.code, KeyCode::Char('?')) {
+      return Action::EnterProcessing;
     }
 
     match self.mode {
@@ -429,5 +433,39 @@ impl Component for Home {
         search_panel.y + 1,
       )
     }
+
+    if self.mode == Mode::Processing {
+      let popup = centered_rect(50, 50, f.size());
+      let block = Block::default().title("Processing").borders(Borders::ALL);
+      f.render_widget(Clear, popup);
+      f.render_widget(block, popup);
+    }
   }
+}
+
+/// helper function to create a centered rect using up certain percentage of the available rect `r`
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+  let popup_layout = Layout::default()
+      .direction(Direction::Vertical)
+      .constraints(
+          [
+              Constraint::Percentage((100 - percent_y) / 2),
+              Constraint::Percentage(percent_y),
+              Constraint::Percentage((100 - percent_y) / 2),
+          ]
+          .as_ref(),
+      )
+      .split(r);
+
+  Layout::default()
+      .direction(Direction::Horizontal)
+      .constraints(
+          [
+              Constraint::Percentage((100 - percent_x) / 2),
+              Constraint::Percentage(percent_x),
+              Constraint::Percentage((100 - percent_x) / 2),
+          ]
+          .as_ref(),
+      )
+      .split(popup_layout[1])[1]
 }
