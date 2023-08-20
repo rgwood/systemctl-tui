@@ -12,7 +12,7 @@ pub enum Action {
   Increment(usize),
   Decrement(usize),
   EnterNormal,
-  EnterInsert,
+  EnterSearch,
   EnterProcessing,
   ExitProcessing,
   Update,

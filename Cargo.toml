@@ -52,9 +52,11 @@ zbus = { version = "3.14.1", default-features = false, features = ["tokio"] }
 itertools = "0.11.0"
 
 [profile.release]
-codegen-units = 1
-lto = true
-strip = true
+lto = true      # Enable Link Time Optimization
+opt-level = 'z' # Optimize for size.
+panic = 'abort' # Abort on panic
+# codegen-units = 1 # Set low to increase optimizations. Kills compile time though
+# strip = true        # Strip symbols from binary. Big gains but idk if it's worth bad stack traces
 
 [[bin]]
 name = "systemctl-tui"

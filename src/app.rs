@@ -5,10 +5,14 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::{
   action::Action,
-  components::{home::{Home, StatefulList}, Component},
+  components::{
+    home::{Home, StatefulList},
+    Component,
+  },
   event::EventHandler,
+  systemd::get_services,
   terminal::TerminalHandler,
-  trace_dbg, systemd::get_services,
+  trace_dbg,
 };
 
 pub struct App {
@@ -27,11 +31,10 @@ impl App {
   pub async fn run(&mut self) -> Result<()> {
     let (action_tx, mut action_rx) = mpsc::unbounded_channel();
 
-    
     self.home.lock().await.init(action_tx.clone())?;
 
     let units = get_services().await?;
-    self.home.lock().await.units = StatefulList::with_items(units);
+    self.home.lock().await.set_units(units);
 
     let mut terminal = TerminalHandler::new(self.home.clone());
     let mut event = EventHandler::new(self.tick_rate, self.home.clone(), action_tx.clone());

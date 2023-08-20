@@ -60,8 +60,8 @@ pub fn initialize_logging() -> Result<()> {
     .with_ansi(false)
     .with_filter(EnvFilter::from_default_env());
   tracing_subscriber::registry().with(file_subscriber).with(tui_logger::tracing_subscriber_layer()).init();
-  let default_level = std::env::var("RUST_LOG").map_or(log::LevelFilter::Info, |val| {
-    match val.to_lowercase().as_str() {
+  let default_level =
+    std::env::var("RUST_LOG").map_or(log::LevelFilter::Info, |val| match val.to_lowercase().as_str() {
       "off" => log::LevelFilter::Off,
       "error" => log::LevelFilter::Error,
       "warn" => log::LevelFilter::Warn,
@@ -69,8 +69,7 @@ pub fn initialize_logging() -> Result<()> {
       "debug" => log::LevelFilter::Debug,
       "trace" => log::LevelFilter::Trace,
       _ => log::LevelFilter::Info,
-    }
-  });
+    });
   tui_logger::set_default_level(default_level);
   Ok(())
 }
