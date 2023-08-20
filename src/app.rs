@@ -46,6 +46,7 @@ impl App {
           Action::Quit => self.should_quit = true,
           Action::Suspend => self.should_suspend = true,
           Action::Resume => self.should_suspend = false,
+          Action::Resize(_, _) => terminal.render()?,
           _ => {
             if let Some(_action) = self.home.lock().await.dispatch(action) {
               action_tx.send(_action)?
