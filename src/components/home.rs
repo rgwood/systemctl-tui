@@ -247,7 +247,7 @@ impl Component for Home {
     let search_panel = rects[0];
     let main_panel = rects[1];
 
-    let items: Vec<ListItem> = self.filtered_units.items.iter().map(|i| ListItem::new(&*i.name)).collect();
+    let items: Vec<ListItem> = self.filtered_units.items.iter().map(|i| ListItem::new(i.short_name())).collect();
 
     // Create a List from all list items and highlight the currently selected one
     let items = List::new(items)
@@ -265,7 +265,7 @@ impl Component for Home {
 
     let chunks = Layout::default()
       .direction(Direction::Horizontal)
-      .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
+      .constraints([Constraint::Min(40), Constraint::Percentage(100)].as_ref())
       .split(main_panel);
 
     f.render_stateful_widget(items, chunks[0], &mut self.filtered_units.state);
@@ -293,7 +293,16 @@ impl Component for Home {
       ];
 
       // TODO: can the logs go in their own panel?
-      lines.extend(self.logs.iter().map(|l| Line::from(l.as_str())));
+      lines.extend(self.logs.iter().map(|l| {
+        if let Some((date, rest)) = l.splitn(2, " ").collect_tuple() {
+          if date.len() != 24 {
+            return Line::from(l.as_str());
+          }
+          Line::from(vec![Span::styled(date, Style::default().fg(Color::DarkGray)), Span::raw(" "), Span::raw(rest)])
+        } else {
+          Line::from(l.as_str())
+        }
+      }));
 
       lines
     } else {
@@ -310,7 +319,7 @@ impl Component for Home {
 
     let paragraph = Paragraph::new(text)
       .block(Block::default().title(title).borders(Borders::ALL))
-      .style(Style::default().fg(Color::White).bg(Color::Black))
+      .style(Style::default())
       .wrap(Wrap { trim: true });
     f.render_widget(paragraph, chunks[1]);
 

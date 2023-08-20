@@ -19,6 +19,24 @@ pub struct UnitStatus {
   pub job_path: String, // The job object path
 }
 
+impl UnitStatus {
+  pub fn is_active(&self) -> bool {
+    self.active_state == "active"
+  }
+
+  pub fn is_enabled(&self) -> bool {
+    self.load_state == "loaded" && self.active_state == "active"
+  }
+
+  pub fn short_name(&self) -> &str {
+    if self.name.ends_with(".service") {
+      &self.name[..self.name.len() - 8]
+    } else {
+      &self.name
+    }
+  }
+}
+
 type RawUnit =
   (String, String, String, String, String, String, zvariant::OwnedObjectPath, u32, String, zvariant::OwnedObjectPath);
 
