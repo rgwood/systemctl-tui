@@ -5,10 +5,7 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::{
   action::Action,
-  components::{
-    home::Home,
-    Component,
-  },
+  components::{home::Home, Component},
   event::EventHandler,
   systemd::get_services,
   terminal::TerminalHandler,
@@ -16,14 +13,14 @@ use crate::{
 };
 
 pub struct App {
-  pub tick_rate: (u64, u64),
+  pub tick_rate: u64,
   pub home: Arc<Mutex<Home>>,
   pub should_quit: bool,
   pub should_suspend: bool,
 }
 
 impl App {
-  pub fn new(tick_rate: (u64, u64)) -> Result<Self> {
+  pub fn new(tick_rate: u64) -> Result<Self> {
     let home = Arc::new(Mutex::new(Home::new()));
     Ok(Self { tick_rate, home, should_quit: false, should_suspend: false })
   }
@@ -41,7 +38,7 @@ impl App {
 
     loop {
       if let Some(action) = action_rx.recv().await {
-        if action != Action::Tick && action != Action::RenderTick {
+        if action != Action::RenderTick {
           trace_dbg!(&action);
         }
         match action {

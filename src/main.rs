@@ -9,9 +9,6 @@ use systemctl_tui::{
 #[derive(Parser, Debug)]
 #[command(version = version(), about = "A simple TUI for systemd services")]
 struct Args {
-  /// App tick rate in milliseconds
-  #[arg(short, long, default_value_t = 1000)]
-  app_tick_rate: u64,
   /// Render tick rate in milliseconds
   #[arg(short, long, default_value_t = 1000)]
   render_tick_rate: u64,
@@ -27,7 +24,7 @@ async fn main() -> Result<()> {
   initialize_panic_handler();
 
   let args = Args::parse();
-  let tick_rate = (args.app_tick_rate, args.render_tick_rate);
+  let tick_rate = args.render_tick_rate;
 
   let mut app = App::new(tick_rate)?;
   app.run().await?;

@@ -19,7 +19,6 @@ pub enum Event {
   Error,
   Closed,
   RenderTick,
-  AppTick,
   Key(KeyEvent),
   Mouse(MouseEvent),
   Resize(u16, u16),
@@ -31,22 +30,17 @@ pub struct EventHandler {
 }
 
 impl EventHandler {
-  pub fn new(tick_rate: (u64, u64), home: Arc<Mutex<Home>>, action_tx: mpsc::UnboundedSender<Action>) -> Self {
-    let (app_tick_rate, render_tick_rate) = tick_rate;
-
+  pub fn new(tick_rate: u64, home: Arc<Mutex<Home>>, action_tx: mpsc::UnboundedSender<Action>) -> Self {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-    let app_tick_rate = std::time::Duration::from_millis(app_tick_rate);
-    let render_tick_rate = std::time::Duration::from_millis(render_tick_rate);
+    let render_tick_rate = std::time::Duration::from_millis(tick_rate);
 
     let cancellation_token = CancellationToken::new();
     let _cancellation_token = cancellation_token.clone();
     let task = tokio::spawn(async move {
       let mut reader = crossterm::event::EventStream::new();
-      let mut app_interval = tokio::time::interval(app_tick_rate);
       let mut render_interval = tokio::time::interval(render_tick_rate);
       loop {
-        let app_delay = app_interval.tick();
         let render_delay = render_interval.tick();
         let crossterm_event = reader.next().fuse();
         tokio::select! {
@@ -73,9 +67,6 @@ impl EventHandler {
               }
               None => {},
             }
-          },
-          _ = app_delay => {
-              event_tx.send(Event::AppTick).unwrap();
           },
           _ = render_delay => {
               event_tx.send(Event::RenderTick).unwrap();

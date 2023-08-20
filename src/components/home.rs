@@ -2,13 +2,13 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use duct::cmd;
 use itertools::Itertools;
 use ratatui::{
-  layout::{Alignment, Constraint, Direction, Layout, Rect},
+  layout::{Constraint, Direction, Layout, Rect},
   style::{Color, Modifier, Style},
   text::{Line, Span},
-  widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Wrap},
+  widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 use tokio::sync::mpsc::{self, UnboundedSender};
-use tracing::{info, trace};
+use tracing::info;
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use super::{logger::Logger, Component, Frame};
@@ -26,8 +26,6 @@ pub enum Mode {
 pub struct Home {
   pub logger: Logger,
   pub show_logger: bool,
-  pub counter: usize,
-  pub ticker: usize,
   pub all_units: Vec<UnitStatus>,
   pub filtered_units: StatefulList<UnitStatus>,
   pub logs: Vec<String>,
@@ -102,13 +100,6 @@ impl Home {
     self.filtered_units = StatefulList::with_items(units);
   }
 
-  // TODO: do we need tick at all?
-  pub fn tick(&mut self) {
-    trace!("Tick");
-    self.ticker = self.ticker.saturating_add(1);
-  }
-
-
   pub fn next(&mut self) {
     self.logs = vec![];
     self.filtered_units.next();
@@ -133,11 +124,13 @@ impl Home {
 
       tokio::spawn(async move {
         info!("Getting logs for {}", unit_name);
+        let start = std::time::Instant::now();
         // TODO: is this the best place to load logs?
         // TODO: figure out how to stream logs
         // TODO: debounce?, journald is kinda slow
         if let Ok(stdout) = cmd!("journalctl", "-u", unit_name.clone(), "--output=short-iso").read() {
-          tx.send(Action::SetLogs{ unit_name, logs: stdout }).unwrap();
+          info!("Got logs for {} in {:?}", unit_name, start.elapsed());
+          tx.send(Action::SetLogs { unit_name, logs: stdout }).unwrap();
         }
 
         tx.send(Action::RenderTick).unwrap();
@@ -155,15 +148,23 @@ impl Component for Home {
   }
 
   fn handle_key_events(&mut self, key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+      match key.code {
+        KeyCode::Char('c') => return Action::Quit,
+        KeyCode::Char('d') => return Action::Quit,
+        KeyCode::Char('q') => return Action::Quit,
+        KeyCode::Char('z') => return Action::Suspend,
+        KeyCode::Char('f') => return Action::EnterSearch,
+        KeyCode::Char('l') => return Action::ToggleShowLogger,
+        _ => (),
+      }
+    }
+
     match self.mode {
       Mode::Normal | Mode::Processing => {
         match key.code {
           KeyCode::Char('q') => Action::Quit,
-          KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
-          KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
-          KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Suspend,
-          KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::EnterSearch,
-          KeyCode::Char('l') => Action::ToggleShowLogger,
+
           KeyCode::Up => {
             // if we're filtering the list, and we're at the top, and there's text in the search box, go to search mode
             if self.filtered_units.state.selected() == Some(0) && self.input.value() != "" {
@@ -178,12 +179,10 @@ impl Component for Home {
             Action::Update // is this right?
           },
           KeyCode::Char('/') => Action::EnterSearch,
-          _ => Action::Tick,
+          _ => Action::Noop,
         }
       },
       Mode::Search => match key.code {
-        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
         KeyCode::Esc | KeyCode::Enter => Action::EnterNormal,
         KeyCode::Down | KeyCode::Tab => {
           self.next();
@@ -203,7 +202,6 @@ impl Component for Home {
 
   fn dispatch(&mut self, action: Action) -> Option<Action> {
     match action {
-      Action::Tick => self.tick(),
       Action::ToggleShowLogger => self.show_logger = !self.show_logger,
       Action::EnterNormal => {
         self.mode = Mode::Normal;
@@ -218,13 +216,11 @@ impl Component for Home {
         // TODO: Make this go to previous mode instead
         self.mode = Mode::Normal;
       },
-      Action::SetLogs{ unit_name: service_name, logs } => {
+      Action::SetLogs { unit_name: service_name, logs } => {
         if let Some(selected) = self.filtered_units.selected() {
           if selected.name == service_name {
             // split by lines
-            let mut logs = logs.split("\n")
-            .map(String::from)
-            .collect_vec();
+            let mut logs = logs.split("\n").map(String::from).collect_vec();
             logs.reverse();
             self.logs = logs;
           }
@@ -255,14 +251,16 @@ impl Component for Home {
 
     // Create a List from all list items and highlight the currently selected one
     let items = List::new(items)
-      .block(Block::default().borders(Borders::ALL)
-      .border_style(
-        if self.mode == Mode::Normal {
-          Style::default().fg(Color::LightGreen)
-        } else {
-          Style::default()
-        }
-      ).title("Services"))
+      .block(
+        Block::default()
+          .borders(Borders::ALL)
+          .border_style(if self.mode == Mode::Normal {
+            Style::default().fg(Color::LightGreen)
+          } else {
+            Style::default()
+          })
+          .title("Services"),
+      )
       .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
 
     let chunks = Layout::default()
@@ -311,11 +309,9 @@ impl Component for Home {
     };
 
     let paragraph = Paragraph::new(text)
-        .block(Block::default().title(
-          title
-        ).borders(Borders::ALL))
-        .style(Style::default().fg(Color::White).bg(Color::Black))
-        .wrap(Wrap { trim: true });
+      .block(Block::default().title(title).borders(Borders::ALL))
+      .style(Style::default().fg(Color::White).bg(Color::Black))
+      .wrap(Wrap { trim: true });
     f.render_widget(paragraph, chunks[1]);
 
     let width = search_panel.width.max(3) - 3; // keep 2 for borders and 1 for cursor

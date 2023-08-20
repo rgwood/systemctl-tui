@@ -1,6 +1,7 @@
 // File taken from https://github.com/servicer-labs/servicer/blob/master/src/utils/systemd.rs
 
 use anyhow::Result;
+use tracing::info;
 use zbus::Connection;
 use zbus::{dbus_proxy, zvariant};
 
@@ -42,6 +43,7 @@ impl From<RawUnit> for UnitStatus {
 
 // this takes like 5-10 ms on 13th gen Intel i7
 pub async fn get_services() -> Result<Vec<UnitStatus>> {
+  let start = std::time::Instant::now();
   let connection = Connection::system().await?;
   let manager_proxy = ManagerProxy::new(&connection).await?;
   let units = manager_proxy.list_units_by_patterns(vec![], vec!["*.service".into()]).await?;
@@ -50,6 +52,8 @@ pub async fn get_services() -> Result<Vec<UnitStatus>> {
 
   // sort by name case-insensitive
   units.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+  info!("Loaded systemd services in {:?}", start.elapsed());
 
   Ok(units)
 }
