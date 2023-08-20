@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use duct::cmd;
 use itertools::Itertools;
@@ -10,7 +8,7 @@ use ratatui::{
   widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 use tokio::sync::mpsc::{self, UnboundedSender};
-use tracing::trace;
+use tracing::{info, trace};
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use super::{logger::Logger, Component, Frame};
@@ -32,7 +30,7 @@ pub struct Home {
   pub ticker: usize,
   pub all_units: Vec<UnitStatus>,
   pub filtered_units: StatefulList<UnitStatus>,
-  pub logs: String,
+  pub logs: Vec<String>,
   pub mode: Mode,
   pub input: Input,
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
@@ -52,6 +50,13 @@ impl Default for StatefulList<UnitStatus> {
 impl<T> StatefulList<T> {
   pub fn with_items(items: Vec<T>) -> StatefulList<T> {
     StatefulList { state: ListState::default(), items }
+  }
+
+  fn selected(&self) -> Option<&T> {
+    match self.state.selected() {
+      Some(i) => Some(&self.items[i]),
+      None => None,
+    }
   }
 
   fn next(&mut self) {
@@ -103,48 +108,43 @@ impl Home {
     self.ticker = self.ticker.saturating_add(1);
   }
 
-  pub fn get_logs(&mut self, unit_name: &str) {
-    let tx = self.action_tx.clone().unwrap();
-    let unit_name = unit_name.to_string();
 
-    tokio::spawn(async move {
-      // TODO: is this the best place to load logs?
-      // TODO: figure out how to stream logs
-      // TODO: debounce?, journald is kinda slow
-      if let Ok(stdout) = cmd!("journalctl", "-u", unit_name).read() {
-        tx.send(Action::SetLogs(stdout)).unwrap();
-      }
-
-      tx.send(Action::RenderTick).unwrap();
-    });
+  pub fn next(&mut self) {
+    self.logs = vec![];
+    self.filtered_units.next();
+    self.get_logs();
   }
 
-  pub fn schedule_increment(&mut self, i: usize) {
-    let tx = self.action_tx.clone().unwrap();
-    tokio::spawn(async move {
-      tx.send(Action::EnterProcessing).unwrap();
-      tokio::time::sleep(Duration::from_secs(5)).await;
-      tx.send(Action::Increment(i)).unwrap();
-      tx.send(Action::ExitProcessing).unwrap();
-    });
+  pub fn previous(&mut self) {
+    self.logs = vec![];
+    self.filtered_units.previous();
+    self.get_logs();
   }
 
-  pub fn schedule_decrement(&mut self, i: usize) {
-    let tx = self.action_tx.clone().unwrap();
-    tokio::spawn(async move {
-      tx.send(Action::EnterProcessing).unwrap();
-      tokio::time::sleep(Duration::from_secs(5)).await;
-      tx.send(Action::Decrement(i)).unwrap();
-      tx.send(Action::ExitProcessing).unwrap();
-    });
+  pub fn unselect(&mut self) {
+    self.logs = vec![];
+    self.filtered_units.unselect();
   }
 
-  pub fn increment(&mut self, i: usize) {
-    self.counter = self.counter.saturating_add(i);
-  }
+  pub fn get_logs(&mut self) {
+    if let Some(selected) = self.filtered_units.selected() {
+      let tx = self.action_tx.clone().unwrap();
+      let unit_name = selected.name.to_string();
 
-  pub fn decrement(&mut self, i: usize) {
-    self.counter = self.counter.saturating_sub(i);
+      tokio::spawn(async move {
+        info!("Getting logs for {}", unit_name);
+        // TODO: is this the best place to load logs?
+        // TODO: figure out how to stream logs
+        // TODO: debounce?, journald is kinda slow
+        if let Ok(stdout) = cmd!("journalctl", "-u", unit_name.clone()).read() {
+          tx.send(Action::SetLogs{ unit_name, logs: stdout }).unwrap();
+        }
+
+        tx.send(Action::RenderTick).unwrap();
+      });
+    } else {
+      self.logs = vec![];
+    }
   }
 }
 
@@ -163,19 +163,17 @@ impl Component for Home {
           KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
           KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Suspend,
           KeyCode::Char('l') => Action::ToggleShowLogger,
-          KeyCode::Char('j') => Action::ScheduleIncrement,
-          KeyCode::Char('k') => Action::ScheduleDecrement,
           KeyCode::Up => {
             // if we're filtering the list, and we're at the top, and there's text in the search box, go to search mode
             if self.filtered_units.state.selected() == Some(0) && self.input.value() != "" {
               return Action::EnterSearch;
             }
 
-            self.filtered_units.previous();
+            self.previous();
             Action::Update // is this right?
           },
           KeyCode::Down => {
-            self.filtered_units.next();
+            self.next();
             Action::Update // is this right?
           },
           KeyCode::Char('/') => Action::EnterSearch,
@@ -185,12 +183,12 @@ impl Component for Home {
       Mode::Search => match key.code {
         KeyCode::Esc | KeyCode::Enter => Action::EnterNormal,
         KeyCode::Down | KeyCode::Tab => {
-          self.filtered_units.next();
+          self.next();
           Action::EnterNormal
         },
         _ => {
           self.input.handle_event(&crossterm::event::Event::Key(key));
-          self.filtered_units.unselect();
+          self.unselect();
 
           let matching = self.all_units.iter().filter(|u| u.name.contains(&self.input.value())).cloned().collect_vec();
           self.filtered_units.items = matching;
@@ -204,10 +202,6 @@ impl Component for Home {
     match action {
       Action::Tick => self.tick(),
       Action::ToggleShowLogger => self.show_logger = !self.show_logger,
-      Action::ScheduleIncrement => self.schedule_increment(1),
-      Action::ScheduleDecrement => self.schedule_decrement(1),
-      Action::Increment(i) => self.increment(i),
-      Action::Decrement(i) => self.decrement(i),
       Action::EnterNormal => {
         self.mode = Mode::Normal;
       },
@@ -221,6 +215,18 @@ impl Component for Home {
         // TODO: Make this go to previous mode instead
         self.mode = Mode::Normal;
       },
+      Action::SetLogs{ unit_name: service_name, logs } => {
+        if let Some(selected) = self.filtered_units.selected() {
+          if selected.name == service_name {
+            // split by lines
+            let mut logs = logs.split("\n")
+            .map(String::from)
+            .collect_vec();
+            logs.reverse();
+            self.logs = logs;
+          }
+        }
+      },
       _ => (),
     }
     None
@@ -229,7 +235,7 @@ impl Component for Home {
   fn render(&mut self, f: &mut Frame<'_>, rect: Rect) {
     let rect = if self.show_logger {
       let chunks = Layout::default()
-        .direction(Direction::Horizontal)
+        .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(rect);
       self.logger.render(f, chunks[1]);
@@ -277,13 +283,7 @@ impl Component for Home {
         Line::from(""),
       ];
 
-      // TODO: get logs from journalctl
-      // let logs = app.logs.lock().unwrap();
-      // let mut log_lines = logs
-      //     .lines()
-      //     .map(|l| Line::from(l.to_string()))
-      //     .collect_vec();
-      // lines.append(&mut log_lines);
+      lines.extend(self.logs.iter().map(|l| Line::from(l.clone())));
 
       lines
     } else {
@@ -321,7 +321,7 @@ impl Component for Home {
     let scroll = self.input.visual_scroll(width as usize);
     let input = Paragraph::new(self.input.value())
       .style(match self.mode {
-        Mode::Search => Style::default().fg(Color::Yellow),
+        Mode::Search => Style::default().fg(Color::LightGreen),
         _ => Style::default(),
       })
       .scroll((0, scroll as u16))

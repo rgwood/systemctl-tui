@@ -6,7 +6,7 @@ use tokio::sync::{mpsc, Mutex};
 use crate::{
   action::Action,
   components::{
-    home::{Home, StatefulList},
+    home::Home,
     Component,
   },
   event::EventHandler,
