@@ -64,7 +64,7 @@ impl<T> StatefulList<T> {
   fn next(&mut self) {
     let i = match self.state.selected() {
       Some(i) => {
-        if i >= self.items.len() - 1 {
+        if i >= self.items.len().saturating_sub(1) {
           0
         } else {
           i + 1
@@ -200,7 +200,7 @@ impl Component for Home {
 
           KeyCode::Up => {
             // if we're filtering the list, and we're at the top, and there's text in the search box, go to search mode
-            if self.filtered_units.state.selected() == Some(0) && self.input.value() != "" {
+            if self.filtered_units.state.selected() == Some(0) {
               return Action::EnterSearch;
             }
 
@@ -219,6 +219,10 @@ impl Component for Home {
         KeyCode::Esc | KeyCode::Enter => Action::EnterNormal,
         KeyCode::Down | KeyCode::Tab => {
           self.next();
+          Action::EnterNormal
+        },
+        KeyCode::Up => {
+          self.previous();
           Action::EnterNormal
         },
         _ => {
