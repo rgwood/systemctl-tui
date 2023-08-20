@@ -53,11 +53,10 @@ itertools = "0.11.0"
 duct = "0.13.6"
 
 [profile.release]
-lto = true      # Enable Link Time Optimization
+lto = true      # Enable Link Time Optimization (slow but makes a huge size difference)
 opt-level = 'z' # Optimize for size.
 panic = 'abort' # Abort on panic
-# codegen-units = 1 # Set low to increase optimizations. Kills compile time though
-strip = true        # Strip symbols from binary. Big gains but idk if it's worth bad stack traces
+# strip = true        # Strip symbols from binary. Big gains but idk if it's worth bad stack traces
 
 [[bin]]
 name = "systemctl-tui"
