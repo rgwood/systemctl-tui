@@ -283,6 +283,7 @@ impl Component for Home {
       .direction(Direction::Horizontal)
       .constraints([Constraint::Min(40), Constraint::Percentage(100)].as_ref())
       .split(main_panel);
+    let right_panel = chunks[1];
 
     f.render_stateful_widget(items, chunks[0], &mut self.filtered_units.state);
 
@@ -291,25 +292,48 @@ impl Component for Home {
       None => None,
     };
 
+    let right_panel = Layout::default()
+      .direction(Direction::Vertical)
+      .constraints([Constraint::Min(7), Constraint::Percentage(100)].as_ref())
+      .split(right_panel);
+
+    let details_panel = right_panel[0];
+    let logs_panel = right_panel[1];
+
     // this is expensive to rebuild every time, should we cache it?
-    let text = if let Some(i) = selected_item {
-      let mut lines = vec![
-        // Line::from(format!("Name: {}", i.name)),
-        Line::from(format!("Description: {}", i.description)),
+    let details_text = if let Some(i) = selected_item {
+      fn line<'a>(property: &'a str, value: &'a str) -> Line<'a> {
+        Line::from(vec![
+          Span::styled(property, Style::default().fg(Color::DarkGray)),
+          Span::raw(": "),
+          Span::raw(value),
+        ])
+      }
+
+      let lines = vec![
+        line("Description", &i.description),
         // TODO: color-code these
-        Line::from(format!("Load State: {}", i.load_state)),
-        Line::from(format!("Active State: {}", i.active_state)),
-        Line::from(format!("Sub State: {}", i.sub_state)),
-        Line::from(format!("Followed: {}", i.followed)),
-        Line::from(format!("Path: {}", i.path)),
-        Line::from(format!("Job ID: {}", i.job_id)),
-        Line::from(format!("Job Type: {}", i.job_type)),
-        Line::from(format!("Job Path: {}", i.job_path)),
-        Line::from(""),
+        line("Load State", &i.load_state),
+        line("Active State", &i.active_state),
+        line("Sub State", &i.sub_state),
+        line("Path", &i.path),
       ];
 
-      // TODO: can the logs go in their own panel?
-      lines.extend(self.logs.iter().map(|l| {
+      lines
+    } else {
+      vec![]
+    };
+
+    let paragraph = Paragraph::new(details_text)
+      .block(Block::default().title(Line::from("Details")).borders(Borders::ALL))
+      .style(Style::default())
+      .wrap(Wrap { trim: true });
+    f.render_widget(paragraph, details_panel);
+
+    let log_lines = self
+      .logs
+      .iter()
+      .map(|l| {
         if let Some((date, rest)) = l.splitn(2, " ").collect_tuple() {
           if date.len() != 24 {
             return Line::from(l.as_str());
@@ -318,26 +342,14 @@ impl Component for Home {
         } else {
           Line::from(l.as_str())
         }
-      }));
+      })
+      .collect_vec();
 
-      lines
-    } else {
-      vec![]
-    };
-
-    let title = match selected_item {
-      Some(i) => Line::from(vec![
-        Span::raw("Details of "),
-        Span::styled(i.name.clone(), Style::default().add_modifier(Modifier::BOLD).fg(Color::LightBlue)),
-      ]),
-      None => Line::from("Details"),
-    };
-
-    let paragraph = Paragraph::new(text)
-      .block(Block::default().title(title).borders(Borders::ALL))
+    let paragraph = Paragraph::new(log_lines)
+      .block(Block::default().title("Logs").borders(Borders::ALL))
       .style(Style::default())
       .wrap(Wrap { trim: true });
-    f.render_widget(paragraph, chunks[1]);
+    f.render_widget(paragraph, logs_panel);
 
     let width = search_panel.width.max(3) - 3; // keep 2 for borders and 1 for cursor
     let scroll = self.input.visual_scroll(width as usize);
