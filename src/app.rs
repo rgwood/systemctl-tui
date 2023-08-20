@@ -42,7 +42,7 @@ impl App {
     loop {
       if let Some(action) = action_rx.recv().await {
         if action != Action::Tick && action != Action::RenderTick {
-          trace_dbg!(action);
+          trace_dbg!(&action);
         }
         match action {
           Action::RenderTick => terminal.render()?,

@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use duct::cmd;
 use itertools::Itertools;
 use ratatui::{
   layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -31,6 +32,7 @@ pub struct Home {
   pub ticker: usize,
   pub all_units: Vec<UnitStatus>,
   pub filtered_units: StatefulList<UnitStatus>,
+  pub logs: String,
   pub mode: Mode,
   pub input: Input,
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
@@ -101,10 +103,18 @@ impl Home {
     self.ticker = self.ticker.saturating_add(1);
   }
 
-  pub fn get_logs(&mut self, unit: &UnitStatus) {
+  pub fn get_logs(&mut self, unit_name: &str) {
     let tx = self.action_tx.clone().unwrap();
+    let unit_name = unit_name.to_string();
+
     tokio::spawn(async move {
-      // TODO: is this a good place to load logs?
+      // TODO: is this the best place to load logs?
+      // TODO: figure out how to stream logs
+      // TODO: debounce?, journald is kinda slow
+      if let Ok(stdout) = cmd!("journalctl", "-u", unit_name).read() {
+        tx.send(Action::SetLogs(stdout)).unwrap();
+      }
+
       tx.send(Action::RenderTick).unwrap();
     });
   }
