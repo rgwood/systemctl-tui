@@ -52,6 +52,9 @@ impl<T> StatefulList<T> {
   }
 
   fn selected(&self) -> Option<&T> {
+    if self.items.is_empty() {
+      return None;
+    }
     match self.state.selected() {
       Some(i) => Some(&self.items[i]),
       None => None,
@@ -99,6 +102,20 @@ impl Home {
   pub fn set_units(&mut self, units: Vec<UnitStatus>) {
     self.all_units = units.clone();
     self.filtered_units = StatefulList::with_items(units);
+
+    if self.filtered_units.items.len() > 0 {
+      // select the first item automatically
+      self.next();
+    }
+  }
+
+  pub fn set_filtered_units(&mut self, units: Vec<UnitStatus>) {
+    self.filtered_units = StatefulList::with_items(units);
+
+    // if self.filtered_units.items.len() > 0 {
+    // select the first item automatically
+    self.next();
+    // }
   }
 
   pub fn next(&mut self) {
@@ -205,11 +222,15 @@ impl Component for Home {
           Action::EnterNormal
         },
         _ => {
+          let prev_search_value = self.input.value().to_owned();
           self.input.handle_event(&crossterm::event::Event::Key(key));
-          self.unselect();
 
-          let matching = self.all_units.iter().filter(|u| u.name.contains(&self.input.value())).cloned().collect_vec();
-          self.filtered_units.items = matching;
+          // if the search value changed, filter the list
+          if prev_search_value != self.input.value() {
+            let matching =
+              self.all_units.iter().filter(|u| u.name.contains(&self.input.value())).cloned().collect_vec();
+            self.set_filtered_units(matching);
+          }
           Action::Update
         },
       },
@@ -287,10 +308,7 @@ impl Component for Home {
 
     f.render_stateful_widget(items, chunks[0], &mut self.filtered_units.state);
 
-    let selected_item = match self.filtered_units.state.selected() {
-      Some(i) => Some(&self.filtered_units.items[i]),
-      None => None,
-    };
+    let selected_item = self.filtered_units.selected();
 
     let right_panel = Layout::default()
       .direction(Direction::Vertical)
