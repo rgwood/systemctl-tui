@@ -16,8 +16,8 @@ use crate::{action::Action, systemd::UnitStatus};
 
 #[derive(Default, Copy, Clone, PartialEq, Eq)]
 pub enum Mode {
-  #[default]
   Normal,
+  #[default]
   Search,
   Processing,
 }
@@ -136,7 +136,7 @@ impl Home {
         // TODO: is this the best place to load logs?
         // TODO: figure out how to stream logs
         // TODO: debounce?, journald is kinda slow
-        if let Ok(stdout) = cmd!("journalctl", "-u", unit_name.clone()).read() {
+        if let Ok(stdout) = cmd!("journalctl", "-u", unit_name.clone(), "--output=short-iso").read() {
           tx.send(Action::SetLogs{ unit_name, logs: stdout }).unwrap();
         }
 
@@ -162,6 +162,7 @@ impl Component for Home {
           KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
           KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
           KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Suspend,
+          KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::EnterSearch,
           KeyCode::Char('l') => Action::ToggleShowLogger,
           KeyCode::Up => {
             // if we're filtering the list, and we're at the top, and there's text in the search box, go to search mode
@@ -181,6 +182,8 @@ impl Component for Home {
         }
       },
       Mode::Search => match key.code {
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
         KeyCode::Esc | KeyCode::Enter => Action::EnterNormal,
         KeyCode::Down | KeyCode::Tab => {
           self.next();
@@ -252,7 +255,14 @@ impl Component for Home {
 
     // Create a List from all list items and highlight the currently selected one
     let items = List::new(items)
-      .block(Block::default().borders(Borders::ALL).title("Services"))
+      .block(Block::default().borders(Borders::ALL)
+      .border_style(
+        if self.mode == Mode::Normal {
+          Style::default().fg(Color::LightGreen)
+        } else {
+          Style::default()
+        }
+      ).title("Services"))
       .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
 
     let chunks = Layout::default()
@@ -270,8 +280,9 @@ impl Component for Home {
     // this is expensive to rebuild every time, should we cache it?
     let text = if let Some(i) = selected_item {
       let mut lines = vec![
-        Line::from(format!("Name: {}", i.name)),
+        // Line::from(format!("Name: {}", i.name)),
         Line::from(format!("Description: {}", i.description)),
+        // TODO: color-code these
         Line::from(format!("Load State: {}", i.load_state)),
         Line::from(format!("Active State: {}", i.active_state)),
         Line::from(format!("Sub State: {}", i.sub_state)),
@@ -283,40 +294,30 @@ impl Component for Home {
         Line::from(""),
       ];
 
-      lines.extend(self.logs.iter().map(|l| Line::from(l.clone())));
+      // TODO: can the logs go in their own panel?
+      lines.extend(self.logs.iter().map(|l| Line::from(l.as_str())));
 
       lines
     } else {
       vec![]
     };
 
+    let title = match selected_item {
+      Some(i) => Line::from(vec![
+        Span::raw("Details of "),
+        Span::styled(i.name.clone(), Style::default().add_modifier(Modifier::BOLD).fg(Color::LightBlue)),
+      ]),
+      None => Line::from("Details"),
+    };
+
     let paragraph = Paragraph::new(text)
-        .block(Block::default().title("Service").borders(Borders::ALL))
+        .block(Block::default().title(
+          title
+        ).borders(Borders::ALL))
         .style(Style::default().fg(Color::White).bg(Color::Black))
-        // .alignment(Alignment::Center)
         .wrap(Wrap { trim: true });
     f.render_widget(paragraph, chunks[1]);
 
-    // f.render_widget(
-    //   Paragraph::new(format!(
-    //     "Press j or k to increment or decrement.\n\nCounter: {}\n\nTicker: {}",
-    //     self.counter, self.ticker
-    //   ))
-    //   .block(
-    //     Block::default()
-    //       .title("Template")
-    //       .title_alignment(Alignment::Center)
-    //       .borders(Borders::ALL)
-    //       .border_style(match self.mode {
-    //         Mode::Processing => Style::default().fg(Color::Yellow),
-    //         _ => Style::default(),
-    //       })
-    //       .border_type(BorderType::Rounded),
-    //   )
-    //   .style(Style::default().fg(Color::Cyan))
-    //   .alignment(Alignment::Center),
-    //   main_panel,
-    // );
     let width = search_panel.width.max(3) - 3; // keep 2 for borders and 1 for cursor
     let scroll = self.input.visual_scroll(width as usize);
     let input = Paragraph::new(self.input.value())
@@ -328,10 +329,11 @@ impl Component for Home {
       .block(Block::default().borders(Borders::ALL).title(Line::from(vec![
         Span::raw("Search "),
         Span::styled("(", Style::default().fg(Color::DarkGray)),
+        Span::styled("ctrl+f", Style::default().add_modifier(Modifier::BOLD).fg(Color::Gray)),
+        Span::styled(" or ", Style::default().fg(Color::DarkGray)),
         Span::styled("/", Style::default().add_modifier(Modifier::BOLD).fg(Color::Gray)),
-        Span::styled(" to focus, ", Style::default().fg(Color::DarkGray)),
-        Span::styled("ESC", Style::default().add_modifier(Modifier::BOLD).fg(Color::Gray)),
-        Span::styled(" to unfocus)", Style::default().fg(Color::DarkGray)),
+        Span::styled(" to focus", Style::default().fg(Color::DarkGray)),
+        Span::styled(")", Style::default().fg(Color::DarkGray)),
       ])));
     f.render_widget(input, search_panel);
     if self.mode == Mode::Search {
