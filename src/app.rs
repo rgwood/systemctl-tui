@@ -9,7 +9,6 @@ use crate::{
   event::EventHandler,
   systemd::get_services,
   terminal::TerminalHandler,
-  trace_dbg,
 };
 
 pub struct App {
@@ -39,7 +38,8 @@ impl App {
     loop {
       if let Some(action) = action_rx.recv().await {
         if action != Action::RenderTick {
-          trace_dbg!(&action);
+          // re-enable this to debug actions
+          // crate::trace_dbg!(&action);
         }
         match action {
           Action::RenderTick => terminal.render()?,
