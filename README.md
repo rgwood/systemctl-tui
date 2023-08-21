@@ -4,7 +4,10 @@ A simple little TUI for interacting with systemd services and their logs.
 
 ## Install
 
-For now, clone the repo and run `cargo build --release` to get a release binary at `target/release/systemctl-tui`. Later I'll put this on crates
+Currently you need [Rust installed](https://rustup.rs/). Either:
+
+1. Run `cargo install systemctl-tui`
+2. Clone the repo `cargo build --release` to get a release binary at `target/release/systemctl-tui`
 
 ## Future Work
 
