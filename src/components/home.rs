@@ -29,6 +29,7 @@ pub struct Home {
   pub all_units: Vec<UnitStatus>,
   pub filtered_units: StatefulList<UnitStatus>,
   pub logs: Vec<String>,
+  pub logs_scroll_offset: u16,
   pub mode: Mode,
   pub input: Input,
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
@@ -122,12 +123,14 @@ impl Home {
     self.logs = vec![];
     self.filtered_units.next();
     self.get_logs();
+    self.logs_scroll_offset = 0;
   }
 
   pub fn previous(&mut self) {
     self.logs = vec![];
     self.filtered_units.previous();
     self.get_logs();
+    self.logs_scroll_offset = 0;
   }
 
   pub fn unselect(&mut self) {
@@ -168,7 +171,7 @@ impl Component for Home {
 
         info!("Getting logs for {}", unit_name);
         let start = std::time::Instant::now();
-        match cmd!("journalctl", "-u", unit_name.clone(), "--output=short-iso", "--lines=100").read() {
+        match cmd!("journalctl", "-u", unit_name.clone(), "--output=short-iso", "--lines=500").read() {
           Ok(stdout) => {
             info!("Got logs for {} in {:?}", unit_name, start.elapsed());
             let _ = tx.send(Action::SetLogs { unit_name, logs: stdout });
@@ -195,6 +198,14 @@ impl Component for Home {
 
     if matches!(key.code, KeyCode::Char('?')) || matches!(key.code, KeyCode::F(1)) {
       return Action::EnterHelp;
+    }
+
+    let increment = if key.modifiers.contains(KeyModifiers::SHIFT) { 10 } else { 1 };
+    if matches!(key.code, KeyCode::PageDown) {
+      return Action::ScrollDown(increment);
+    }
+    if matches!(key.code, KeyCode::PageUp) {
+      return Action::ScrollUp(increment);
     }
 
     match self.mode {
@@ -271,6 +282,14 @@ impl Component for Home {
             self.logs = logs;
           }
         }
+      },
+      Action::ScrollUp(offset) => {
+        self.logs_scroll_offset = self.logs_scroll_offset.saturating_sub(offset);
+        info!("scroll offset: {}", self.logs_scroll_offset);
+      },
+      Action::ScrollDown(offset) => {
+        self.logs_scroll_offset = self.logs_scroll_offset.saturating_add(offset);
+        info!("scroll offset: {}", self.logs_scroll_offset);
       },
       _ => (),
     }
@@ -405,7 +424,8 @@ impl Component for Home {
     let paragraph = Paragraph::new(log_lines)
       .block(Block::default().title("Logs").borders(Borders::ALL))
       .style(Style::default())
-      .wrap(Wrap { trim: true });
+      .wrap(Wrap { trim: true })
+      .scroll((self.logs_scroll_offset, 0));
     f.render_widget(paragraph, logs_panel);
 
     let width = search_panel.width.max(3) - 3; // keep 2 for borders and 1 for cursor
@@ -426,6 +446,20 @@ impl Component for Home {
         Span::styled(") ", Style::default().fg(Color::DarkGray)),
       ])));
     f.render_widget(input, search_panel);
+    // clear top right of search panel so we can put help instructions there
+    let help_width = 24;
+    let help_area = Rect::new(search_panel.x + search_panel.width - help_width - 2, search_panel.y, help_width, 1);
+    f.render_widget(Clear, help_area);
+    let help_text = Paragraph::new(Line::from(vec![
+      Span::raw(" Press "),
+      Span::styled("?", Style::default().add_modifier(Modifier::BOLD).fg(Color::Gray)),
+      Span::raw(" or "),
+      Span::styled("F1", Style::default().add_modifier(Modifier::BOLD).fg(Color::Gray)),
+      Span::raw(" for help "),
+    ]))
+    .style(Style::default().fg(Color::DarkGray));
+    f.render_widget(help_text, help_area);
+
     if self.mode == Mode::Search {
       f.set_cursor(
         (search_panel.x + 1 + self.input.cursor() as u16).min(search_panel.x + search_panel.width - 2),
@@ -452,13 +486,15 @@ impl Component for Home {
           white("CTRL+Q"),
           Span::raw(" quits the application"),
         ]),
+        Line::from(vec![white("PageUp"), Span::raw(" / "), white("PageDown"), Span::raw(" scrolls the logs")]),
         Line::from(vec![white("?"), Span::raw(" or "), white("F1"), Span::raw(" opens this help pane")]),
       ];
 
       let paragraph = Paragraph::new(log_lines)
         .block(Block::default().title("✨️ Help ✨️").borders(Borders::ALL))
         .style(Style::default())
-        .wrap(Wrap { trim: true });
+        .wrap(Wrap { trim: true })
+        .scroll((self.logs_scroll_offset, 0));
 
       f.render_widget(Clear, popup);
       f.render_widget(paragraph, popup);

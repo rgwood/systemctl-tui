@@ -6,7 +6,7 @@
 - [ ] try adding a modal help menu/command picker like x/? in lazygit
 - [x] when searching, auto-select the first result
 - [x] select first item by default
-- [ ] add color for stopped/running status
+- [x] add color for stopped/running status
 - [x] add some color (for dates maybe?)
 - [x] ctrl-f for find
 - [x] move logs to their own pane

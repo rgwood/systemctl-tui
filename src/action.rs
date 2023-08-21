@@ -11,6 +11,8 @@ pub enum Action {
   EnterHelp,
   ExitHelp,
   SetLogs { unit_name: String, logs: String },
+  ScrollUp(u16),
+  ScrollDown(u16),
   Update,
   Noop,
 }
