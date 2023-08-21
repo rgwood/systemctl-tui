@@ -14,6 +14,8 @@ Currently you need [Rust installed](https://rustup.rs/). Either:
 1. Run `cargo install systemctl-tui`
 2. Clone the repo and run `cargo build --release` to get a release binary at `target/release/systemctl-tui`
 
+Optional: alias `systemctl-tui` to `st` for quick access
+
 ## Future Work
 
 This was thrown together in a weekend. It currently only supports read operations (so no stopping/starting services). More features to come.
