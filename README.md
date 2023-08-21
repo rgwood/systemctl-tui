@@ -16,7 +16,7 @@ Currently you need [Rust installed](https://rustup.rs/). Either:
 
 ## Future Work
 
-This is a prototype hacked together in a weekend. It currently only supports read operations (so no stopping/starting services). More features to come.
+This was thrown together in a weekend. It currently only supports read operations (so no stopping/starting services). More features to come.
 
 ## Credits
 
