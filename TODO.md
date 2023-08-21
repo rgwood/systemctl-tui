@@ -1,12 +1,12 @@
 ## TODO
 
-- [ ] put on crates.io
 - [ ] refresh logs on a timer
 - [ ] refresh services on a timer
 - [ ] unit files
   - [ ] figure out path to unit file
   - [ ] show/preview contents
   - [ ] command to open service file in text editor
+- [x] put on crates.io
 - [x] Implement scrolling with pgup/pgdown
 - [x] try adding a modal help menu/command picker like x/? in lazygit
 - [x] when searching, auto-select the first result
