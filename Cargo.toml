@@ -1,5 +1,8 @@
 [package]
 name = "systemctl-tui"
+description = "A simple TUI for interacting with systemd services and their logs"
+homepage = "https://github.com/rgwood/systemctl-tui"
+repository = "https://github.com/rgwood/systemctl-tui"
 version = "0.1.0"
 edition = "2021"
 authors = ["Reilly Wood"]

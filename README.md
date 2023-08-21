@@ -1,10 +1,10 @@
 # systemctl-tui
 
-A simple little TUI for interactng systemd services and their logs. 
+A simple little TUI for interacting with systemd services and their logs.
 
 ## Install
 
-For now, clone the repo and run `cargo build --release` to get a release binary at `target/release/systemctl-tui`.
+For now, clone the repo and run `cargo build --release` to get a release binary at `target/release/systemctl-tui`. Later I'll put this on crates
 
 ## Future Work
 
