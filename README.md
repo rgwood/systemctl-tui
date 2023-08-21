@@ -4,7 +4,8 @@
 
 A simple little TUI for interacting with systemd services and their logs.
 
-![image](https://github.com/rgwood/systemctl-tui/assets/26268125/0202cec5-45a9-4cef-977e-323ca66faf7d)
+![image](https://github.com/rgwood/systemctl-tui/assets/26268125/772eb23d-1e7e-4a31-a38c-01c0ac435bc2)
+
 
 ## Install
 
