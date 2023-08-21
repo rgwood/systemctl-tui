@@ -197,7 +197,7 @@ impl Component for Home {
     }
 
     if matches!(key.code, KeyCode::Char('?')) || matches!(key.code, KeyCode::F(1)) {
-      return Action::EnterHelp;
+      return Action::ToggleHelp;
     }
 
     let increment = if key.modifiers.contains(KeyModifiers::SHIFT) { 10 } else { 1 };
@@ -266,12 +266,13 @@ impl Component for Home {
       Action::EnterSearch => {
         self.mode = Mode::Search;
       },
-      Action::EnterHelp => {
-        self.mode = Mode::Help;
-      },
-      Action::ExitHelp => {
-        // TODO: Make this go to previous mode instead
-        self.mode = Mode::Normal;
+      Action::ToggleHelp => {
+        if self.mode != Mode::Help {
+          self.mode = Mode::Help;
+        } else {
+          // TODO: go back to the previous mode
+          self.mode = Mode::Normal;
+        }
       },
       Action::SetLogs { unit_name: service_name, logs } => {
         if let Some(selected) = self.filtered_units.selected() {
@@ -474,7 +475,8 @@ impl Component for Home {
         Span::styled(s, Style::default().fg(Color::White))
       }
 
-      let log_lines = vec![
+      let help_lines = vec![
+        Line::from(""),
         Line::from(Span::styled("Keyboard Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
         Line::from(""),
         Line::from(vec![white("CTRL+L"), Span::raw(" toggles the logger pane")]),
@@ -490,11 +492,14 @@ impl Component for Home {
         Line::from(vec![white("?"), Span::raw(" or "), white("F1"), Span::raw(" opens this help pane")]),
       ];
 
-      let paragraph = Paragraph::new(log_lines)
-        .block(Block::default().title("✨️ Help ✨️").borders(Borders::ALL))
+      let name = env!("CARGO_PKG_NAME");
+      let version = env!("CARGO_PKG_VERSION");
+      let title = format!("✨️ Help for {} v{} ✨️", name, version);
+
+      let paragraph = Paragraph::new(help_lines)
+        .block(Block::default().title(title).borders(Borders::ALL))
         .style(Style::default())
-        .wrap(Wrap { trim: true })
-        .scroll((self.logs_scroll_offset, 0));
+        .wrap(Wrap { trim: true });
 
       f.render_widget(Clear, popup);
       f.render_widget(paragraph, popup);

@@ -15,7 +15,7 @@ test:
 watch-tests:
     watchexec --exts=rs -- cargo test
 
-expected_filename := if os_family() == "windows" { "systemctl-tui.exe" } else { "systemctl-tui" }
+expected_filename := "systemctl-tui"
 
 build-release:
     cargo build --release
