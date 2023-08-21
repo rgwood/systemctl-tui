@@ -2,6 +2,8 @@
 
 A simple little TUI for interacting with systemd services and their logs.
 
+![image](https://github.com/rgwood/systemctl-tui/assets/26268125/0202cec5-45a9-4cef-977e-323ca66faf7d)
+
 ## Install
 
 Currently you need [Rust installed](https://rustup.rs/). Either:
