@@ -5,7 +5,7 @@ use ratatui::{
   layout::{Constraint, Direction, Layout, Rect},
   style::{Color, Modifier, Style},
   text::{Line, Span},
-  widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap, Clear},
+  widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tracing::{info, warn};
@@ -19,7 +19,7 @@ pub enum Mode {
   Normal,
   #[default]
   Search,
-  Processing,
+  Help,
 }
 
 #[derive(Default)]
@@ -193,13 +193,14 @@ impl Component for Home {
       }
     }
 
-    if matches!(key.code, KeyCode::Char('?')) {
-      return Action::EnterProcessing;
+    if matches!(key.code, KeyCode::Char('?')) || matches!(key.code, KeyCode::F(1)) {
+      return Action::EnterHelp;
     }
 
     match self.mode {
-      Mode::Normal | Mode::Processing => {
+      Mode::Normal | Mode::Help => {
         match key.code {
+          KeyCode::Esc | KeyCode::Enter => Action::EnterNormal,
           KeyCode::Char('q') => Action::Quit,
 
           KeyCode::Up => {
@@ -254,10 +255,10 @@ impl Component for Home {
       Action::EnterSearch => {
         self.mode = Mode::Search;
       },
-      Action::EnterProcessing => {
-        self.mode = Mode::Processing;
+      Action::EnterHelp => {
+        self.mode = Mode::Help;
       },
-      Action::ExitProcessing => {
+      Action::ExitHelp => {
         // TODO: Make this go to previous mode instead
         self.mode = Mode::Normal;
       },
@@ -378,9 +379,7 @@ impl Component for Home {
       vec![]
     };
 
-    let paragraph = Paragraph::new(details_text)
-      .style(Style::default())
-      .wrap(Wrap { trim: true });
+    let paragraph = Paragraph::new(details_text).style(Style::default()).wrap(Wrap { trim: true });
 
     let props_widget = Paragraph::new(props_lines).alignment(ratatui::layout::Alignment::Right);
     f.render_widget(props_widget, props_pane);
@@ -418,13 +417,13 @@ impl Component for Home {
       })
       .scroll((0, scroll as u16))
       .block(Block::default().borders(Borders::ALL).title(Line::from(vec![
-        Span::raw("Search "),
+        Span::raw(" 🔍️ Search "),
         Span::styled("(", Style::default().fg(Color::DarkGray)),
         Span::styled("ctrl+f", Style::default().add_modifier(Modifier::BOLD).fg(Color::Gray)),
         Span::styled(" or ", Style::default().fg(Color::DarkGray)),
         Span::styled("/", Style::default().add_modifier(Modifier::BOLD).fg(Color::Gray)),
         Span::styled(" to focus", Style::default().fg(Color::DarkGray)),
-        Span::styled(")", Style::default().fg(Color::DarkGray)),
+        Span::styled(") ", Style::default().fg(Color::DarkGray)),
       ])));
     f.render_widget(input, search_panel);
     if self.mode == Mode::Search {
@@ -434,11 +433,35 @@ impl Component for Home {
       )
     }
 
-    if self.mode == Mode::Processing {
-      let popup = centered_rect(50, 50, f.size());
-      let block = Block::default().title("Processing").borders(Borders::ALL);
+    if self.mode == Mode::Help {
+      let popup = centered_rect(80, 80, f.size());
+
+      fn white(s: &str) -> Span {
+        Span::styled(s, Style::default().fg(Color::White))
+      }
+
+      let log_lines = vec![
+        Line::from(Span::styled("Keyboard Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
+        Line::from(""),
+        Line::from(vec![white("CTRL+L"), Span::raw(" toggles the logger pane")]),
+        Line::from(vec![
+          white("CTRL+C"),
+          Span::raw(" / "),
+          white("CTRL+D"),
+          Span::raw(" / "),
+          white("CTRL+Q"),
+          Span::raw(" quits the application"),
+        ]),
+        Line::from(vec![white("?"), Span::raw(" or "), white("F1"), Span::raw(" opens this help pane")]),
+      ];
+
+      let paragraph = Paragraph::new(log_lines)
+        .block(Block::default().title("✨️ Help ✨️").borders(Borders::ALL))
+        .style(Style::default())
+        .wrap(Wrap { trim: true });
+
       f.render_widget(Clear, popup);
-      f.render_widget(block, popup);
+      f.render_widget(paragraph, popup);
     }
   }
 }
@@ -446,26 +469,26 @@ impl Component for Home {
 /// helper function to create a centered rect using up certain percentage of the available rect `r`
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
   let popup_layout = Layout::default()
-      .direction(Direction::Vertical)
-      .constraints(
-          [
-              Constraint::Percentage((100 - percent_y) / 2),
-              Constraint::Percentage(percent_y),
-              Constraint::Percentage((100 - percent_y) / 2),
-          ]
-          .as_ref(),
-      )
-      .split(r);
+    .direction(Direction::Vertical)
+    .constraints(
+      [
+        Constraint::Percentage((100 - percent_y) / 2),
+        Constraint::Percentage(percent_y),
+        Constraint::Percentage((100 - percent_y) / 2),
+      ]
+      .as_ref(),
+    )
+    .split(r);
 
   Layout::default()
-      .direction(Direction::Horizontal)
-      .constraints(
-          [
-              Constraint::Percentage((100 - percent_x) / 2),
-              Constraint::Percentage(percent_x),
-              Constraint::Percentage((100 - percent_x) / 2),
-          ]
-          .as_ref(),
-      )
-      .split(popup_layout[1])[1]
+    .direction(Direction::Horizontal)
+    .constraints(
+      [
+        Constraint::Percentage((100 - percent_x) / 2),
+        Constraint::Percentage(percent_x),
+        Constraint::Percentage((100 - percent_x) / 2),
+      ]
+      .as_ref(),
+    )
+    .split(popup_layout[1])[1]
 }
