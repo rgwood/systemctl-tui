@@ -247,8 +247,13 @@ impl Component for Home {
 
           // if the search value changed, filter the list
           if prev_search_value != self.input.value() {
-            let matching =
-              self.all_units.iter().filter(|u| u.name.contains(&self.input.value())).cloned().collect_vec();
+            let search_value_lower = self.input.value().to_lowercase();
+            let matching = self
+              .all_units
+              .iter()
+              .filter(|u| u.name.to_lowercase().contains(&search_value_lower))
+              .cloned()
+              .collect_vec();
             self.set_filtered_units(matching);
           }
           Action::Update
