@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::{
@@ -29,7 +29,9 @@ impl App {
 
     self.home.lock().await.init(action_tx.clone())?;
 
-    let units = get_services().await?;
+    let units = get_services()
+      .await
+      .context("Unable to get services. Check that systemd is running and try running this tool with sudo.")?;
     self.home.lock().await.set_units(units);
 
     let mut terminal = TerminalHandler::new(self.home.clone());
