@@ -8,6 +8,7 @@ pub enum Action {
   ToggleShowLogger,
   EnterNormal,
   EnterSearch,
+  EnterActionMenu,
   ToggleHelp,
   SetLogs { unit_name: String, logs: String },
   ScrollUp(u16),
