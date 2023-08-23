@@ -1,5 +1,7 @@
 ## TODO
 
+- [ ] displey spinner while starting up service
+- [ ] handle/detect situation where you're not sudo so actions will fail
 - [ ] refresh logs on a timer
 - [ ] refresh services on a timer
 - [ ] unit files
