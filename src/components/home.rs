@@ -213,13 +213,15 @@ impl Component for Home {
       return Action::ToggleHelp;
     }
 
-    let increment = if key.modifiers.contains(KeyModifiers::SHIFT) { 10 } else { 1 };
+    // TODO: seems like terminals can't recognize shift or ctrl at the same time as page up/down
+    // Is there another way we could scroll in large increments?
     if matches!(key.code, KeyCode::PageDown) {
-      return Action::ScrollDown(increment);
+      return Action::ScrollDown(1);
     }
     if matches!(key.code, KeyCode::PageUp) {
-      return Action::ScrollUp(increment);
+      return Action::ScrollUp(1);
     }
+    // TODO: handle home/end keys
 
     match self.mode {
       Mode::Normal => {
@@ -239,7 +241,7 @@ impl Component for Home {
             Action::Update // is this right?
           },
           KeyCode::Char('/') => Action::EnterSearch,
-          KeyCode::Enter => Action::EnterActionMenu,
+          KeyCode::Enter | KeyCode::Char(' ') => Action::EnterActionMenu,
           _ => Action::Noop,
         }
       },
@@ -285,11 +287,11 @@ impl Component for Home {
           self.menu_items.previous();
           Action::Update
         },
-        KeyCode::Enter => match self.menu_items.selected() {
+        KeyCode::Enter | KeyCode::Char(' ') => match self.menu_items.selected() {
           Some(i) => i.action.clone(),
           None => Action::EnterNormal,
         },
-        _ => todo!(),
+        _ => Action::Noop,
       },
     }
   }
@@ -306,13 +308,13 @@ impl Component for Home {
       Action::EnterActionMenu => {
         // TODO: populate list of actions based on currently selected service?
         let selected = match self.filtered_units.selected() {
-          Some(s) => s,
+          Some(s) => s.name.clone(),
           None => return None,
         };
 
         // TODO: use current status to determine which actions are available?
         let menu_items = vec![
-          MenuItem::new("Start", Action::EnterNormal),
+          MenuItem::new("Start", Action::StartService(selected)),
           MenuItem::new("Stop", Action::EnterNormal),
           MenuItem::new("Restart", Action::EnterNormal),
           MenuItem::new("Reload", Action::EnterNormal),

@@ -11,6 +11,7 @@ pub enum Action {
   EnterActionMenu,
   ToggleHelp,
   SetLogs { unit_name: String, logs: String },
+  StartService(String),
   ScrollUp(u16),
   ScrollDown(u16),
   Update,
