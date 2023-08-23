@@ -20,6 +20,7 @@ pub enum Mode {
   #[default]
   Search,
   Help,
+  ActionMenu,
 }
 
 #[derive(Default)]
@@ -32,8 +33,20 @@ pub struct Home {
   pub logs_scroll_offset: u16,
   pub mode: Mode,
   pub input: Input,
+  pub menu_items: StatefulList<MenuItem>,
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
   pub journalctl_tx: Option<std::sync::mpsc::Sender<String>>,
+}
+
+pub struct MenuItem {
+  pub name: String,
+  pub action: Action,
+}
+
+impl MenuItem {
+  pub fn new(name: &str, action: Action) -> Self {
+    Self { name: name.to_owned(), action }
+  }
 }
 
 pub struct StatefulList<T> {
@@ -41,7 +54,7 @@ pub struct StatefulList<T> {
   items: Vec<T>,
 }
 
-impl Default for StatefulList<UnitStatus> {
+impl<T> Default for StatefulList<T> {
   fn default() -> Self {
     Self::with_items(vec![])
   }
@@ -209,11 +222,9 @@ impl Component for Home {
     }
 
     match self.mode {
-      Mode::Normal | Mode::Help => {
+      Mode::Normal => {
         match key.code {
-          KeyCode::Esc | KeyCode::Enter => Action::EnterNormal,
           KeyCode::Char('q') => Action::Quit,
-
           KeyCode::Up => {
             // if we're filtering the list, and we're at the top, and there's text in the search box, go to search mode
             if self.filtered_units.state.selected() == Some(0) {
@@ -228,8 +239,13 @@ impl Component for Home {
             Action::Update // is this right?
           },
           KeyCode::Char('/') => Action::EnterSearch,
+          KeyCode::Enter => Action::EnterActionMenu,
           _ => Action::Noop,
         }
+      },
+      Mode::Help => match key.code {
+        KeyCode::Esc | KeyCode::Enter => Action::EnterNormal,
+        _ => Action::Noop,
       },
       Mode::Search => match key.code {
         KeyCode::Esc | KeyCode::Enter => Action::EnterNormal,
@@ -259,6 +275,22 @@ impl Component for Home {
           Action::Update
         },
       },
+      Mode::ActionMenu => match key.code {
+        KeyCode::Esc => Action::EnterNormal,
+        KeyCode::Down => {
+          self.menu_items.next();
+          Action::Update
+        },
+        KeyCode::Up => {
+          self.menu_items.previous();
+          Action::Update
+        },
+        KeyCode::Enter => match self.menu_items.selected() {
+          Some(i) => i.action.clone(),
+          None => Action::EnterNormal,
+        },
+        _ => todo!(),
+      },
     }
   }
 
@@ -270,6 +302,27 @@ impl Component for Home {
       },
       Action::EnterSearch => {
         self.mode = Mode::Search;
+      },
+      Action::EnterActionMenu => {
+        // TODO: populate list of actions based on currently selected service?
+        let selected = match self.filtered_units.selected() {
+          Some(s) => s,
+          None => return None,
+        };
+
+        // TODO: use current status to determine which actions are available?
+        let menu_items = vec![
+          MenuItem::new("Start", Action::EnterNormal),
+          MenuItem::new("Stop", Action::EnterNormal),
+          MenuItem::new("Restart", Action::EnterNormal),
+          MenuItem::new("Reload", Action::EnterNormal),
+          MenuItem::new("Enable", Action::EnterNormal),
+          MenuItem::new("Disable", Action::EnterNormal),
+        ];
+
+        self.menu_items = StatefulList::with_items(menu_items);
+        self.menu_items.state.select(Some(0));
+        self.mode = Mode::ActionMenu;
       },
       Action::ToggleHelp => {
         if self.mode != Mode::Help {
@@ -336,7 +389,7 @@ impl Component for Home {
 
     let chunks = Layout::default()
       .direction(Direction::Horizontal)
-      .constraints([Constraint::Min(40), Constraint::Percentage(100)].as_ref())
+      .constraints([Constraint::Min(30), Constraint::Percentage(100)].as_ref())
       .split(main_panel);
     let right_panel = chunks[1];
 
@@ -375,20 +428,21 @@ impl Component for Home {
 
       let load_color = match i.load_state.as_str() {
         "loaded" => Color::Green,
+        "not-found" => Color::Yellow,
         "error" => Color::Red,
-        _ => Color::Black,
+        _ => Color::White,
       };
 
       let active_color = match i.active_state.as_str() {
         "active" => Color::Green,
         "inactive" => Color::Red,
-        _ => Color::Black,
+        _ => Color::White,
       };
 
       let sub_color = match i.sub_state.as_str() {
         "running" => Color::Green,
-        "exited" => Color::Red,
-        _ => Color::Black,
+        "exited" | "dead" => Color::Red,
+        _ => Color::White,
       };
 
       let lines = vec![
@@ -508,6 +562,24 @@ impl Component for Home {
 
       f.render_widget(Clear, popup);
       f.render_widget(paragraph, popup);
+    }
+
+    if self.mode == Mode::ActionMenu {
+      // TODO: this should probably be a fixed size
+      let popup = centered_rect(50, 20, f.size());
+
+      let items: Vec<ListItem> = self.menu_items.items.iter().map(|i| ListItem::new(i.name.as_str())).collect();
+      let items = List::new(items)
+        .block(
+          Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightGreen))
+            .title(format!("Actions for {}", self.filtered_units.selected().unwrap().name)),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
+
+      f.render_widget(Clear, popup);
+      f.render_stateful_widget(items, popup, &mut self.menu_items.state);
     }
   }
 }

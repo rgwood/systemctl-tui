@@ -56,6 +56,7 @@ impl EventHandler {
                       event_tx.send(Event::Key(key)).unwrap();
                     }
                   },
+                  // interestingly, we never get these if running in dev mode with watchexec
                   CrosstermEvent::Resize(x, y) => {
                     event_tx.send(Event::Resize(x, y)).unwrap();
                   },
