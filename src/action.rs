@@ -14,6 +14,8 @@ pub enum Action {
   StartService(String),
   ScrollUp(u16),
   ScrollDown(u16),
+  ScrollToTop,
+  ScrollToBottom,
   Update,
   Noop,
 }

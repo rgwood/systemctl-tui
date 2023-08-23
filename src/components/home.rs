@@ -215,13 +215,13 @@ impl Component for Home {
 
     // TODO: seems like terminals can't recognize shift or ctrl at the same time as page up/down
     // Is there another way we could scroll in large increments?
-    if matches!(key.code, KeyCode::PageDown) {
-      return Action::ScrollDown(1);
+    match key.code {
+      KeyCode::PageDown => return Action::ScrollDown(1),
+      KeyCode::PageUp => return Action::ScrollUp(1),
+      KeyCode::Home => return Action::ScrollToTop,
+      KeyCode::End => return Action::ScrollToBottom,
+      _ => (),
     }
-    if matches!(key.code, KeyCode::PageUp) {
-      return Action::ScrollUp(1);
-    }
-    // TODO: handle home/end keys
 
     match self.mode {
       Mode::Normal => {
@@ -351,6 +351,16 @@ impl Component for Home {
       Action::ScrollDown(offset) => {
         self.logs_scroll_offset = self.logs_scroll_offset.saturating_add(offset);
         info!("scroll offset: {}", self.logs_scroll_offset);
+      },
+      Action::ScrollToTop => {
+        self.logs_scroll_offset = 0;
+      },
+      Action::ScrollToBottom => {
+        // TODO: this is partially broken, figure out a better way to scroll to end
+        // problem: we don't actually know the height of the paragraph before it's rendered
+        // because it's wrapped based on the width of the widget
+        // A proper fix might need to wait until ratatui improves scrolling: https://github.com/ratatui-org/ratatui/issues/174
+        self.logs_scroll_offset = self.logs.len() as u16;
       },
       _ => (),
     }
