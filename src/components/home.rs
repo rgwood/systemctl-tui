@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use duct::cmd;
 use itertools::Itertools;
@@ -20,8 +18,7 @@ use crate::{
   systemd::{self, UnitStatus},
 };
 
-// #[derive(Default, Clone, )]
-#[derive(Default, Clone, PartialEq)]
+#[derive(Default, Copy, Clone, PartialEq)]
 pub enum Mode {
   Normal,
   #[default]
@@ -381,13 +378,13 @@ impl Component for Home {
       },
       Action::StartService(service_name) => {
         let tx = self.action_tx.clone().unwrap();
+        let cancel_token = CancellationToken::new();
+        self.cancel_token = Some(cancel_token.clone());
 
         tokio::spawn(async move {
           tx.send(Action::EnterProcessing).unwrap();
           // TODO actually start the service
-          let cancel_token = CancellationToken::new();
-          tx.send(Action::SetCancellationToken(cancel_token.clone())).unwrap();
-          match systemd::sleep_test(cancel_token.clone()).await {
+          match systemd::sleep_test(cancel_token).await {
             Ok(_) => info!("Sleep test completed successfully"),
             Err(_) => warn!("Sleep test was cancelled"),
           }
@@ -399,9 +396,6 @@ impl Component for Home {
           cancel_token.cancel();
         }
         self.mode = Mode::Normal;
-      },
-      Action::SetCancellationToken(cancel_token) => {
-        self.cancel_token = Some(cancel_token);
       },
       _ => (),
     }

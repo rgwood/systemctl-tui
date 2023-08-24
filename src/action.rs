@@ -1,6 +1,5 @@
-use tokio_util::sync::CancellationToken;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
   Quit,
   Resume,
@@ -12,7 +11,6 @@ pub enum Action {
   EnterSearch,
   EnterActionMenu,
   EnterProcessing,
-  SetCancellationToken(CancellationToken),
   CancelTask,
   ToggleHelp,
   SetLogs { unit_name: String, logs: String },
