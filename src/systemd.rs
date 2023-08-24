@@ -92,11 +92,9 @@ pub async fn sleep_test(cancel_token: CancellationToken) -> Result<()> {
   tokio::select! {
       _ = cancel_token.cancelled() => {
           // The token was cancelled
-          info!("cancelled!!!");
           anyhow::bail!("cancelled");
       }
-      _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-          info!("slept");
+      _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
           Ok(())
       }
   }
