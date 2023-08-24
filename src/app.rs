@@ -39,7 +39,7 @@ impl App {
 
     loop {
       if let Some(action) = action_rx.recv().await {
-        if action != Action::RenderTick {
+        if !matches!(action, Action::RenderTick) {
           // re-enable this to debug actions
           // crate::trace_dbg!(&action);
         }

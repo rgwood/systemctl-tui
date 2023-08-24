@@ -1,6 +1,7 @@
 // File taken from https://github.com/servicer-labs/servicer/blob/master/src/utils/systemd.rs and modified
 
 use anyhow::Result;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 use zbus::Connection;
 use zbus::{dbus_proxy, zvariant};
@@ -74,6 +75,31 @@ pub async fn get_services() -> Result<Vec<UnitStatus>> {
   info!("Loaded systemd services in {:?}", start.elapsed());
 
   Ok(units)
+}
+
+// TODO: add a cancellation token to this
+pub async fn start_service(service_name: &str) -> Result<()> {
+  let connection = Connection::system().await?;
+  let manager_proxy = ManagerProxy::new(&connection).await?;
+  // TODO: is replace the right mode?
+  manager_proxy.start_unit(service_name.into(), "replace".into()).await?;
+  Ok(())
+}
+
+// useless function only added to test that cancellation works
+pub async fn sleep_test(cancel_token: CancellationToken) -> Result<()> {
+  // god these select macros are ugly, is there really no better way to select?
+  tokio::select! {
+      _ = cancel_token.cancelled() => {
+          // The token was cancelled
+          info!("cancelled!!!");
+          anyhow::bail!("cancelled");
+      }
+      _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+          info!("slept");
+          Ok(())
+      }
+  }
 }
 
 /// Proxy object for `org.freedesktop.systemd1.Manager`.

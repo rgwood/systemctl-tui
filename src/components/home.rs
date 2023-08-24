@@ -10,13 +10,18 @@ use ratatui::{
   widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use super::{logger::Logger, Component, Frame};
-use crate::{action::Action, systemd::UnitStatus};
+use crate::{
+  action::Action,
+  systemd::{self, UnitStatus},
+};
 
-#[derive(Default, Copy, Clone, PartialEq, Eq)]
+// #[derive(Default, Clone, )]
+#[derive(Default, Clone, PartialEq)]
 pub enum Mode {
   Normal,
   #[default]
@@ -37,6 +42,7 @@ pub struct Home {
   pub mode: Mode,
   pub input: Input,
   pub menu_items: StatefulList<MenuItem>,
+  pub cancel_token: Option<CancellationToken>,
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
   pub journalctl_tx: Option<std::sync::mpsc::Sender<String>>,
 }
@@ -297,7 +303,10 @@ impl Component for Home {
         _ => Action::Noop,
       },
       // TODO: handle cancellation?
-      Mode::Processing => Action::Noop,
+      Mode::Processing => match key.code {
+        KeyCode::Esc => Action::CancelTask,
+        _ => Action::Noop,
+      },
     }
   }
 
@@ -372,12 +381,27 @@ impl Component for Home {
       },
       Action::StartService(service_name) => {
         let tx = self.action_tx.clone().unwrap();
+
         tokio::spawn(async move {
           tx.send(Action::EnterProcessing).unwrap();
           // TODO actually start the service
-          tokio::time::sleep(Duration::from_secs(2)).await;
+          let cancel_token = CancellationToken::new();
+          tx.send(Action::SetCancellationToken(cancel_token.clone())).unwrap();
+          match systemd::sleep_test(cancel_token.clone()).await {
+            Ok(_) => info!("Sleep test completed successfully"),
+            Err(_) => warn!("Sleep test was cancelled"),
+          }
           tx.send(Action::EnterNormal).unwrap();
         });
+      },
+      Action::CancelTask => {
+        if let Some(cancel_token) = self.cancel_token.take() {
+          cancel_token.cancel();
+        }
+        self.mode = Mode::Normal;
+      },
+      Action::SetCancellationToken(cancel_token) => {
+        self.cancel_token = Some(cancel_token);
       },
       _ => (),
     }
