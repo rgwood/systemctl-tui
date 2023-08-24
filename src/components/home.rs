@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use duct::cmd;
 use itertools::Itertools;
@@ -21,6 +23,7 @@ pub enum Mode {
   Search,
   Help,
   ActionMenu,
+  Processing,
 }
 
 #[derive(Default)]
@@ -293,6 +296,8 @@ impl Component for Home {
         },
         _ => Action::Noop,
       },
+      // TODO: handle cancellation?
+      Mode::Processing => Action::Noop,
     }
   }
 
@@ -304,6 +309,9 @@ impl Component for Home {
       },
       Action::EnterSearch => {
         self.mode = Mode::Search;
+      },
+      Action::EnterProcessing => {
+        self.mode = Mode::Processing;
       },
       Action::EnterActionMenu => {
         // TODO: populate list of actions based on currently selected service?
@@ -361,6 +369,15 @@ impl Component for Home {
         // because it's wrapped based on the width of the widget
         // A proper fix might need to wait until ratatui improves scrolling: https://github.com/ratatui-org/ratatui/issues/174
         self.logs_scroll_offset = self.logs.len() as u16;
+      },
+      Action::StartService(service_name) => {
+        let tx = self.action_tx.clone().unwrap();
+        tokio::spawn(async move {
+          tx.send(Action::EnterProcessing).unwrap();
+          // TODO actually start the service
+          tokio::time::sleep(Duration::from_secs(2)).await;
+          tx.send(Action::EnterNormal).unwrap();
+        });
       },
       _ => (),
     }
@@ -592,6 +609,20 @@ impl Component for Home {
 
       f.render_widget(Clear, popup);
       f.render_stateful_widget(items, popup, &mut self.menu_items.state);
+    }
+
+    if self.mode == Mode::Processing {
+      // TODO: this should be a fixed size
+      let popup = centered_rect(50, 20, f.size());
+
+      // TODO: make this a spinner
+      let paragraph = Paragraph::new(vec![Line::from("Processing...")])
+        .block(Block::default().title("Processing").borders(Borders::ALL))
+        .style(Style::default())
+        .wrap(Wrap { trim: true });
+
+      f.render_widget(Clear, popup);
+      f.render_widget(paragraph, popup);
     }
   }
 }

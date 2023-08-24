@@ -9,6 +9,7 @@ pub enum Action {
   EnterNormal,
   EnterSearch,
   EnterActionMenu,
+  EnterProcessing,
   ToggleHelp,
   SetLogs { unit_name: String, logs: String },
   StartService(String),
