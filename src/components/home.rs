@@ -9,7 +9,7 @@ use ratatui::{
 };
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{info, warn, error};
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use super::{logger::Logger, Component, Frame};
@@ -271,6 +271,7 @@ impl Component for Home {
           self.input.handle_event(&crossterm::event::Event::Key(key));
 
           // if the search value changed, filter the list
+          // TODO: use fuzzy find
           if prev_search_value != self.input.value() {
             let search_value_lower = self.input.value().to_lowercase();
             let matching = self
@@ -385,9 +386,11 @@ impl Component for Home {
         tokio::spawn(async move {
           tx.send(Action::EnterProcessing).unwrap();
           // TODO actually start the service
-          match systemd::sleep_test(cancel_token).await {
-            Ok(_) => info!("Sleep test completed successfully"),
-            Err(_) => warn!("Sleep test was cancelled"),
+          match systemd::start_service(&service_name, cancel_token.clone()).await {
+            Ok(_) => info!("Start service completed successfully"),
+            // would be nicer to check the error type here, but this is easier
+            Err(_) if cancel_token.is_cancelled() => warn!("Start service was cancelled"),
+            Err(e) => error!("Start service failed: {}", e),
           }
           tx.send(Action::EnterNormal).unwrap();
         });
