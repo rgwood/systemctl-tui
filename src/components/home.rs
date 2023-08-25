@@ -20,8 +20,8 @@ use crate::{
 
 #[derive(Default, Copy, Clone, PartialEq)]
 pub enum Mode {
-  Normal,
   #[default]
+  Normal,
   Search,
   Help,
   ActionMenu,
