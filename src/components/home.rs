@@ -356,10 +356,11 @@ impl Component for Home {
         let menu_items = vec![
           MenuItem::new("Start", Action::StartService(selected.clone())),
           MenuItem::new("Stop", Action::StopService(selected.clone())),
-          MenuItem::new("Restart", Action::RestartService(selected.clone())),
-          MenuItem::new("Reload", Action::ReloadService(selected.clone())),
-          MenuItem::new("Enable", Action::EnableService(selected.clone())),
-          MenuItem::new("Disable", Action::DisableService(selected.clone())),
+          // TODO add these
+          // MenuItem::new("Restart", Action::RestartService(selected.clone())),
+          // MenuItem::new("Reload", Action::ReloadService(selected.clone())),
+          // MenuItem::new("Enable", Action::EnableService(selected.clone())),
+          // MenuItem::new("Disable", Action::DisableService(selected.clone())),
         ];
 
         self.menu_items = StatefulList::with_items(menu_items);
