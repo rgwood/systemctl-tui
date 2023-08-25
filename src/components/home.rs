@@ -256,7 +256,8 @@ impl Component for Home {
         _ => Action::Noop,
       },
       Mode::Search => match key.code {
-        KeyCode::Esc | KeyCode::Enter => Action::EnterNormal,
+        KeyCode::Esc => Action::EnterNormal,
+        KeyCode::Enter => Action::EnterActionMenu,
         KeyCode::Down | KeyCode::Tab => {
           self.next();
           Action::EnterNormal
