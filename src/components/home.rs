@@ -529,7 +529,7 @@ impl Component for Home {
       .collect_vec();
 
     let paragraph = Paragraph::new(log_lines)
-      .block(Block::default().title("Logs").borders(Borders::ALL))
+      .block(Block::default().title("Service Logs").borders(Borders::ALL))
       .style(Style::default())
       .wrap(Wrap { trim: true })
       .scroll((self.logs_scroll_offset, 0));
@@ -595,6 +595,7 @@ impl Component for Home {
           Span::raw(" quits the application"),
         ]),
         Line::from(vec![white("PageUp"), Span::raw(" / "), white("PageDown"), Span::raw(" scrolls the logs")]),
+        Line::from(vec![white("Home"), Span::raw(" + "), white("End"), Span::raw(" scroll to top/bottom")]),
         Line::from(vec![white("?"), Span::raw(" or "), white("F1"), Span::raw(" opens this help pane")]),
       ];
 
@@ -611,9 +612,18 @@ impl Component for Home {
       f.render_widget(paragraph, popup);
     }
 
+    let selected_item = match self.filtered_units.selected() {
+      Some(s) => s,
+      None => return,
+    };
+
+    let min_width = selected_item.name.len() as u16 + 14;
+    let desired_width = min_width + 4; // idk, looks alright
+    let popup_width = desired_width.min(f.size().width);
+
     if self.mode == Mode::ActionMenu {
-      // TODO: this should probably be a fixed size
-      let popup = centered_rect(50, 20, f.size());
+      let height = self.menu_items.items.len() as u16 + 2;
+      let popup = centered_rect_abs(popup_width, height, f.size());
 
       let items: Vec<ListItem> = self.menu_items.items.iter().map(|i| ListItem::new(i.name.as_str())).collect();
       let items = List::new(items)
@@ -630,12 +640,17 @@ impl Component for Home {
     }
 
     if self.mode == Mode::Processing {
-      // TODO: this should be a fixed size
-      let popup = centered_rect(50, 20, f.size());
+      let height = self.menu_items.items.len() as u16 + 2;
+      let popup = centered_rect_abs(popup_width, height, f.size());
 
       // TODO: make this a spinner
       let paragraph = Paragraph::new(vec![Line::from("Processing...")])
-        .block(Block::default().title("Processing").borders(Borders::ALL))
+        .block(
+          Block::default()
+            .title("Processing")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightGreen)),
+        )
         .style(Style::default())
         .wrap(Wrap { trim: true });
 
@@ -670,4 +685,11 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
       .as_ref(),
     )
     .split(popup_layout[1])[1]
+}
+
+fn centered_rect_abs(width: u16, height: u16, r: Rect) -> Rect {
+  let offset_x = (r.width - width) / 2;
+  let offset_y = (r.height - height) / 2;
+  let r = Rect::new(offset_x, offset_y, width, height);
+  r
 }

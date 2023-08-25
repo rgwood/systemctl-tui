@@ -24,7 +24,7 @@ impl Component for Logger {
 
   fn render(&mut self, f: &mut Frame<'_>, rect: Rect) {
     let w = TuiLoggerWidget::default()
-      .block(Block::default().title("Log").borders(Borders::ALL))
+      .block(Block::default().title(" 📝 systemctl-tui logs").borders(Borders::ALL))
       .style_error(Style::default().fg(Color::Red))
       .style_debug(Style::default().fg(Color::Green))
       .style_warn(Style::default().fg(Color::Yellow))
