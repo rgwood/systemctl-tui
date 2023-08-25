@@ -9,7 +9,7 @@ use ratatui::{
 };
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use super::{logger::Logger, Component, Frame};
@@ -109,6 +109,10 @@ impl<T> StatefulList<T> {
     self.state.select(Some(i));
   }
 
+  fn select(&mut self, index: Option<usize>) {
+    self.state.select(index);
+  }
+
   fn unselect(&mut self) {
     self.state.select(None);
   }
@@ -120,22 +124,9 @@ impl Home {
   }
 
   pub fn set_units(&mut self, units: Vec<UnitStatus>) {
+    let previously_selected = self.selected_service();
     self.all_units = units.clone();
-    self.filtered_units = StatefulList::with_items(units);
-
-    if self.filtered_units.items.len() > 0 {
-      // select the first item automatically
-      self.next();
-    }
-  }
-
-  pub fn set_filtered_units(&mut self, units: Vec<UnitStatus>) {
-    self.filtered_units = StatefulList::with_items(units);
-
-    // if self.filtered_units.items.len() > 0 {
-    // select the first item automatically
-    self.next();
-    // }
+    self.filter_statuses(previously_selected);
   }
 
   pub fn next(&mut self) {
@@ -152,9 +143,20 @@ impl Home {
     self.logs_scroll_offset = 0;
   }
 
+  pub fn select(&mut self, index: Option<usize>) {
+    self.logs = vec![];
+    self.filtered_units.select(index);
+    self.get_logs();
+    self.logs_scroll_offset = 0;
+  }
+
   pub fn unselect(&mut self) {
     self.logs = vec![];
     self.filtered_units.unselect();
+  }
+
+  pub fn selected_service(&self) -> Option<String> {
+    self.filtered_units.selected().map(|u| u.name.clone())
   }
 
   pub fn get_logs(&mut self) {
@@ -166,6 +168,28 @@ impl Home {
     } else {
       self.logs = vec![];
     }
+  }
+
+  fn filter_statuses(&mut self, previously_selected: Option<String>) {
+    let search_value_lower = self.input.value().to_lowercase();
+    // TODO: use fuzzy find
+    let matching =
+      self.all_units.iter().filter(|u| u.name.to_lowercase().contains(&search_value_lower)).cloned().collect_vec();
+    self.filtered_units = StatefulList::with_items(matching);
+
+    // try to select the same item we had selected before
+    if let Some(previously_selected) = previously_selected {
+      let index = self.filtered_units.items.iter().position(|u| u.name == previously_selected).unwrap_or(0);
+      self.select(Some(index));
+    } else {
+      // if we can't, select the first item in the list
+      if self.filtered_units.items.len() > 0 {
+        self.select(Some(0));
+      } else {
+        self.unselect();
+      }
+    }
+
   }
 }
 
@@ -271,16 +295,9 @@ impl Component for Home {
           self.input.handle_event(&crossterm::event::Event::Key(key));
 
           // if the search value changed, filter the list
-          // TODO: use fuzzy find
           if prev_search_value != self.input.value() {
-            let search_value_lower = self.input.value().to_lowercase();
-            let matching = self
-              .all_units
-              .iter()
-              .filter(|u| u.name.to_lowercase().contains(&search_value_lower))
-              .cloned()
-              .collect_vec();
-            self.set_filtered_units(matching);
+            let previously_selected = self.selected_service();
+            self.filter_statuses(previously_selected);
           }
           Action::Update
         },
@@ -330,12 +347,12 @@ impl Component for Home {
 
         // TODO: use current status to determine which actions are available?
         let menu_items = vec![
-          MenuItem::new("Start", Action::StartService(selected)),
-          MenuItem::new("Stop", Action::EnterNormal),
-          MenuItem::new("Restart", Action::EnterNormal),
-          MenuItem::new("Reload", Action::EnterNormal),
-          MenuItem::new("Enable", Action::EnterNormal),
-          MenuItem::new("Disable", Action::EnterNormal),
+          MenuItem::new("Start", Action::StartService(selected.clone())),
+          MenuItem::new("Stop", Action::StopService(selected.clone())),
+          MenuItem::new("Restart", Action::RestartService(selected.clone())),
+          MenuItem::new("Reload", Action::ReloadService(selected.clone())),
+          MenuItem::new("Enable", Action::EnableService(selected.clone())),
+          MenuItem::new("Disable", Action::DisableService(selected.clone())),
         ];
 
         self.menu_items = StatefulList::with_items(menu_items);
@@ -378,6 +395,7 @@ impl Component for Home {
         // A proper fix might need to wait until ratatui improves scrolling: https://github.com/ratatui-org/ratatui/issues/174
         self.logs_scroll_offset = self.logs.len() as u16;
       },
+      // TODO: generalize this over multiple services
       Action::StartService(service_name) => {
         let tx = self.action_tx.clone().unwrap();
         let cancel_token = CancellationToken::new();
@@ -385,15 +403,44 @@ impl Component for Home {
 
         tokio::spawn(async move {
           tx.send(Action::EnterProcessing).unwrap();
-          // TODO actually start the service
           match systemd::start_service(&service_name, cancel_token.clone()).await {
-            Ok(_) => info!("Start service completed successfully"),
+            Ok(_) => info!("Started service successfully"),
             // would be nicer to check the error type here, but this is easier
             Err(_) if cancel_token.is_cancelled() => warn!("Start service was cancelled"),
             Err(e) => error!("Start service failed: {}", e),
           }
+          tx.send(Action::RefreshServices).unwrap();
+        });
+      },
+      Action::StopService(service_name) => {
+        let tx = self.action_tx.clone().unwrap();
+        let cancel_token = CancellationToken::new();
+        self.cancel_token = Some(cancel_token.clone());
+
+        tokio::spawn(async move {
+          tx.send(Action::EnterProcessing).unwrap();
+          match systemd::stop_service(&service_name, cancel_token.clone()).await {
+            Ok(_) => info!("Service stopped successfully"),
+            // would be nicer to check the error type here, but this is easier
+            Err(_) if cancel_token.is_cancelled() => warn!("Stop service was cancelled"),
+            Err(e) => error!("Stop service failed: {}", e),
+          }
+          tx.send(Action::RefreshServices).unwrap();
+        });
+      },
+      Action::RefreshServices => {
+        let tx = self.action_tx.clone().unwrap();
+        tokio::spawn(async move {
+          let units = systemd::get_services()
+            .await
+            .expect("Failed to get services. Check that systemd is running and try running this tool with sudo.");
+          tx.send(Action::SetServices(units)).unwrap();
           tx.send(Action::EnterNormal).unwrap();
         });
+      },
+      Action::SetServices(units) => {
+        self.set_units(units);
+        // self.filter_statuses();
       },
       Action::CancelTask => {
         if let Some(cancel_token) = self.cancel_token.take() {
