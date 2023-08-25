@@ -77,8 +77,13 @@ pub async fn get_services() -> Result<Vec<UnitStatus>> {
   Ok(units)
 }
 
-// TODO: add a cancellation token to this
 pub async fn start_service(service_name: &str, cancel_token: CancellationToken) -> Result<()> {
+  async fn start_service(service_name: &str) -> Result<()> {
+    let connection = Connection::system().await?;
+    let manager_proxy = ManagerProxy::new(&connection).await?;
+    manager_proxy.start_unit(service_name.into(), "replace".into()).await?;
+    Ok(())
+  }
 
   // god these select macros are ugly, is there really no better way to select?
   tokio::select! {
@@ -86,18 +91,30 @@ pub async fn start_service(service_name: &str, cancel_token: CancellationToken) 
         // The token was cancelled
         anyhow::bail!("cancelled");
     }
-    result = start_service_no_cancel(service_name) => {
+    result = start_service(service_name) => {
         result
     }
   }
-
 }
 
-async fn start_service_no_cancel(service_name: &str) -> Result<(), anyhow::Error> {
+pub async fn stop_service(service_name: &str, cancel_token: CancellationToken) -> Result<()> {
+  async fn stop_service(service_name: &str) -> Result<()> {
     let connection = Connection::system().await?;
     let manager_proxy = ManagerProxy::new(&connection).await?;
-    manager_proxy.start_unit(service_name.into(), "replace".into()).await?;
+    manager_proxy.stop_unit(service_name.into(), "replace".into()).await?;
     Ok(())
+  }
+
+  // god these select macros are ugly, is there really no better way to select?
+  tokio::select! {
+    _ = cancel_token.cancelled() => {
+        // The token was cancelled
+        anyhow::bail!("cancelled");
+    }
+    result = stop_service(service_name) => {
+        result
+    }
+  }
 }
 
 // useless function only added to test that cancellation works
