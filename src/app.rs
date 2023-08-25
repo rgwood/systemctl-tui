@@ -11,8 +11,10 @@ use crate::{
   terminal::TerminalHandler,
 };
 
+
+
 pub struct App {
-  pub tick_rate: u64,
+  pub tick_rate_ms: u64,
   pub home: Arc<Mutex<Home>>,
   pub should_quit: bool,
   pub should_suspend: bool,
@@ -21,7 +23,7 @@ pub struct App {
 impl App {
   pub fn new(tick_rate: u64) -> Result<Self> {
     let home = Arc::new(Mutex::new(Home::new()));
-    Ok(Self { tick_rate, home, should_quit: false, should_suspend: false })
+    Ok(Self { tick_rate_ms: tick_rate, home, should_quit: false, should_suspend: false })
   }
 
   pub async fn run(&mut self) -> Result<()> {
@@ -35,7 +37,7 @@ impl App {
     self.home.lock().await.set_units(units);
 
     let mut terminal = TerminalHandler::new(self.home.clone());
-    let mut event = EventHandler::new(self.tick_rate, self.home.clone(), action_tx.clone());
+    let mut event = EventHandler::new(self.tick_rate_ms, self.home.clone(), action_tx.clone());
 
     loop {
       if let Some(action) = action_rx.recv().await {
@@ -64,7 +66,7 @@ impl App {
         terminal.task.await?;
         event.task.await?;
         terminal = TerminalHandler::new(self.home.clone());
-        event = EventHandler::new(self.tick_rate, self.home.clone(), action_tx.clone());
+        event = EventHandler::new(self.tick_rate_ms, self.home.clone(), action_tx.clone());
         action_tx.send(Action::Resume)?;
         action_tx.send(Action::RenderTick)?;
       } else if self.should_quit {

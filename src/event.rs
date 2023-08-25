@@ -19,6 +19,7 @@ pub enum Event {
   Error,
   Closed,
   RenderTick,
+  RefreshTick,
   Key(KeyEvent),
   Mouse(MouseEvent),
   Resize(u16, u16),
@@ -30,18 +31,21 @@ pub struct EventHandler {
 }
 
 impl EventHandler {
-  pub fn new(tick_rate: u64, home: Arc<Mutex<Home>>, action_tx: mpsc::UnboundedSender<Action>) -> Self {
+  pub fn new(tick_rate_ms: u64, home: Arc<Mutex<Home>>, action_tx: mpsc::UnboundedSender<Action>) -> Self {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-    let render_tick_rate = std::time::Duration::from_millis(tick_rate);
+    let render_tick_rate = std::time::Duration::from_millis(tick_rate_ms);
 
     let cancellation_token = CancellationToken::new();
     let _cancellation_token = cancellation_token.clone();
     let task = tokio::spawn(async move {
       let mut reader = crossterm::event::EventStream::new();
       let mut render_interval = tokio::time::interval(render_tick_rate);
+      // TODO: do this on a different interval than render
+      let mut refresh_interval = tokio::time::interval(render_tick_rate * 3);
       loop {
         let render_delay = render_interval.tick();
+        let refresh_delay = refresh_interval.tick();
         let crossterm_event = reader.next().fuse();
         tokio::select! {
           _ = _cancellation_token.cancelled() => {
@@ -71,6 +75,9 @@ impl EventHandler {
           },
           _ = render_delay => {
               event_tx.send(Event::RenderTick).unwrap();
+          },
+          _ = refresh_delay => {
+            event_tx.send(Event::RefreshTick).unwrap();
           },
           event = event_rx.recv() => {
             let action = home.lock().await.handle_events(event);

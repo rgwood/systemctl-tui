@@ -143,11 +143,15 @@ impl Home {
     self.logs_scroll_offset = 0;
   }
 
-  pub fn select(&mut self, index: Option<usize>) {
-    self.logs = vec![];
+  pub fn select(&mut self, index: Option<usize>, refresh_logs: bool) {
+    if refresh_logs {
+      self.logs = vec![];
+    }
     self.filtered_units.select(index);
-    self.get_logs();
-    self.logs_scroll_offset = 0;
+    if refresh_logs {
+      self.get_logs();
+      self.logs_scroll_offset = 0;
+    }
   }
 
   pub fn unselect(&mut self) {
@@ -178,18 +182,21 @@ impl Home {
     self.filtered_units = StatefulList::with_items(matching);
 
     // try to select the same item we had selected before
+    // TODO: this is horrible, clean it up
     if let Some(previously_selected) = previously_selected {
-      let index = self.filtered_units.items.iter().position(|u| u.name == previously_selected).unwrap_or(0);
-      self.select(Some(index));
+      if let Some(index) = self.filtered_units.items.iter().position(|u| u.name == previously_selected) {
+        self.select(Some(index), false);
+      } else {
+        self.select(Some(0), true);
+      }
     } else {
       // if we can't, select the first item in the list
       if self.filtered_units.items.len() > 0 {
-        self.select(Some(0));
+        self.select(Some(0), true);
       } else {
         self.unselect();
       }
     }
-
   }
 }
 
@@ -410,6 +417,7 @@ impl Component for Home {
             Err(e) => error!("Start service failed: {}", e),
           }
           tx.send(Action::RefreshServices).unwrap();
+          tx.send(Action::EnterNormal).unwrap();
         });
       },
       Action::StopService(service_name) => {
@@ -426,21 +434,25 @@ impl Component for Home {
             Err(e) => error!("Stop service failed: {}", e),
           }
           tx.send(Action::RefreshServices).unwrap();
+          tx.send(Action::EnterNormal).unwrap();
         });
       },
       Action::RefreshServices => {
         let tx = self.action_tx.clone().unwrap();
+
+        if let Some(selected_service) = self.selected_service() {
+          self.journalctl_tx.clone().unwrap().send(selected_service).unwrap();
+        }
+
         tokio::spawn(async move {
           let units = systemd::get_services()
             .await
             .expect("Failed to get services. Check that systemd is running and try running this tool with sudo.");
           tx.send(Action::SetServices(units)).unwrap();
-          tx.send(Action::EnterNormal).unwrap();
         });
       },
       Action::SetServices(units) => {
         self.set_units(units);
-        // self.filter_statuses();
       },
       Action::CancelTask => {
         if let Some(cancel_token) = self.cancel_token.take() {

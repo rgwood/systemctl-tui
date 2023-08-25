@@ -1,13 +1,13 @@
 ## TODO
 
 - [ ] displey spinner while starting up service
-- [ ] handle/detect situation where you're not sudo so actions will fail
-- [ ] refresh logs on a timer
-- [ ] refresh services on a timer
+- [ ] display error (like when start/stop fails)
 - [ ] unit files
   - [ ] figure out path to unit file
   - [ ] show/preview contents
   - [ ] command to open service file in text editor
+- [x] refresh logs on a timer
+- [x] refresh services on a timer
 - [x] put on crates.io
 - [x] Implement scrolling with pgup/pgdown
 - [x] try adding a modal help menu/command picker like x/? in lazygit
