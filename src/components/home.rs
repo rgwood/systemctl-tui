@@ -494,7 +494,7 @@ impl Component for Home {
           } else {
             Style::default()
           })
-          .title("Services"),
+          .title(" 💻 Services "),
       )
       .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
 
@@ -516,7 +516,7 @@ impl Component for Home {
     let details_panel = right_panel[0];
     let logs_panel = right_panel[1];
 
-    let details_block = Block::default().title("Details").borders(Borders::ALL);
+    let details_block = Block::default().title(" 🕵️ Details ").borders(Borders::ALL);
     let details_panel_panes = Layout::default()
       .direction(Direction::Horizontal)
       .constraints([Constraint::Min(14), Constraint::Percentage(100)].as_ref())
@@ -593,7 +593,7 @@ impl Component for Home {
       .collect_vec();
 
     let paragraph = Paragraph::new(log_lines)
-      .block(Block::default().title("Service Logs").borders(Borders::ALL))
+      .block(Block::default().title(" 🪵 Service Logs ").borders(Borders::ALL))
       .style(Style::default())
       .wrap(Wrap { trim: true })
       .scroll((self.logs_scroll_offset, 0));
