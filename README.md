@@ -2,9 +2,9 @@
 
 [![Crates.io](https://img.shields.io/crates/v/systemctl-tui.svg)](https://crates.io/crates/systemctl-tui)
 
-A simple little TUI for interacting with systemd services and their logs.
+A fast, simple TUI for interacting with systemd services and their logs.
 
-![image](https://github.com/rgwood/systemctl-tui/assets/26268125/772eb23d-1e7e-4a31-a38c-01c0ac435bc2)
+![image](https://github.com/rgwood/systemctl-tui/assets/26268125/da1d4f06-ea8d-4ea0-805e-d0e26e641cd6)
 
 
 ## Install
@@ -15,10 +15,6 @@ This project only works on Linux. Currently you need to build from scratch with 
 2. Clone the repo and run `cargo build --release` to get a release binary at `target/release/systemctl-tui`
 
 Optional: alias `systemctl-tui` to `st` for quick access
-
-## Future Work
-
-This was thrown together in a weekend. It currently only supports read operations (so no stopping/starting services). More features to come.
 
 ## Credits
 
