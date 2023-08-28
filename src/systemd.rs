@@ -117,6 +117,26 @@ pub async fn stop_service(service_name: String, cancel_token: CancellationToken)
   }
 }
 
+pub async fn restart_service(service_name: String, cancel_token: CancellationToken) -> Result<()> {
+  async fn restart(service_name: &str) -> Result<()> {
+    let connection = Connection::system().await?;
+    let manager_proxy = ManagerProxy::new(&connection).await?;
+    manager_proxy.restart_unit(service_name.into(), "replace".into()).await?;
+    Ok(())
+  }
+
+  // god these select macros are ugly, is there really no better way to select?
+  tokio::select! {
+    _ = cancel_token.cancelled() => {
+        // The token was cancelled
+        anyhow::bail!("cancelled");
+    }
+    result = restart(&service_name) => {
+        result
+    }
+  }
+}
+
 // useless function only added to test that cancellation works
 pub async fn sleep_test(_service: String, cancel_token: CancellationToken) -> Result<()> {
   // god these select macros are ugly, is there really no better way to select?
@@ -132,7 +152,7 @@ pub async fn sleep_test(_service: String, cancel_token: CancellationToken) -> Re
 }
 
 /// Proxy object for `org.freedesktop.systemd1.Manager`.
-/// Taken from https://github.com/lucab/zbus_systemd/blob/main/src/systemd1/generated.rs
+/// Partially taken from https://github.com/lucab/zbus_systemd/blob/main/src/systemd1/generated.rs
 #[dbus_proxy(
   interface = "org.freedesktop.systemd1.Manager",
   default_service = "org.freedesktop.systemd1",
@@ -147,6 +167,10 @@ pub trait Manager {
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#StopUnit()) Call interface method `StopUnit`.
   #[dbus_proxy(name = "StopUnit")]
   fn stop_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
+
+  /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#RestartUnit()) Call interface method `RestartUnit`.
+  #[dbus_proxy(name = "RestartUnit")]
+  fn restart_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#EnableUnitFiles()) Call interface method `EnableUnitFiles`.
   #[dbus_proxy(name = "EnableUnitFiles")]
