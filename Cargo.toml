@@ -64,7 +64,7 @@ strip = false
 debug = true
 
 [profile.release]
-# lto = true      # Enable Link Time Optimization (slow but makes a huge size difference)
+lto = true      # Enable Link Time Optimization (slow but makes a huge size difference)
 opt-level = 'z' # Optimize for size.
 panic = 'abort' # Abort on panic
 # strip = true        # Strip symbols from binary. Big gains but idk if it's worth bad stack traces
