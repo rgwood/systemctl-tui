@@ -19,5 +19,5 @@ Optional: alias `systemctl-tui` to `st` for quick access
 ## Credits
 
 - Inspired by the truly excellent [Lazygit](https://github.com/jesseduffield/lazygit).
-- Based on the excellent [`ratatui-template`](https://github.com/kdheepak/ratatui-template/)
+- Used [`ratatui-template`](https://github.com/kdheepak/ratatui-template/) to get started
 - systemd code partially taken from [`servicer`](https://github.com/servicer-labs/servicer)
