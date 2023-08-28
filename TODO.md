@@ -7,15 +7,15 @@ I think we should only refresh on demand to fix this. Remove the render_tick int
 Will need to do some testing after this.
 Longer-term, probably want to do some more perf work on the render() function; might be able to speed it up
 
-
-- [x] display spinner while starting up service
-  - [ ] generalize spinner logic to all actions
 - [ ] display error (like when start/stop fails)
 - [ ] unit files
   - [ ] figure out path to unit file
   - [ ] show/preview contents
   - [ ] command to open service file in text editor
+- [ ] action to reload (do this automatically?)
 - [ ] use journalctl -f to follow logs for instant refresh
+- [x] display spinner while starting up service
+  - [x] generalize spinner logic to all actions
 - [x] refresh logs on a timer
 - [x] refresh services on a timer
 - [x] put on crates.io
