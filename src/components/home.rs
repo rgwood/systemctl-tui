@@ -322,10 +322,10 @@ impl Component for Home {
     // TODO: seems like terminals can't recognize shift or ctrl at the same time as page up/down
     // Is there another way we could scroll in large increments?
     match key.code {
-      KeyCode::PageDown => return vec![Action::ScrollDown(1)],
-      KeyCode::PageUp => return vec![Action::ScrollUp(1)],
-      KeyCode::Home => return vec![Action::ScrollToTop],
-      KeyCode::End => return vec![Action::ScrollToBottom],
+      KeyCode::PageDown => return vec![Action::ScrollDown(1), Action::Render],
+      KeyCode::PageUp => return vec![Action::ScrollUp(1), Action::Render],
+      KeyCode::Home => return vec![Action::ScrollToTop, Action::Render],
+      KeyCode::End => return vec![Action::ScrollToBottom, Action::Render],
       _ => (),
     }
 
@@ -394,7 +394,6 @@ impl Component for Home {
         },
         _ => vec![],
       },
-      // TODO: handle cancellation?
       Mode::Processing => match key.code {
         KeyCode::Esc => vec![Action::CancelTask],
         _ => vec![],
@@ -680,7 +679,7 @@ impl Component for Home {
     }
 
     if self.mode == Mode::Help {
-      let popup = centered_rect(80, 80, f.size());
+      let popup = centered_rect_abs(50, 12, f.size());
 
       fn white(s: &str) -> Span {
         Span::styled(s, Style::default().fg(Color::White))
@@ -693,20 +692,21 @@ impl Component for Home {
         Line::from(vec![white("CTRL+L"), Span::raw(" toggles the logger pane")]),
         Line::from(vec![
           white("CTRL+C"),
-          Span::raw(" / "),
+          Span::raw(" or "),
           white("CTRL+D"),
-          Span::raw(" / "),
+          Span::raw(" or "),
           white("CTRL+Q"),
-          Span::raw(" quits the application"),
+          Span::raw(" quit the application"),
         ]),
-        Line::from(vec![white("PageUp"), Span::raw(" / "), white("PageDown"), Span::raw(" scrolls the logs")]),
-        Line::from(vec![white("Home"), Span::raw(" + "), white("End"), Span::raw(" scroll to top/bottom")]),
-        Line::from(vec![white("?"), Span::raw(" or "), white("F1"), Span::raw(" opens this help pane")]),
+        Line::from(vec![white("PageUp"), Span::raw(" / "), white("PageDown"), Span::raw(" scroll the logs")]),
+        Line::from(vec![white("Home"), Span::raw(" / "), white("End"), Span::raw(" scroll to top/bottom")]),
+        Line::from(vec![white("Enter"), Span::raw(" or "), white("Space"), Span::raw(" open the action menu")]),
+        Line::from(vec![white("?"), Span::raw(" or "), white("F1"), Span::raw(" open this help pane")]),
       ];
 
       let name = env!("CARGO_PKG_NAME");
       let version = env!("CARGO_PKG_VERSION");
-      let title = format!("✨️ Help for {} v{} ✨️", name, version);
+      let title = format!(" ✨️ Help for {} v{} ✨️ ", name, version);
 
       let paragraph = Paragraph::new(help_lines)
         .block(Block::default().title(title).borders(Borders::ALL))
@@ -769,7 +769,7 @@ impl Component for Home {
 }
 
 /// helper function to create a centered rect using up certain percentage of the available rect `r`
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+fn _centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
   let popup_layout = Layout::default()
     .direction(Direction::Vertical)
     .constraints(
@@ -796,8 +796,11 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 fn centered_rect_abs(width: u16, height: u16, r: Rect) -> Rect {
-  let offset_x = (r.width - width) / 2;
-  let offset_y = (r.height - height) / 2;
+  let offset_x = (r.width.saturating_sub(width)) / 2;
+  let offset_y = (r.height.saturating_sub(height)) / 2;
+  let width = width.min(r.width);
+  let height = height.min(r.height);
+
   let r = Rect::new(offset_x, offset_y, width, height);
   r
 }
