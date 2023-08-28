@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use crossterm::event::{Event as CrosstermEvent, KeyEvent, KeyEventKind, MouseEvent};
 use futures::{FutureExt, StreamExt};
@@ -30,22 +30,19 @@ pub struct EventHandler {
   cancellation_token: CancellationToken,
 }
 
+const SERVICE_REFRESH_INTERVAL_MS: u64 = 5000;
+
 impl EventHandler {
-  pub fn new(tick_rate_ms: u64, home: Arc<Mutex<Home>>, action_tx: mpsc::UnboundedSender<Action>) -> Self {
+  pub fn new(home: Arc<Mutex<Home>>, action_tx: mpsc::UnboundedSender<Action>) -> Self {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-
-    let render_tick_rate = std::time::Duration::from_millis(tick_rate_ms);
-
     let cancellation_token = CancellationToken::new();
     let _cancellation_token = cancellation_token.clone();
     let task = tokio::spawn(async move {
       let mut reader = crossterm::event::EventStream::new();
-      let mut render_interval = tokio::time::interval(render_tick_rate);
-      // TODO: do this on a different interval than render
-      let mut refresh_interval = tokio::time::interval(render_tick_rate * 3);
+      let mut refresh_services_interval = tokio::time::interval(Duration::from_millis(SERVICE_REFRESH_INTERVAL_MS));
+      refresh_services_interval.tick().await;
       loop {
-        let render_delay = render_interval.tick();
-        let refresh_delay = refresh_interval.tick();
+        let refresh_delay = refresh_services_interval.tick();
         let crossterm_event = reader.next().fuse();
         tokio::select! {
           _ = _cancellation_token.cancelled() => {
@@ -73,15 +70,14 @@ impl EventHandler {
               None => {},
             }
           },
-          _ = render_delay => {
-              event_tx.send(Event::RenderTick).unwrap();
-          },
           _ = refresh_delay => {
             event_tx.send(Event::RefreshTick).unwrap();
           },
           event = event_rx.recv() => {
-            let action = home.lock().await.handle_events(event);
-            action_tx.send(action).unwrap();
+            let actions = home.lock().await.handle_events(event);
+            for action in actions {
+              action_tx.send(action).unwrap();
+            }
           }
         }
       }

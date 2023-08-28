@@ -95,15 +95,19 @@ enum Message {
 pub struct TerminalHandler {
   pub task: JoinHandle<()>,
   tx: mpsc::UnboundedSender<Message>,
+  home: Arc<Mutex<Home>>,
+  tui: Arc<Mutex<Tui>>,
 }
 
 impl TerminalHandler {
   pub fn new(home: Arc<Mutex<Home>>) -> Self {
     let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
-
+    let cloned_home = home.clone();
+    let tui = Tui::new().context(anyhow!("Unable to create terminal")).unwrap();
+    tui.enter().unwrap();
+    let tui = Arc::new(Mutex::new(tui));
+    let cloned_tui = tui.clone();
     let task = tokio::spawn(async move {
-      let mut t = Tui::new().context(anyhow!("Unable to create terminal")).unwrap();
-      t.enter().unwrap();
       loop {
         match rx.recv().await {
           Some(Message::Stop) => {
@@ -111,21 +115,20 @@ impl TerminalHandler {
             break;
           },
           Some(Message::Suspend) => {
+            let t = tui.lock().await;
             t.suspend().unwrap_or_default();
             break;
           },
           Some(Message::Render) => {
-            let mut h = home.lock().await;
-            t.draw(|f| {
-              h.render(f, f.size());
-            })
-            .unwrap();
+            let mut t = tui.lock().await;
+            let mut home = home.lock().await;
+            render(&mut t, &mut home);
           },
           None => {},
         }
       }
     });
-    Self { task, tx }
+    Self { task, tx, home: cloned_home, tui: cloned_tui }
   }
 
   pub fn suspend(&self) -> Result<()> {
@@ -138,8 +141,23 @@ impl TerminalHandler {
     Ok(())
   }
 
-  pub fn render(&self) -> Result<()> {
+  pub async fn render(&self) {
+    let mut home = self.home.lock().await;
+    let mut tui = self.tui.lock().await;
+    render(&mut tui, &mut home);
+  }
+
+  // little more performant in situations where we don't need to wait for the render to complete
+  pub fn enqueue_render(&self) -> Result<()> {
     self.tx.send(Message::Render)?;
     Ok(())
   }
+}
+
+fn render(tui: &mut Tui, home: &mut Home) {
+  tui
+    .draw(|f| {
+      home.render(f, f.size());
+    })
+    .expect("Unable to draw");
 }

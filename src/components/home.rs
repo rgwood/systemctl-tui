@@ -12,13 +12,15 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use tui_input::{backend::crossterm::EventHandler, Input};
 
+use std::time::Duration;
+
 use super::{logger::Logger, Component, Frame};
 use crate::{
   action::Action,
   systemd::{self, UnitStatus},
 };
 
-#[derive(Default, Copy, Clone, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub enum Mode {
   #[default]
   Normal,
@@ -40,6 +42,7 @@ pub struct Home {
   pub input: Input,
   pub menu_items: StatefulList<MenuItem>,
   pub cancel_token: Option<CancellationToken>,
+  pub spinner_tick: u8,
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
   pub journalctl_tx: Option<std::sync::mpsc::Sender<String>>,
 }
@@ -177,8 +180,12 @@ impl Home {
   fn filter_statuses(&mut self, previously_selected: Option<String>) {
     let search_value_lower = self.input.value().to_lowercase();
     // TODO: use fuzzy find
-    let matching =
-      self.all_units.iter().filter(|u| u.name.to_lowercase().contains(&search_value_lower)).cloned().collect_vec();
+    let matching = self
+      .all_units
+      .iter()
+      .filter(|u| u.short_name().to_lowercase().contains(&search_value_lower))
+      .cloned()
+      .collect_vec();
     self.filtered_units = StatefulList::with_items(matching);
 
     // try to select the same item we had selected before
@@ -225,6 +232,7 @@ impl Component for Home {
           Ok(stdout) => {
             info!("Got logs for {} in {:?}", unit_name, start.elapsed());
             let _ = tx.send(Action::SetLogs { unit_name, logs: stdout });
+            let _ = tx.send(Action::Render);
           },
           Err(e) => warn!("Error getting logs for {}: {}", unit_name, e),
         }
@@ -233,69 +241,69 @@ impl Component for Home {
     Ok(())
   }
 
-  fn handle_key_events(&mut self, key: KeyEvent) -> Action {
+  fn handle_key_events(&mut self, key: KeyEvent) -> Vec<Action> {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
       match key.code {
-        KeyCode::Char('c') => return Action::Quit,
-        KeyCode::Char('d') => return Action::Quit,
-        KeyCode::Char('q') => return Action::Quit,
-        KeyCode::Char('z') => return Action::Suspend,
-        KeyCode::Char('f') => return Action::EnterSearch,
-        KeyCode::Char('l') => return Action::ToggleShowLogger,
+        KeyCode::Char('c') => return vec![Action::Quit],
+        KeyCode::Char('d') => return vec![Action::Quit],
+        KeyCode::Char('q') => return vec![Action::Quit],
+        KeyCode::Char('z') => return vec![Action::Suspend],
+        KeyCode::Char('f') => return vec![Action::EnterMode(Mode::Search)],
+        KeyCode::Char('l') => return vec![Action::ToggleShowLogger],
         _ => (),
       }
     }
 
     if matches!(key.code, KeyCode::Char('?')) || matches!(key.code, KeyCode::F(1)) {
-      return Action::ToggleHelp;
+      return vec![Action::ToggleHelp, Action::Render];
     }
 
     // TODO: seems like terminals can't recognize shift or ctrl at the same time as page up/down
     // Is there another way we could scroll in large increments?
     match key.code {
-      KeyCode::PageDown => return Action::ScrollDown(1),
-      KeyCode::PageUp => return Action::ScrollUp(1),
-      KeyCode::Home => return Action::ScrollToTop,
-      KeyCode::End => return Action::ScrollToBottom,
+      KeyCode::PageDown => return vec![Action::ScrollDown(1)],
+      KeyCode::PageUp => return vec![Action::ScrollUp(1)],
+      KeyCode::Home => return vec![Action::ScrollToTop],
+      KeyCode::End => return vec![Action::ScrollToBottom],
       _ => (),
     }
 
     match self.mode {
       Mode::Normal => {
         match key.code {
-          KeyCode::Char('q') => Action::Quit,
+          KeyCode::Char('q') => vec![Action::Quit],
           KeyCode::Up => {
             // if we're filtering the list, and we're at the top, and there's text in the search box, go to search mode
             if self.filtered_units.state.selected() == Some(0) {
-              return Action::EnterSearch;
+              return vec![Action::EnterMode(Mode::Search)];
             }
 
             self.previous();
-            Action::Update // is this right?
+            vec![Action::Render]
           },
           KeyCode::Down => {
             self.next();
-            Action::Update // is this right?
+            vec![Action::Render]
           },
-          KeyCode::Char('/') => Action::EnterSearch,
-          KeyCode::Enter | KeyCode::Char(' ') => Action::EnterActionMenu,
-          _ => Action::Noop,
+          KeyCode::Char('/') => vec![Action::EnterMode(Mode::Search)],
+          KeyCode::Enter | KeyCode::Char(' ') => vec![Action::EnterMode(Mode::ActionMenu)],
+          _ => vec![],
         }
       },
       Mode::Help => match key.code {
-        KeyCode::Esc | KeyCode::Enter => Action::EnterNormal,
-        _ => Action::Noop,
+        KeyCode::Esc | KeyCode::Enter => vec![Action::EnterMode(Mode::Normal)],
+        _ => vec![],
       },
       Mode::Search => match key.code {
-        KeyCode::Esc => Action::EnterNormal,
-        KeyCode::Enter => Action::EnterActionMenu,
+        KeyCode::Esc => vec![Action::EnterMode(Mode::Normal)],
+        KeyCode::Enter => vec![Action::EnterMode(Mode::ActionMenu)],
         KeyCode::Down | KeyCode::Tab => {
           self.next();
-          Action::EnterNormal
+          vec![Action::EnterMode(Mode::Normal)]
         },
         KeyCode::Up => {
           self.previous();
-          Action::EnterNormal
+          vec![Action::EnterMode(Mode::Normal)]
         },
         _ => {
           let prev_search_value = self.input.value().to_owned();
@@ -306,29 +314,29 @@ impl Component for Home {
             let previously_selected = self.selected_service();
             self.filter_statuses(previously_selected);
           }
-          Action::Update
+          vec![Action::Render]
         },
       },
       Mode::ActionMenu => match key.code {
-        KeyCode::Esc => Action::EnterNormal,
+        KeyCode::Esc => vec![Action::EnterMode(Mode::Normal)],
         KeyCode::Down => {
           self.menu_items.next();
-          Action::Update
+          vec![Action::Render]
         },
         KeyCode::Up => {
           self.menu_items.previous();
-          Action::Update
+          vec![Action::Render]
         },
         KeyCode::Enter | KeyCode::Char(' ') => match self.menu_items.selected() {
-          Some(i) => i.action.clone(),
-          None => Action::EnterNormal,
+          Some(i) => vec![i.action.clone()],
+          None => vec![Action::EnterMode(Mode::Normal)],
         },
-        _ => Action::Noop,
+        _ => vec![],
       },
       // TODO: handle cancellation?
       Mode::Processing => match key.code {
-        KeyCode::Esc => Action::CancelTask,
-        _ => Action::Noop,
+        KeyCode::Esc => vec![Action::CancelTask],
+        _ => vec![],
       },
     }
   }
@@ -336,36 +344,30 @@ impl Component for Home {
   fn dispatch(&mut self, action: Action) -> Option<Action> {
     match action {
       Action::ToggleShowLogger => self.show_logger = !self.show_logger,
-      Action::EnterNormal => {
-        self.mode = Mode::Normal;
-      },
-      Action::EnterSearch => {
-        self.mode = Mode::Search;
-      },
-      Action::EnterProcessing => {
-        self.mode = Mode::Processing;
-      },
-      Action::EnterActionMenu => {
-        // TODO: populate list of actions based on currently selected service?
-        let selected = match self.filtered_units.selected() {
-          Some(s) => s.name.clone(),
-          None => return None,
-        };
+      Action::EnterMode(mode) => {
+        if mode == Mode::ActionMenu {
+          let selected = match self.filtered_units.selected() {
+            Some(s) => s.name.clone(),
+            None => return None,
+          };
 
-        // TODO: use current status to determine which actions are available?
-        let menu_items = vec![
-          MenuItem::new("Start", Action::StartService(selected.clone())),
-          MenuItem::new("Stop", Action::StopService(selected.clone())),
-          // TODO add these
-          // MenuItem::new("Restart", Action::RestartService(selected.clone())),
-          // MenuItem::new("Reload", Action::ReloadService(selected.clone())),
-          // MenuItem::new("Enable", Action::EnableService(selected.clone())),
-          // MenuItem::new("Disable", Action::DisableService(selected.clone())),
-        ];
+          // TODO: use current status to determine which actions are available?
+          let menu_items = vec![
+            MenuItem::new("Start", Action::StartService(selected.clone())),
+            MenuItem::new("Stop", Action::StopService(selected.clone())),
+            // TODO add these
+            MenuItem::new("Restart", Action::RestartService(selected.clone())),
+            // MenuItem::new("Reload", Action::ReloadService(selected.clone())),
+            // MenuItem::new("Enable", Action::EnableService(selected.clone())),
+            // MenuItem::new("Disable", Action::DisableService(selected.clone())),
+          ];
 
-        self.menu_items = StatefulList::with_items(menu_items);
-        self.menu_items.state.select(Some(0));
-        self.mode = Mode::ActionMenu;
+          self.menu_items = StatefulList::with_items(menu_items);
+          self.menu_items.state.select(Some(0));
+        }
+
+        self.mode = mode;
+        return Some(Action::Render);
       },
       Action::ToggleHelp => {
         if self.mode != Mode::Help {
@@ -403,22 +405,34 @@ impl Component for Home {
         // A proper fix might need to wait until ratatui improves scrolling: https://github.com/ratatui-org/ratatui/issues/174
         self.logs_scroll_offset = self.logs.len() as u16;
       },
-      // TODO: generalize this over multiple services
+      // TODO: generalize this over multiple actions
       Action::StartService(service_name) => {
         let tx = self.action_tx.clone().unwrap();
         let cancel_token = CancellationToken::new();
         self.cancel_token = Some(cancel_token.clone());
 
+        let tx_clone = tx.clone();
+        let spinner_task = tokio::spawn(async move {
+          let mut interval = tokio::time::interval(Duration::from_millis(200));
+          loop {
+            interval.tick().await;
+            tx_clone.send(Action::SpinnerTick).unwrap();
+          }
+        });
+
         tokio::spawn(async move {
-          tx.send(Action::EnterProcessing).unwrap();
+          tx.send(Action::EnterMode(Mode::Processing)).unwrap();
+          // match systemd::sleep_test(cancel_token.clone()).await {
           match systemd::start_service(&service_name, cancel_token.clone()).await {
             Ok(_) => info!("Started service successfully"),
             // would be nicer to check the error type here, but this is easier
             Err(_) if cancel_token.is_cancelled() => warn!("Start service was cancelled"),
             Err(e) => error!("Start service failed: {}", e),
           }
-          tx.send(Action::RefreshServices).unwrap();
-          tx.send(Action::EnterNormal).unwrap();
+          spinner_task.abort();
+          tx.send(Action::RefreshServicesAndLog).unwrap();
+          tx.send(Action::EnterMode(Mode::Normal)).unwrap();
+          tx.send(Action::Render).unwrap();
         });
       },
       Action::StopService(service_name) => {
@@ -427,18 +441,18 @@ impl Component for Home {
         self.cancel_token = Some(cancel_token.clone());
 
         tokio::spawn(async move {
-          tx.send(Action::EnterProcessing).unwrap();
+          tx.send(Action::EnterMode(Mode::Processing)).unwrap();
           match systemd::stop_service(&service_name, cancel_token.clone()).await {
             Ok(_) => info!("Service stopped successfully"),
             // would be nicer to check the error type here, but this is easier
             Err(_) if cancel_token.is_cancelled() => warn!("Stop service was cancelled"),
             Err(e) => error!("Stop service failed: {}", e),
           }
-          tx.send(Action::RefreshServices).unwrap();
-          tx.send(Action::EnterNormal).unwrap();
+          tx.send(Action::RefreshServicesAndLog).unwrap();
+          tx.send(Action::EnterMode(Mode::Normal)).unwrap();
         });
       },
-      Action::RefreshServices => {
+      Action::RefreshServicesAndLog => {
         let tx = self.action_tx.clone().unwrap();
 
         if let Some(selected_service) = self.selected_service() {
@@ -454,12 +468,18 @@ impl Component for Home {
       },
       Action::SetServices(units) => {
         self.set_units(units);
+        return Some(Action::Render);
+      },
+      Action::SpinnerTick => {
+        self.spinner_tick = self.spinner_tick.wrapping_add(1);
+        return Some(Action::Render);
       },
       Action::CancelTask => {
         if let Some(cancel_token) = self.cancel_token.take() {
           cancel_token.cancel();
         }
         self.mode = Mode::Normal;
+        return Some(Action::Render);
       },
       _ => (),
     }
@@ -707,8 +727,11 @@ impl Component for Home {
       let height = self.menu_items.items.len() as u16 + 2;
       let popup = centered_rect_abs(popup_width, height, f.size());
 
+      static SPINNER_CHARS: &[char] = &['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '⣾'];
+
+      let spinner_char = SPINNER_CHARS[self.spinner_tick as usize % SPINNER_CHARS.len()];
       // TODO: make this a spinner
-      let paragraph = Paragraph::new(vec![Line::from("Processing...")])
+      let paragraph = Paragraph::new(vec![Line::from(format!("{}", spinner_char))])
         .block(
           Block::default()
             .title("Processing")

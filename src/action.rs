@@ -1,19 +1,17 @@
-use crate::systemd::UnitStatus;
+use crate::{components::home::Mode, systemd::UnitStatus};
 
 #[derive(Debug, Clone)]
 pub enum Action {
   Quit,
   Resume,
   Suspend,
-  RenderTick,
+  Render,
+  SpinnerTick,
   Resize(u16, u16),
   ToggleShowLogger,
-  EnterNormal,
-  RefreshServices,
+  RefreshServicesAndLog,
   SetServices(Vec<UnitStatus>),
-  EnterSearch,
-  EnterActionMenu,
-  EnterProcessing,
+  EnterMode(Mode),
   CancelTask,
   ToggleHelp,
   SetLogs { unit_name: String, logs: String },
@@ -27,6 +25,5 @@ pub enum Action {
   ScrollDown(u16),
   ScrollToTop,
   ScrollToBottom,
-  Update,
   Noop,
 }
