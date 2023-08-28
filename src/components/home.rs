@@ -210,17 +210,28 @@ impl Home {
   fn start_service(&mut self, service_name: String) {
     let cancel_token = CancellationToken::new();
     let future = systemd::start_service(service_name.clone(), cancel_token.clone());
-    self.service_action(service_name, cancel_token, future);
+    self.service_action(service_name, "Start".into(), cancel_token, future);
   }
 
   fn stop_service(&mut self, service_name: String) {
     let cancel_token = CancellationToken::new();
     let future = systemd::stop_service(service_name.clone(), cancel_token.clone());
-    self.service_action(service_name, cancel_token, future);
+    self.service_action(service_name, "Stop".into(), cancel_token, future);
   }
 
-  fn service_action<Fut>(&mut self, service_name: String, cancel_token: CancellationToken, action: Fut)
-  where
+  fn restart_service(&mut self, service_name: String) {
+    let cancel_token = CancellationToken::new();
+    let future = systemd::restart_service(service_name.clone(), cancel_token.clone());
+    self.service_action(service_name, "Restart".into(), cancel_token, future);
+  }
+
+  fn service_action<Fut>(
+    &mut self,
+    service_name: String,
+    action_name: String,
+    cancel_token: CancellationToken,
+    action: Fut,
+  ) where
     Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
   {
     let tx = self.action_tx.clone().unwrap();
@@ -239,15 +250,20 @@ impl Home {
     tokio::spawn(async move {
       tx.send(Action::EnterMode(Mode::Processing)).unwrap();
       match action.await {
-        Ok(_) => info!("Started service {} successfully", service_name),
+        Ok(_) => info!("{} of service {} succeeded", action_name, service_name),
         // would be nicer to check the error type here, but this is easier
-        Err(_) if cancel_token.is_cancelled() => warn!("Start of service {} was cancelled", service_name),
-        Err(e) => error!("Start of service {} failed: {}", service_name, e),
+        Err(_) if cancel_token.is_cancelled() => warn!("{} of service {} was cancelled", action_name, service_name),
+        Err(e) => error!("{} of service {} failed: {}", action_name, service_name, e),
       }
       spinner_task.abort();
       tx.send(Action::RefreshServicesAndLog).unwrap();
       tx.send(Action::EnterMode(Mode::Normal)).unwrap();
-      tx.send(Action::Render).unwrap();
+
+      // Refresh a bit more frequently after a service action
+      for _ in 0..3 {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        tx.send(Action::RefreshServicesAndLog).unwrap();
+      }
     });
   }
 }
@@ -453,6 +469,7 @@ impl Component for Home {
 
       Action::StartService(service_name) => self.start_service(service_name),
       Action::StopService(service_name) => self.stop_service(service_name),
+      Action::RestartService(service_name) => self.restart_service(service_name),
       Action::RefreshServicesAndLog => {
         let tx = self.action_tx.clone().unwrap();
 
