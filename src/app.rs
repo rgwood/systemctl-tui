@@ -20,8 +20,7 @@ pub struct App {
 
 impl App {
   pub fn new() -> Result<Self> {
-    let mut home = Home::new();
-    home.show_logger = true;
+    let home = Home::new();
     let home = Arc::new(Mutex::new(home));
     Ok(Self { home, should_quit: false, should_suspend: false })
   }
@@ -44,12 +43,9 @@ impl App {
     loop {
       if let Some(action) = action_rx.recv().await {
         match &action {
-          Action::SetLogs { .. } => {
-            debug!("action: SetLogs");
-          },
-          Action::SetServices { .. } => {
-            debug!("action: SetServices");
-          },
+          // these are too big to log in full
+          Action::SetLogs { .. } => debug!("action: SetLogs"),
+          Action::SetServices { .. } => debug!("action: SetServices"),
           _ => debug!("action: {:?}", action),
         }
 

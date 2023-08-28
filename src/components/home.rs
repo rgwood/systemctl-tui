@@ -404,7 +404,10 @@ impl Component for Home {
 
   fn dispatch(&mut self, action: Action) -> Option<Action> {
     match action {
-      Action::ToggleShowLogger => self.show_logger = !self.show_logger,
+      Action::ToggleShowLogger => {
+        self.show_logger = !self.show_logger;
+        return Some(Action::Render);
+      },
       Action::EnterMode(mode) => {
         if mode == Mode::ActionMenu {
           let selected = match self.filtered_units.selected() {
@@ -416,8 +419,8 @@ impl Component for Home {
           let menu_items = vec![
             MenuItem::new("Start", Action::StartService(selected.clone())),
             MenuItem::new("Stop", Action::StopService(selected.clone())),
-            // TODO add these
             MenuItem::new("Restart", Action::RestartService(selected.clone())),
+            // TODO add these
             // MenuItem::new("Reload", Action::ReloadService(selected.clone())),
             // MenuItem::new("Enable", Action::EnableService(selected.clone())),
             // MenuItem::new("Disable", Action::DisableService(selected.clone())),
