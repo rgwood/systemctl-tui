@@ -16,6 +16,8 @@ This project only works on Linux. Currently you need to build from scratch with 
 
 Optional: alias `systemctl-tui` to `st` for quick access
 
+Once the project has matured a bit I'll look into other package managers.
+
 ## Help
 ![image](https://github.com/rgwood/systemctl-tui/assets/26268125/512f269d-e221-4fa0-9479-a48f1b1a3f8d)
 
