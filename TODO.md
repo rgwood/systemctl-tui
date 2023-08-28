@@ -1,6 +1,15 @@
 ## TODO
 
-- [ ] displey spinner while starting up service
+- [x] Overhaul rendering for lower CPU usage
+Calling render on an interval uses a fair bit of CPU. The app can idle at low-double-digits CPU % on a slower machines, which sucks
+Did some profiling and it seems like a lot of this is Ratatui's diffing; we are making it diff a lot of content with the logs etc.
+I think we should only refresh on demand to fix this. Remove the render_tick interval completely.
+Will need to do some testing after this.
+Longer-term, probably want to do some more perf work on the render() function; might be able to speed it up
+
+
+- [x] display spinner while starting up service
+  - [ ] generalize spinner logic to all actions
 - [ ] display error (like when start/stop fails)
 - [ ] unit files
   - [ ] figure out path to unit file

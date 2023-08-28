@@ -13,25 +13,25 @@ pub trait Component {
   fn init(&mut self, tx: UnboundedSender<Action>) -> Result<()> {
     Ok(())
   }
-  fn handle_events(&mut self, event: Option<Event>) -> Action {
+  fn handle_events(&mut self, event: Option<Event>) -> Vec<Action> {
     match event {
-      Some(Event::Quit) => Action::Quit,
-      Some(Event::RenderTick) => Action::RenderTick,
+      Some(Event::Quit) => vec![Action::Quit],
+      Some(Event::RenderTick) => vec![Action::Render],
       Some(Event::Key(key_event)) => self.handle_key_events(key_event),
       Some(Event::Mouse(mouse_event)) => self.handle_mouse_events(mouse_event),
-      Some(Event::Resize(x, y)) => Action::Resize(x, y),
-      Some(Event::RefreshTick) => Action::RefreshServices,
-      Some(_) => Action::Noop,
-      None => Action::Noop,
+      Some(Event::Resize(x, y)) => vec![Action::Resize(x, y)],
+      Some(Event::RefreshTick) => vec![Action::RefreshServicesAndLog],
+      Some(_) => vec![],
+      None => vec![],
     }
   }
   #[allow(unused_variables)]
-  fn handle_key_events(&mut self, key: KeyEvent) -> Action {
-    Action::Noop
+  fn handle_key_events(&mut self, key: KeyEvent) -> Vec<Action> {
+    vec![]
   }
   #[allow(unused_variables)]
-  fn handle_mouse_events(&mut self, mouse: MouseEvent) -> Action {
-    Action::Noop
+  fn handle_mouse_events(&mut self, mouse: MouseEvent) -> Vec<Action> {
+    vec![]
   }
   #[allow(unused_variables)]
   fn dispatch(&mut self, action: Action) -> Option<Action> {

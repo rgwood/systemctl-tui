@@ -8,25 +8,15 @@ use systemctl_tui::{
 // Define the command line arguments structure
 #[derive(Parser, Debug)]
 #[command(version = version(), about = "A simple TUI for systemd services")]
-struct Args {
-  /// Render tick rate in milliseconds
-  #[arg(short, long, default_value_t = 1000)]
-  render_tick_rate: u64,
-}
+struct Args {}
 
-// Main function
 #[tokio::main]
 async fn main() -> Result<()> {
-  // Start with initializing logging
   initialize_logging()?;
-
-  // Next initialize the panic handler
   initialize_panic_handler();
 
-  let args = Args::parse();
-  let tick_rate = args.render_tick_rate;
-
-  let mut app = App::new(tick_rate)?;
+  let _args = Args::parse();
+  let mut app = App::new()?;
   app.run().await?;
 
   Ok(())
