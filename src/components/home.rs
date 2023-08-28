@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use duct::cmd;
+use futures::Future;
 use itertools::Itertools;
 use ratatui::{
   layout::{Constraint, Direction, Layout, Rect},
@@ -205,6 +206,50 @@ impl Home {
       }
     }
   }
+
+  fn start_service(&mut self, service_name: String) {
+    let cancel_token = CancellationToken::new();
+    let future = systemd::start_service(service_name.clone(), cancel_token.clone());
+    self.service_action(service_name, cancel_token, future);
+  }
+
+  fn stop_service(&mut self, service_name: String) {
+    let cancel_token = CancellationToken::new();
+    let future = systemd::stop_service(service_name.clone(), cancel_token.clone());
+    self.service_action(service_name, cancel_token, future);
+  }
+
+  fn service_action<Fut>(&mut self, service_name: String, cancel_token: CancellationToken, action: Fut)
+  where
+    Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+  {
+    let tx = self.action_tx.clone().unwrap();
+
+    self.cancel_token = Some(cancel_token.clone());
+
+    let tx_clone = tx.clone();
+    let spinner_task = tokio::spawn(async move {
+      let mut interval = tokio::time::interval(Duration::from_millis(200));
+      loop {
+        interval.tick().await;
+        tx_clone.send(Action::SpinnerTick).unwrap();
+      }
+    });
+
+    tokio::spawn(async move {
+      tx.send(Action::EnterMode(Mode::Processing)).unwrap();
+      match action.await {
+        Ok(_) => info!("Started service {} successfully", service_name),
+        // would be nicer to check the error type here, but this is easier
+        Err(_) if cancel_token.is_cancelled() => warn!("Start of service {} was cancelled", service_name),
+        Err(e) => error!("Start of service {} failed: {}", service_name, e),
+      }
+      spinner_task.abort();
+      tx.send(Action::RefreshServicesAndLog).unwrap();
+      tx.send(Action::EnterMode(Mode::Normal)).unwrap();
+      tx.send(Action::Render).unwrap();
+    });
+  }
 }
 
 impl Component for Home {
@@ -405,53 +450,9 @@ impl Component for Home {
         // A proper fix might need to wait until ratatui improves scrolling: https://github.com/ratatui-org/ratatui/issues/174
         self.logs_scroll_offset = self.logs.len() as u16;
       },
-      // TODO: generalize this over multiple actions
-      Action::StartService(service_name) => {
-        let tx = self.action_tx.clone().unwrap();
-        let cancel_token = CancellationToken::new();
-        self.cancel_token = Some(cancel_token.clone());
 
-        let tx_clone = tx.clone();
-        let spinner_task = tokio::spawn(async move {
-          let mut interval = tokio::time::interval(Duration::from_millis(200));
-          loop {
-            interval.tick().await;
-            tx_clone.send(Action::SpinnerTick).unwrap();
-          }
-        });
-
-        tokio::spawn(async move {
-          tx.send(Action::EnterMode(Mode::Processing)).unwrap();
-          // match systemd::sleep_test(cancel_token.clone()).await {
-          match systemd::start_service(&service_name, cancel_token.clone()).await {
-            Ok(_) => info!("Started service successfully"),
-            // would be nicer to check the error type here, but this is easier
-            Err(_) if cancel_token.is_cancelled() => warn!("Start service was cancelled"),
-            Err(e) => error!("Start service failed: {}", e),
-          }
-          spinner_task.abort();
-          tx.send(Action::RefreshServicesAndLog).unwrap();
-          tx.send(Action::EnterMode(Mode::Normal)).unwrap();
-          tx.send(Action::Render).unwrap();
-        });
-      },
-      Action::StopService(service_name) => {
-        let tx = self.action_tx.clone().unwrap();
-        let cancel_token = CancellationToken::new();
-        self.cancel_token = Some(cancel_token.clone());
-
-        tokio::spawn(async move {
-          tx.send(Action::EnterMode(Mode::Processing)).unwrap();
-          match systemd::stop_service(&service_name, cancel_token.clone()).await {
-            Ok(_) => info!("Service stopped successfully"),
-            // would be nicer to check the error type here, but this is easier
-            Err(_) if cancel_token.is_cancelled() => warn!("Stop service was cancelled"),
-            Err(e) => error!("Stop service failed: {}", e),
-          }
-          tx.send(Action::RefreshServicesAndLog).unwrap();
-          tx.send(Action::EnterMode(Mode::Normal)).unwrap();
-        });
-      },
+      Action::StartService(service_name) => self.start_service(service_name),
+      Action::StopService(service_name) => self.stop_service(service_name),
       Action::RefreshServicesAndLog => {
         let tx = self.action_tx.clone().unwrap();
 

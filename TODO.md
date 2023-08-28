@@ -15,6 +15,7 @@ Longer-term, probably want to do some more perf work on the render() function; m
   - [ ] figure out path to unit file
   - [ ] show/preview contents
   - [ ] command to open service file in text editor
+- [ ] use journalctl -f to follow logs for instant refresh
 - [x] refresh logs on a timer
 - [x] refresh services on a timer
 - [x] put on crates.io

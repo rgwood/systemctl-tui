@@ -77,7 +77,7 @@ pub async fn get_services() -> Result<Vec<UnitStatus>> {
   Ok(units)
 }
 
-pub async fn start_service(service_name: &str, cancel_token: CancellationToken) -> Result<()> {
+pub async fn start_service(service_name: String, cancel_token: CancellationToken) -> Result<()> {
   async fn start_service(service_name: &str) -> Result<()> {
     let connection = Connection::system().await?;
     let manager_proxy = ManagerProxy::new(&connection).await?;
@@ -91,13 +91,13 @@ pub async fn start_service(service_name: &str, cancel_token: CancellationToken) 
         // The token was cancelled
         anyhow::bail!("cancelled");
     }
-    result = start_service(service_name) => {
+    result = start_service(&service_name) => {
         result
     }
   }
 }
 
-pub async fn stop_service(service_name: &str, cancel_token: CancellationToken) -> Result<()> {
+pub async fn stop_service(service_name: String, cancel_token: CancellationToken) -> Result<()> {
   async fn stop_service(service_name: &str) -> Result<()> {
     let connection = Connection::system().await?;
     let manager_proxy = ManagerProxy::new(&connection).await?;
@@ -111,14 +111,14 @@ pub async fn stop_service(service_name: &str, cancel_token: CancellationToken) -
         // The token was cancelled
         anyhow::bail!("cancelled");
     }
-    result = stop_service(service_name) => {
+    result = stop_service(&service_name) => {
         result
     }
   }
 }
 
 // useless function only added to test that cancellation works
-pub async fn sleep_test(cancel_token: CancellationToken) -> Result<()> {
+pub async fn sleep_test(_service: String, cancel_token: CancellationToken) -> Result<()> {
   // god these select macros are ugly, is there really no better way to select?
   tokio::select! {
       _ = cancel_token.cancelled() => {
