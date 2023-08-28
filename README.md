@@ -16,6 +16,9 @@ This project only works on Linux. Currently you need to build from scratch with 
 
 Optional: alias `systemctl-tui` to `st` for quick access
 
+## Help
+![image](https://github.com/rgwood/systemctl-tui/assets/26268125/512f269d-e221-4fa0-9479-a48f1b1a3f8d)
+
 ## Credits
 
 - Inspired by the truly excellent [Lazygit](https://github.com/jesseduffield/lazygit).
