@@ -98,14 +98,14 @@ macro_rules! trace_dbg {
 pub fn version() -> String {
   let author = clap::crate_authors!();
 
-  let commit_hash = env!("SYSTEMCTL_TUI_GIT_INFO");
+  let version = env!("CARGO_PKG_VERSION");
 
   let config_dir_path = get_config_dir().unwrap().display().to_string();
   let data_dir_path = get_data_dir().unwrap().display().to_string();
 
   format!(
     "\
-{commit_hash}
+{version}
 
 Authors: {author}
 
