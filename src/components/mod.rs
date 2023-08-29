@@ -20,7 +20,7 @@ pub trait Component {
       Some(Event::Key(key_event)) => self.handle_key_events(key_event),
       Some(Event::Mouse(mouse_event)) => self.handle_mouse_events(mouse_event),
       Some(Event::Resize(x, y)) => vec![Action::Resize(x, y)],
-      Some(Event::RefreshTick) => vec![Action::RefreshServicesAndLog],
+      Some(Event::RefreshTick) => vec![Action::RefreshServices],
       Some(_) => vec![],
       None => vec![],
     }
