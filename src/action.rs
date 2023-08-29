@@ -6,6 +6,7 @@ pub enum Action {
   Resume,
   Suspend,
   Render,
+  DebouncedRender,
   SpinnerTick,
   Resize(u16, u16),
   ToggleShowLogger,
