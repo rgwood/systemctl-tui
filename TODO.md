@@ -12,6 +12,7 @@ Longer-term, probably want to do some more perf work on the render() function; m
   - [ ] show/preview contents
   - [ ] command to open service file in text editor
 - [ ] action to reload (do this automatically?)
+- [ ] Fix jank where service refresh changes scroll position in services list
 - [x] use journalctl -f to follow logs for instant refresh
 - [x] display error (like when start/stop fails)
 - [x] display spinner while starting up service
