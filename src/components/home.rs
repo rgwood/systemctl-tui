@@ -350,7 +350,6 @@ impl Component for Home {
           let mut lines = reader.lines();
           while let Some(line) = lines.next_line().await.unwrap() {
             let _ = tx.send(Action::AppendLogLine { unit_name: unit_name.clone(), line });
-            // TODO: debounce these per-line renders, they can be too much when a burst of logs come in
             let _ = tx.send(Action::Render);
           }
         }));

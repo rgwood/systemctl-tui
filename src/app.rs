@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use tokio::sync::{mpsc, Mutex};
@@ -28,6 +28,32 @@ impl App {
   pub async fn run(&mut self) -> Result<()> {
     let (action_tx, mut action_rx) = mpsc::unbounded_channel();
 
+    let (debounce_tx, mut debounce_rx) = mpsc::unbounded_channel();
+
+    let cloned_action_tx = action_tx.clone();
+    tokio::spawn(async move {
+      let debounce_duration = std::time::Duration::from_millis(0);
+      let debouncing = Arc::new(Mutex::new(false));
+
+      loop {
+        let _ = debounce_rx.recv().await;
+
+        if *debouncing.lock().await {
+          continue;
+        }
+
+        *debouncing.lock().await = true;
+
+        let action_tx = cloned_action_tx.clone();
+        let debouncing = debouncing.clone();
+        tokio::spawn(async move {
+          tokio::time::sleep(debounce_duration).await;
+          let _ = action_tx.send(Action::Render);
+          *debouncing.lock().await = false;
+        });
+      }
+    });
+
     self.home.lock().await.init(action_tx.clone())?;
 
     let units = get_services()
@@ -51,6 +77,7 @@ impl App {
 
         match action {
           Action::Render => terminal.render().await,
+          Action::DebouncedRender => debounce_tx.send(Action::Render).unwrap(),
           Action::Noop => {},
           Action::Quit => self.should_quit = true,
           Action::Suspend => self.should_suspend = true,
