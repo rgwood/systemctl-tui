@@ -12,6 +12,7 @@ pub enum Action {
   RefreshServicesAndLog,
   SetServices(Vec<UnitStatus>),
   EnterMode(Mode),
+  EnterError { err: String },
   CancelTask,
   ToggleHelp,
   SetLogs { unit_name: String, logs: String },
