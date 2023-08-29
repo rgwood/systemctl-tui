@@ -29,6 +29,7 @@ pub enum Mode {
   Help,
   ActionMenu,
   Processing,
+  Error,
 }
 
 #[derive(Default)]
@@ -44,6 +45,7 @@ pub struct Home {
   pub menu_items: StatefulList<MenuItem>,
   pub cancel_token: Option<CancellationToken>,
   pub spinner_tick: u8,
+  pub error_message: String,
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
   pub journalctl_tx: Option<std::sync::mpsc::Sender<String>>,
 }
@@ -250,14 +252,27 @@ impl Home {
     tokio::spawn(async move {
       tx.send(Action::EnterMode(Mode::Processing)).unwrap();
       match action.await {
-        Ok(_) => info!("{} of service {} succeeded", action_name, service_name),
+        Ok(_) => {
+          info!("{} of service {} succeeded", action_name, service_name);
+          tx.send(Action::EnterMode(Mode::Normal)).unwrap();
+        },
         // would be nicer to check the error type here, but this is easier
         Err(_) if cancel_token.is_cancelled() => warn!("{} of service {} was cancelled", action_name, service_name),
-        Err(e) => error!("{} of service {} failed: {}", action_name, service_name, e),
+        Err(e) => {
+          error!("{} of service {} failed: {}", action_name, service_name, e);
+          let mut error_string = e.to_string();
+
+          if error_string.contains("AccessDenied") {
+            error_string.push('\n');
+            error_string.push('\n');
+            error_string.push_str("Try running this tool with sudo.");
+          }
+
+          tx.send(Action::EnterError { err: error_string }).unwrap();
+        },
       }
       spinner_task.abort();
       tx.send(Action::RefreshServicesAndLog).unwrap();
-      tx.send(Action::EnterMode(Mode::Normal)).unwrap();
 
       // Refresh a bit more frequently after a service action
       for _ in 0..3 {
@@ -351,7 +366,7 @@ impl Component for Home {
           _ => vec![],
         }
       },
-      Mode::Help => match key.code {
+      Mode::Help | Mode::Error => match key.code {
         KeyCode::Esc | KeyCode::Enter => vec![Action::EnterMode(Mode::Normal)],
         _ => vec![],
       },
@@ -431,6 +446,10 @@ impl Component for Home {
 
         self.mode = mode;
         return Some(Action::Render);
+      },
+      Action::EnterError { err } => {
+        self.error_message = err;
+        return Some(Action::EnterMode(Mode::Error));
       },
       Action::ToggleHelp => {
         if self.mode != Mode::Help {
@@ -711,6 +730,19 @@ impl Component for Home {
       let paragraph = Paragraph::new(help_lines)
         .block(Block::default().title(title).borders(Borders::ALL))
         .style(Style::default())
+        .wrap(Wrap { trim: true });
+
+      f.render_widget(Clear, popup);
+      f.render_widget(paragraph, popup);
+    }
+
+    if self.mode == Mode::Error {
+      let popup = centered_rect_abs(50, 12, f.size());
+      let error_lines = self.error_message.split("\n").map(Line::from).collect_vec();
+      let paragraph = Paragraph::new(error_lines)
+        .block(
+          Block::default().title(" ⚠️ Error ⚠️ ").borders(Borders::ALL).border_style(Style::default().fg(Color::Red)),
+        )
         .wrap(Wrap { trim: true });
 
       f.render_widget(Clear, popup);
