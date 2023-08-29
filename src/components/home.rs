@@ -8,12 +8,16 @@ use ratatui::{
   text::{Line, Span},
   widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
-use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::{
+  io::AsyncBufReadExt,
+  sync::mpsc::{self, UnboundedSender},
+  task::JoinHandle,
+};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use tui_input::{backend::crossterm::EventHandler, Input};
 
-use std::time::Duration;
+use std::{process::Stdio, time::Duration};
 
 use super::{logger::Logger, Component, Frame};
 use crate::{
@@ -272,12 +276,12 @@ impl Home {
         },
       }
       spinner_task.abort();
-      tx.send(Action::RefreshServicesAndLog).unwrap();
+      tx.send(Action::RefreshServices).unwrap();
 
       // Refresh a bit more frequently after a service action
       for _ in 0..3 {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        tx.send(Action::RefreshServicesAndLog).unwrap();
+        tx.send(Action::RefreshServices).unwrap();
       }
     });
   }
@@ -289,7 +293,10 @@ impl Component for Home {
     let (journalctl_tx, journalctl_rx) = std::sync::mpsc::channel::<String>();
     self.journalctl_tx = Some(journalctl_tx);
 
+    // TODO: move into function
     tokio::task::spawn_blocking(move || {
+      let mut last_follow_handle: Option<JoinHandle<()>> = None;
+
       loop {
         let mut unit_name: String = match journalctl_rx.recv() {
           Ok(unit) => unit,
@@ -302,16 +309,51 @@ impl Component for Home {
           unit_name = service;
         }
 
+        if let Some(handle) = last_follow_handle.take() {
+          info!("Cancelling previous journalctl task");
+          handle.abort();
+        }
+
+        // First, get the N lines in a batch
         info!("Getting logs for {}", unit_name);
         let start = std::time::Instant::now();
         match cmd!("journalctl", "-u", unit_name.clone(), "--output=short-iso", "--lines=500").read() {
           Ok(stdout) => {
             info!("Got logs for {} in {:?}", unit_name, start.elapsed());
-            let _ = tx.send(Action::SetLogs { unit_name, logs: stdout });
+
+            let logs = stdout.split("\n").map(String::from).collect_vec();
+            let _ = tx.send(Action::SetLogs { unit_name: unit_name.clone(), logs });
             let _ = tx.send(Action::Render);
           },
           Err(e) => warn!("Error getting logs for {}: {}", unit_name, e),
         }
+
+        // Then follow the logs
+        // Splitting this into two commands is a bit of a hack that makes it easier to get the initial batch of logs
+        // This does mean that we'll miss any logs that are written between the two commands, low enough risk for now
+        let tx = tx.clone();
+        last_follow_handle = Some(tokio::spawn(async move {
+          let mut command = tokio::process::Command::new("journalctl")
+            .arg("-u")
+            .arg(unit_name.clone())
+            .arg("--output=short-iso")
+            .arg("-f")
+            .arg("--lines=0")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to execute process");
+
+          let stdout = command.stdout.take().unwrap();
+
+          let reader = tokio::io::BufReader::new(stdout);
+          let mut lines = reader.lines();
+          while let Some(line) = lines.next_line().await.unwrap() {
+            let _ = tx.send(Action::AppendLogLine { unit_name: unit_name.clone(), line });
+            // TODO: debounce these per-line renders, they can be too much when a burst of logs come in
+            let _ = tx.send(Action::Render);
+          }
+        }));
       }
     });
     Ok(())
@@ -463,9 +505,16 @@ impl Component for Home {
         if let Some(selected) = self.filtered_units.selected() {
           if selected.name == service_name {
             // split by lines
-            let mut logs = logs.split("\n").map(String::from).collect_vec();
-            logs.reverse();
+            // let mut logs = logs.split("\n").map(String::from).collect_vec();
+            // logs.reverse();
             self.logs = logs;
+          }
+        }
+      },
+      Action::AppendLogLine { unit_name, line } => {
+        if let Some(selected) = self.filtered_units.selected() {
+          if selected.name == unit_name {
+            self.logs.push(line);
           }
         }
       },
@@ -491,13 +540,8 @@ impl Component for Home {
       Action::StartService(service_name) => self.start_service(service_name),
       Action::StopService(service_name) => self.stop_service(service_name),
       Action::RestartService(service_name) => self.restart_service(service_name),
-      Action::RefreshServicesAndLog => {
+      Action::RefreshServices => {
         let tx = self.action_tx.clone().unwrap();
-
-        if let Some(selected_service) = self.selected_service() {
-          self.journalctl_tx.clone().unwrap().send(selected_service).unwrap();
-        }
-
         tokio::spawn(async move {
           let units = systemd::get_services()
             .await
@@ -639,6 +683,7 @@ impl Component for Home {
     let log_lines = self
       .logs
       .iter()
+      .rev()
       .map(|l| {
         if let Some((date, rest)) = l.splitn(2, " ").collect_tuple() {
           if date.len() != 24 {
