@@ -25,15 +25,19 @@ publish-to-local-bin: build-release
     cp target/release/{{expected_filename}} ~/bin/
 
 build-linux-x64:
+    # work around stupid cross-rs bug where it can't handle mold config
+    mv ~/.cargo/config.toml ~/.cargo/config.toml.bak
     cross build --target x86_64-unknown-linux-musl --release
+    mv ~/.cargo/config.toml.bak ~/.cargo/config.toml
 
 build-linux-arm64:
+    # work around stupid cross-rs bug where it can't handle mold config
+    mv ~/.cargo/config.toml ~/.cargo/config.toml.bak
     cross build --target aarch64-unknown-linux-musl --release
+    mv ~/.cargo/config.toml.bak ~/.cargo/config.toml
 
 build-windows-on-linux:
     cross build --target x86_64-pc-windows-gnu --release
-
-
 
 publish-potato-pi: build-linux-arm64
     rsync target/aarch64-unknown-linux-musl/release/systemctl-tui potato-pi:~/bin/
