@@ -6,7 +6,6 @@ repository = "https://github.com/rgwood/systemctl-tui"
 version = "0.1.5"
 edition = "2021"
 authors = ["Reilly Wood"]
-build = "build.rs"
 license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
