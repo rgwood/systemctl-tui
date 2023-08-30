@@ -135,7 +135,7 @@ impl Home {
 
   pub fn set_units(&mut self, units: Vec<UnitStatus>) {
     let previously_selected = self.selected_service();
-    self.all_units = units.clone();
+    self.all_units = units;
     self.filter_statuses(previously_selected);
   }
 
