@@ -15,7 +15,6 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
-use tracing_subscriber::field::debug;
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use std::{process::Stdio, time::Duration};
