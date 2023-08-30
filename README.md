@@ -18,7 +18,7 @@ This project only works on Linux. Currently you need to build from scratch with 
 #### Optional:
 
 1. Alias `systemctl-tui` to `st` for quick access
-2. Create a symlink so `systemctl=tui` can be used with sudo:
+2. Create a symlink so `systemctl-tui` can be used with sudo:
 ```sh
 sudo ln -s ~/.cargo/bin/systemctl-tui /usr/bin/systemctl-tui
 ```
