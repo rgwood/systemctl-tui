@@ -101,6 +101,7 @@ impl<T> StatefulList<T> {
     StatefulList { state: ListState::default(), items }
   }
 
+  #[allow(dead_code)]
   fn selected_mut(&mut self) -> Option<&mut T> {
     if self.items.is_empty() {
       return None;
@@ -169,7 +170,12 @@ impl Home {
     self.filter_statuses(previously_selected);
   }
 
+  // Update units in-place, then filter the list
+  // This is inefficient but it's fast enough
+  // (on gen 13 i7: ~200 microseconds to update, ~100 microseconds to filter)
+  // revisit if needed
   pub fn update_units(&mut self, units: Vec<UnitStatus>) {
+    let now = std::time::Instant::now();
     let previously_selected = self.selected_service();
 
     for unit in units {
@@ -179,9 +185,11 @@ impl Home {
         self.all_units.push(Unit::new(unit));
       }
     }
+    info!("Updated units in {:?}", now.elapsed());
 
-    // self.all_units = units.into_iter().map(Unit::new).collect_vec();
+    let now = std::time::Instant::now();
     self.filter_statuses(previously_selected);
+    info!("Filtered units in {:?}", now.elapsed());
   }
 
   pub fn next(&mut self) {
