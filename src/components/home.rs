@@ -231,10 +231,6 @@ impl Home {
   }
 
   fn filter_statuses(&mut self, previously_selected: Option<String>) {
-    if let Some(selected) = self.filtered_units.selected() {
-      tracing::debug!("Selected: {:?}", selected.unit_file_path);
-    }
-
     let search_value_lower = self.input.value().to_lowercase();
     // TODO: use fuzzy find
     let matching = self
@@ -244,10 +240,6 @@ impl Home {
       .cloned()
       .collect_vec();
     self.filtered_units.items = matching;
-
-    if let Some(selected) = self.filtered_units.selected() {
-      tracing::debug!("Selected: {:?}", selected.unit_file_path);
-    }
 
     // try to select the same item we had selected before
     // TODO: this is horrible, clean it up
@@ -264,10 +256,6 @@ impl Home {
       } else {
         self.unselect();
       }
-    }
-
-    if let Some(selected) = self.filtered_units.selected() {
-      tracing::debug!("Selected: {:?}", selected.unit_file_path);
     }
   }
 
