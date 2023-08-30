@@ -613,7 +613,7 @@ impl Component for Home {
 
     let right_panel = Layout::default()
       .direction(Direction::Vertical)
-      .constraints([Constraint::Min(7), Constraint::Percentage(100)].as_ref())
+      .constraints([Constraint::Min(6), Constraint::Percentage(100)].as_ref())
       .split(right_panel);
 
     let details_panel = right_panel[0];
@@ -629,14 +629,17 @@ impl Component for Home {
 
     let props_lines = vec![
       Line::from("Description: "),
-      Line::from("Load State: "),
-      Line::from("Active State: "),
-      Line::from("Sub State: "),
+      Line::from("Loaded: "),
+      Line::from("Active: "),
       Line::from("Path: "),
     ];
 
     let details_text = if let Some(i) = selected_item {
       fn line_color<'a>(value: &'a str, color: Color) -> Line<'a> {
+        Line::from(vec![Span::styled(value, Style::default().fg(color))])
+      }
+
+      fn line_color_string<'a>(value: String, color: Color) -> Line<'a> {
         Line::from(vec![Span::styled(value, Style::default().fg(color))])
       }
 
@@ -653,17 +656,12 @@ impl Component for Home {
         _ => Color::White,
       };
 
-      let sub_color = match i.sub_state.as_str() {
-        "running" => Color::Green,
-        "exited" | "dead" => Color::Red,
-        _ => Color::White,
-      };
+      let active_state_value = format!("{} ({})", i.active_state, i.sub_state);
 
       let lines = vec![
         line_color(&i.description, Color::White),
         line_color(&i.load_state, load_color),
-        line_color(&i.active_state, active_color),
-        line_color(&i.sub_state, sub_color),
+        line_color_string(active_state_value, active_color),
         line_color(&i.path, Color::White),
       ];
 
