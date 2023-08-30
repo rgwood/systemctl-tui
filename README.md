@@ -28,6 +28,7 @@ sudo ln -s ~/.cargo/bin/systemctl-tui /usr/bin/systemctl-tui
 
 ## Credits
 
-- Inspired by the truly excellent [Lazygit](https://github.com/jesseduffield/lazygit).
+- Inspired by the truly wonderful [Lazygit](https://github.com/jesseduffield/lazygit)
+- [`sysz`](https://github.com/joehillen/sysz) is so cool
 - Used [`ratatui-template`](https://github.com/kdheepak/ratatui-template/) to get started
 - systemd code partially taken from [`servicer`](https://github.com/servicer-labs/servicer)
