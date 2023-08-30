@@ -7,14 +7,15 @@ I think we should only refresh on demand to fix this. Remove the render_tick int
 Will need to do some testing after this.
 Longer-term, probably want to do some more perf work on the render() function; might be able to speed it up
 
-- [ ] unit files
-  - [ ] figure out path to unit file
-  - [ ] show/preview contents
-  - [ ] command to open service file in text editor
+- [ ] Figure out inconsistent dev compile times. Sometimes 1s, sometimes 17s
+- [x] unit files
+  - [x] figure out path to unit file
+  - [ ] command to open unit file in text editor
+  - [ ] command to copy unit file path to clipboard
 - [ ] action to reload (do this automatically?)
-- [ ] Fix jank where service refresh changes scroll position in services list
 - [ ] show PID
 - [ ] show memory use
+- [x] Fix jank where service refresh changes scroll position in services list
 - [x] show substate in parens like `Active (Running)`
 - [x] use journalctl -f to follow logs for instant refresh
 - [x] display error (like when start/stop fails)
