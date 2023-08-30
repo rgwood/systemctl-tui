@@ -16,6 +16,7 @@ pub enum Action {
   EnterError { err: String },
   CancelTask,
   ToggleHelp,
+  SetUnitFilePath { unit_name: String, unit_file_path: String },
   SetLogs { unit_name: String, logs: Vec<String> },
   AppendLogLine { unit_name: String, line: String },
   StartService(String),
