@@ -193,7 +193,7 @@ impl Home {
       .filter(|u| u.short_name().to_lowercase().contains(&search_value_lower))
       .cloned()
       .collect_vec();
-    self.filtered_units = StatefulList::with_items(matching);
+    self.filtered_units.items = matching;
 
     // try to select the same item we had selected before
     // TODO: this is horrible, clean it up
