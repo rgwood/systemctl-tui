@@ -1,6 +1,7 @@
 // File taken from https://github.com/servicer-labs/servicer/blob/master/src/utils/systemd.rs and modified
 
 use anyhow::Result;
+use duct::cmd;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use zbus::Connection;
@@ -75,6 +76,14 @@ pub async fn get_services() -> Result<Vec<UnitStatus>> {
   info!("Loaded systemd services in {:?}", start.elapsed());
 
   Ok(units)
+}
+
+pub fn get_unit_file_location(service_name: &str) -> Result<String> {
+  // show -P FragmentPath reitunes.service
+  match cmd!("systemctl", "show", "-P", "FragmentPath", service_name).read() {
+    Ok(output) => Ok(output.trim().to_string()),
+    Err(e) => anyhow::bail!("Failed to get unit file location: {}", e),
+  }
 }
 
 pub async fn start_service(service_name: String, cancel_token: CancellationToken) -> Result<()> {
