@@ -15,6 +15,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+use tracing_subscriber::field::debug;
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use std::{process::Stdio, time::Duration};
@@ -65,7 +66,7 @@ impl MenuItem {
   }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Unit {
   pub inner: UnitStatus,
   pub unit_file_path: String,
@@ -165,8 +166,22 @@ impl Home {
 
   pub fn set_units(&mut self, units: Vec<UnitStatus>) {
     let previously_selected = self.selected_service();
-
     self.all_units = units.into_iter().map(Unit::new).collect_vec();
+    self.filter_statuses(previously_selected);
+  }
+
+  pub fn update_units(&mut self, units: Vec<UnitStatus>) {
+    let previously_selected = self.selected_service();
+
+    for unit in units {
+      if let Some(existing) = self.all_units.iter_mut().find(|u| u.name() == unit.name) {
+        existing.inner = unit;
+      } else {
+        self.all_units.push(Unit::new(unit));
+      }
+    }
+
+    // self.all_units = units.into_iter().map(Unit::new).collect_vec();
     self.filter_statuses(previously_selected);
   }
 
@@ -216,6 +231,11 @@ impl Home {
   }
 
   fn filter_statuses(&mut self, previously_selected: Option<String>) {
+
+    if let Some(selected) = self.filtered_units.selected() {
+      tracing::debug!("Selected: {:?}", selected.unit_file_path);
+    }
+
     let search_value_lower = self.input.value().to_lowercase();
     // TODO: use fuzzy find
     let matching = self
@@ -225,6 +245,10 @@ impl Home {
       .cloned()
       .collect_vec();
     self.filtered_units.items = matching;
+
+    if let Some(selected) = self.filtered_units.selected() {
+      tracing::debug!("Selected: {:?}", selected.unit_file_path);
+    }
 
     // try to select the same item we had selected before
     // TODO: this is horrible, clean it up
@@ -241,6 +265,10 @@ impl Home {
       } else {
         self.unselect();
       }
+    }
+
+    if let Some(selected) = self.filtered_units.selected() {
+      tracing::debug!("Selected: {:?}", selected.unit_file_path);
     }
   }
 
@@ -344,6 +372,10 @@ impl Component for Home {
           info!("Cancelling previous journalctl task");
           handle.abort();
         }
+
+        // let unit_file_path = systemd::get_unit_path(&unit_name);
+
+        // let _ = tx.clone().send(Action::SetUnitFilePath { unit_name: unit_name.clone(), unit_file_path});
 
         // First, get the N lines in a batch
         info!("Getting logs for {}", unit_name);
@@ -533,11 +565,11 @@ impl Component for Home {
         }
       },
       Action::SetUnitFilePath { unit_name, unit_file_path } => {
-        // TODO: update even if the unit isn't selected
-        if let Some(selected) = self.filtered_units.selected_mut() {
-          if selected.name() == unit_name {
-            selected.unit_file_path = unit_file_path;
-          }
+        if let Some(unit) = self.all_units.iter_mut().find(|u| u.name() == unit_name) {
+          unit.unit_file_path = unit_file_path.clone();
+        }
+        if let Some(unit) = self.filtered_units.items.iter_mut().find(|u| u.name() == unit_name) {
+          unit.unit_file_path = unit_file_path;
         }
       },
       Action::SetLogs { unit_name: service_name, logs } => {
@@ -586,7 +618,7 @@ impl Component for Home {
         });
       },
       Action::SetServices(units) => {
-        self.set_units(units);
+        self.update_units(units);
         return Some(Action::Render);
       },
       Action::SpinnerTick => {
