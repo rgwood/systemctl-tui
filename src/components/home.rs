@@ -40,8 +40,8 @@ pub enum Mode {
 pub struct Home {
   pub logger: Logger,
   pub show_logger: bool,
-  pub all_units: Vec<UnitStatus>,
-  pub filtered_units: StatefulList<UnitStatus>,
+  pub all_units: Vec<Unit>,
+  pub filtered_units: StatefulList<Unit>,
   pub logs: Vec<String>,
   pub logs_scroll_offset: u16,
   pub mode: Mode,
@@ -65,6 +65,26 @@ impl MenuItem {
   }
 }
 
+#[derive(Clone)]
+pub struct Unit {
+  pub inner: UnitStatus,
+  pub unit_file_path: String,
+}
+
+impl Unit {
+  pub fn new(inner: UnitStatus) -> Self {
+    Self { inner, unit_file_path: String::new() }
+  }
+
+  pub fn name(&self) -> &str {
+    &self.inner.name
+  }
+
+fn short_name(&self) -> &str {
+    self.inner.short_name()
+}
+}
+
 pub struct StatefulList<T> {
   state: ListState,
   items: Vec<T>,
@@ -79,6 +99,16 @@ impl<T> Default for StatefulList<T> {
 impl<T> StatefulList<T> {
   pub fn with_items(items: Vec<T>) -> StatefulList<T> {
     StatefulList { state: ListState::default(), items }
+  }
+
+  fn selected_mut(&mut self) -> Option<&mut T> {
+    if self.items.is_empty() {
+      return None;
+    }
+    match self.state.selected() {
+      Some(i) => Some(&mut self.items[i]),
+      None => None,
+    }
   }
 
   fn selected(&self) -> Option<&T> {
@@ -135,7 +165,8 @@ impl Home {
 
   pub fn set_units(&mut self, units: Vec<UnitStatus>) {
     let previously_selected = self.selected_service();
-    self.all_units = units;
+
+    self.all_units = units.into_iter().map(Unit::new).collect_vec();
     self.filter_statuses(previously_selected);
   }
 
@@ -170,12 +201,12 @@ impl Home {
   }
 
   pub fn selected_service(&self) -> Option<String> {
-    self.filtered_units.selected().map(|u| u.name.clone())
+    self.filtered_units.selected().map(|u| u.name().to_string())
   }
 
   pub fn get_logs(&mut self) {
     if let Some(selected) = self.filtered_units.selected() {
-      let unit_name = selected.name.to_string();
+      let unit_name = selected.name().to_string();
       if let Err(e) = self.journalctl_tx.as_ref().unwrap().send(unit_name) {
         warn!("Error sending unit name to journalctl thread: {}", e);
       }
@@ -198,7 +229,7 @@ impl Home {
     // try to select the same item we had selected before
     // TODO: this is horrible, clean it up
     if let Some(previously_selected) = previously_selected {
-      if let Some(index) = self.filtered_units.items.iter().position(|u| u.name == previously_selected) {
+      if let Some(index) = self.filtered_units.items.iter().position(|u| u.name() == previously_selected) {
         self.select(Some(index), false);
       } else {
         self.select(Some(0), true);
@@ -467,7 +498,7 @@ impl Component for Home {
       Action::EnterMode(mode) => {
         if mode == Mode::ActionMenu {
           let selected = match self.filtered_units.selected() {
-            Some(s) => s.name.clone(),
+            Some(s) => s.name().to_string(),
             None => return None,
           };
 
@@ -501,19 +532,24 @@ impl Component for Home {
           self.mode = Mode::Normal;
         }
       },
+      Action::SetUnitFilePath { unit_name, unit_file_path } => {
+        // TODO: update even if the unit isn't selected
+        if let Some(selected) = self.filtered_units.selected_mut() {
+          if selected.name() == unit_name {
+            selected.unit_file_path = unit_file_path;
+          }
+        }
+      },
       Action::SetLogs { unit_name: service_name, logs } => {
         if let Some(selected) = self.filtered_units.selected() {
-          if selected.name == service_name {
-            // split by lines
-            // let mut logs = logs.split("\n").map(String::from).collect_vec();
-            // logs.reverse();
+          if selected.name() == service_name {
             self.logs = logs;
           }
         }
       },
       Action::AppendLogLine { unit_name, line } => {
         if let Some(selected) = self.filtered_units.selected() {
-          if selected.name == unit_name {
+          if selected.name() == unit_name {
             self.logs.push(line);
           }
         }
@@ -631,7 +667,7 @@ impl Component for Home {
       Line::from("Description: "),
       Line::from("Loaded: "),
       Line::from("Active: "),
-      Line::from("Path: "),
+      Line::from("Unit file: "),
     ];
 
     let details_text = if let Some(i) = selected_item {
@@ -643,26 +679,26 @@ impl Component for Home {
         Line::from(vec![Span::styled(value, Style::default().fg(color))])
       }
 
-      let load_color = match i.load_state.as_str() {
+      let load_color = match i.inner.load_state.as_str() {
         "loaded" => Color::Green,
         "not-found" => Color::Yellow,
         "error" => Color::Red,
         _ => Color::White,
       };
 
-      let active_color = match i.active_state.as_str() {
+      let active_color = match i.inner.active_state.as_str() {
         "active" => Color::Green,
         "inactive" => Color::Red,
         _ => Color::White,
       };
 
-      let active_state_value = format!("{} ({})", i.active_state, i.sub_state);
+      let active_state_value = format!("{} ({})", i.inner.active_state, i.inner.sub_state);
 
       let lines = vec![
-        line_color(&i.description, Color::White),
-        line_color(&i.load_state, load_color),
+        line_color(&i.inner.description, Color::White),
+        line_color(&i.inner.load_state, load_color),
         line_color_string(active_state_value, active_color),
-        line_color(&i.path, Color::White),
+        line_color(&i.unit_file_path, Color::White),
       ];
 
       lines
@@ -797,7 +833,7 @@ impl Component for Home {
       None => return,
     };
 
-    let min_width = selected_item.name.len() as u16 + 14;
+    let min_width = selected_item.name().len() as u16 + 14;
     let desired_width = min_width + 4; // idk, looks alright
     let popup_width = desired_width.min(f.size().width);
 
@@ -811,7 +847,7 @@ impl Component for Home {
           Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::LightGreen))
-            .title(format!("Actions for {}", self.filtered_units.selected().unwrap().name)),
+            .title(format!("Actions for {}", self.filtered_units.selected().unwrap().name())),
         )
         .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
 
