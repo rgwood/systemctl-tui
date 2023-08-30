@@ -81,9 +81,9 @@ impl Unit {
     &self.inner.name
   }
 
-fn short_name(&self) -> &str {
+  fn short_name(&self) -> &str {
     self.inner.short_name()
-}
+  }
 }
 
 pub struct StatefulList<T> {
@@ -231,7 +231,6 @@ impl Home {
   }
 
   fn filter_statuses(&mut self, previously_selected: Option<String>) {
-
     if let Some(selected) = self.filtered_units.selected() {
       tracing::debug!("Selected: {:?}", selected.unit_file_path);
     }
@@ -349,6 +348,8 @@ impl Home {
 impl Component for Home {
   fn init(&mut self, tx: UnboundedSender<Action>) -> anyhow::Result<()> {
     self.action_tx = Some(tx.clone());
+    // TODO find a better name for these. They're used to run any async data loading that needs to happen after the selection is changed,
+    // not just journalctl stuff
     let (journalctl_tx, journalctl_rx) = std::sync::mpsc::channel::<String>();
     self.journalctl_tx = Some(journalctl_tx);
 
@@ -373,9 +374,13 @@ impl Component for Home {
           handle.abort();
         }
 
-        // let unit_file_path = systemd::get_unit_path(&unit_name);
-
-        // let _ = tx.clone().send(Action::SetUnitFilePath { unit_name: unit_name.clone(), unit_file_path});
+        // get the unit file path
+        match systemd::get_unit_file_location(&unit_name) {
+          Ok(path) => {
+            let _ = tx.clone().send(Action::SetUnitFilePath { unit_name: unit_name.clone(), path });
+          },
+          Err(e) => error!("Error getting unit file path for {}: {}", unit_name, e),
+        }
 
         // First, get the N lines in a batch
         info!("Getting logs for {}", unit_name);
@@ -564,12 +569,12 @@ impl Component for Home {
           self.mode = Mode::Normal;
         }
       },
-      Action::SetUnitFilePath { unit_name, unit_file_path } => {
+      Action::SetUnitFilePath { unit_name, path } => {
         if let Some(unit) = self.all_units.iter_mut().find(|u| u.name() == unit_name) {
-          unit.unit_file_path = unit_file_path.clone();
+          unit.unit_file_path = path.clone();
         }
         if let Some(unit) = self.filtered_units.items.iter_mut().find(|u| u.name() == unit_name) {
-          unit.unit_file_path = unit_file_path;
+          unit.unit_file_path = path;
         }
       },
       Action::SetLogs { unit_name: service_name, logs } => {
@@ -695,12 +700,8 @@ impl Component for Home {
     let props_pane = details_panel_panes[0];
     let values_pane = details_panel_panes[1];
 
-    let props_lines = vec![
-      Line::from("Description: "),
-      Line::from("Loaded: "),
-      Line::from("Active: "),
-      Line::from("Unit file: "),
-    ];
+    let props_lines =
+      vec![Line::from("Description: "), Line::from("Loaded: "), Line::from("Active: "), Line::from("Unit file: ")];
 
     let details_text = if let Some(i) = selected_item {
       fn line_color<'a>(value: &'a str, color: Color) -> Line<'a> {
@@ -738,7 +739,7 @@ impl Component for Home {
       vec![]
     };
 
-    let paragraph = Paragraph::new(details_text).style(Style::default()).wrap(Wrap { trim: true });
+    let paragraph = Paragraph::new(details_text).style(Style::default());
 
     let props_widget = Paragraph::new(props_lines).alignment(ratatui::layout::Alignment::Right);
     f.render_widget(props_widget, props_pane);
