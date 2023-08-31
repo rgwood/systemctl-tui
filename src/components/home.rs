@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use duct::cmd;
 use futures::Future;
+use indexmap::IndexMap;
 use itertools::Itertools;
 use ratatui::{
   layout::{Constraint, Direction, Layout, Rect},
@@ -40,7 +41,7 @@ pub enum Mode {
 pub struct Home {
   pub logger: Logger,
   pub show_logger: bool,
-  pub all_units: Vec<Unit>,
+  pub all_units: IndexMap<String, Unit>,
   pub filtered_units: StatefulList<Unit>,
   pub logs: Vec<String>,
   pub logs_scroll_offset: u16,
@@ -165,30 +166,31 @@ impl Home {
   }
 
   pub fn set_units(&mut self, units: Vec<UnitStatus>) {
-    let previously_selected = self.selected_service();
-    self.all_units = units.into_iter().map(Unit::new).collect_vec();
-    self.filter_statuses(previously_selected);
+    self.all_units.clear();
+    for unit_status in units.into_iter() {
+      self.all_units.insert(unit_status.name.to_string(), Unit::new(unit_status));
+    }
+    self.refresh_filtered_units();
   }
 
   // Update units in-place, then filter the list
   // This is inefficient but it's fast enough
-  // (on gen 13 i7: ~200 microseconds to update, ~100 microseconds to filter)
+  // (on gen 13 i7: ~100 microseconds to update, ~200 microseconds to filter)
   // revisit if needed
   pub fn update_units(&mut self, units: Vec<UnitStatus>) {
     let now = std::time::Instant::now();
-    let previously_selected = self.selected_service();
 
     for unit in units {
-      if let Some(existing) = self.all_units.iter_mut().find(|u| u.name() == unit.name) {
+      if let Some(existing) = self.all_units.get_mut(&unit.name) {
         existing.inner = unit;
       } else {
-        self.all_units.push(Unit::new(unit));
+        self.all_units.insert(unit.name.clone(), Unit::new(unit));
       }
     }
     info!("Updated units in {:?}", now.elapsed());
 
     let now = std::time::Instant::now();
-    self.filter_statuses(previously_selected);
+    self.refresh_filtered_units();
     info!("Filtered units in {:?}", now.elapsed());
   }
 
@@ -237,12 +239,13 @@ impl Home {
     }
   }
 
-  fn filter_statuses(&mut self, previously_selected: Option<String>) {
+  fn refresh_filtered_units(&mut self) {
+    let previously_selected = self.selected_service();
     let search_value_lower = self.input.value().to_lowercase();
     // TODO: use fuzzy find
     let matching = self
       .all_units
-      .iter()
+      .values()
       .filter(|u| u.short_name().to_lowercase().contains(&search_value_lower))
       .cloned()
       .collect_vec();
@@ -492,8 +495,7 @@ impl Component for Home {
 
           // if the search value changed, filter the list
           if prev_search_value != self.input.value() {
-            let previously_selected = self.selected_service();
-            self.filter_statuses(previously_selected);
+            self.refresh_filtered_units();
           }
           vec![Action::Render]
         },
@@ -565,12 +567,10 @@ impl Component for Home {
         }
       },
       Action::SetUnitFilePath { unit_name, path } => {
-        if let Some(unit) = self.all_units.iter_mut().find(|u| u.name() == unit_name) {
+        if let Some(unit) = self.all_units.get_mut(&unit_name) {
           unit.unit_file_path = path.clone();
         }
-        if let Some(unit) = self.filtered_units.items.iter_mut().find(|u| u.name() == unit_name) {
-          unit.unit_file_path = path;
-        }
+        self.refresh_filtered_units(); // copy the updated unit file path to the filtered list
       },
       Action::SetLogs { unit_name: service_name, logs } => {
         if let Some(selected) = self.filtered_units.selected() {
