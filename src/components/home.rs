@@ -175,7 +175,7 @@ impl Home {
 
   // Update units in-place, then filter the list
   // This is inefficient but it's fast enough
-  // (on gen 13 i7: ~100 microseconds to update, ~200 microseconds to filter)
+  // (on gen 13 i7: ~100 microseconds to update, ~100 microseconds to filter)
   // revisit if needed
   pub fn update_units(&mut self, units: Vec<UnitStatus>) {
     let now = std::time::Instant::now();
