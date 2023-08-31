@@ -13,7 +13,7 @@ Longer-term, probably want to do some more perf work on the render() function; m
 - [x] unit files
   - [x] figure out path to unit file
   - [ ] command to open unit file in text editor
-  - [ ] command to copy unit file path to clipboard
+  - [x] command to copy unit file path to clipboard
 - [ ] action to reload (do this automatically?)
 - [ ] show PID
 - [ ] show memory use
