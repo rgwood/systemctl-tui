@@ -541,6 +541,7 @@ impl Component for Home {
             MenuItem::new("Start", Action::StartService(selected.clone())),
             MenuItem::new("Stop", Action::StopService(selected.clone())),
             MenuItem::new("Restart", Action::RestartService(selected.clone())),
+            MenuItem::new("Copy unit file path to clipboard", Action::CopyUnitFilePath),
             // TODO add these
             // MenuItem::new("Reload", Action::ReloadService(selected.clone())),
             // MenuItem::new("Enable", Action::EnableService(selected.clone())),
@@ -564,6 +565,14 @@ impl Component for Home {
         } else {
           // TODO: go back to the previous mode
           self.mode = Mode::Normal;
+        }
+      },
+      Action::CopyUnitFilePath => {
+        if let Some(selected) = self.filtered_units.selected() {
+          match clipboard_anywhere::set_clipboard(&selected.unit_file_path) {
+            Ok(_) => return Some(Action::EnterMode(Mode::Normal)),
+            Err(e) => return Some(Action::EnterError { err: format!("Error copying to clipboard: {}", e) }),
+          }
         }
       },
       Action::SetUnitFilePath { unit_name, path } => {

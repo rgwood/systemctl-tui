@@ -17,6 +17,7 @@ pub enum Action {
   CancelTask,
   ToggleHelp,
   SetUnitFilePath { unit_name: String, path: String },
+  CopyUnitFilePath,
   SetLogs { unit_name: String, logs: Vec<String> },
   AppendLogLine { unit_name: String, line: String },
   StartService(String),
