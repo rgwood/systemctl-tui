@@ -54,6 +54,7 @@ tokio-util = "0.7.8"
 zbus = { version = "3.14.1", default-features = false, features = ["tokio"] }
 itertools = "0.11.0"
 duct = "0.13.6"
+indexmap = "2.0.0"
 
 # build with `cargo build --profile profiling`
 # to analyze performance with tooling like perf / samply / superluminal

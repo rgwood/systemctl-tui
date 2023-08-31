@@ -7,8 +7,9 @@ I think we should only refresh on demand to fix this. Remove the render_tick int
 Will need to do some testing after this.
 Longer-term, probably want to do some more perf work on the render() function; might be able to speed it up
 
-- [ ] Figure out inconsistent dev compile times. Sometimes 1s, sometimes 17s
+- [x] Figure out inconsistent dev compile times. Sometimes 1s, sometimes 17s
 - [ ] Finish the work of updating services. Add new ones, delete no longer present ones
+- [x] Use indexmap to speed up updating services
 - [x] unit files
   - [x] figure out path to unit file
   - [ ] command to open unit file in text editor
