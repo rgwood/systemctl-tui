@@ -1,0 +1,9 @@
+# Here's some documentation on how to use this file:
+# https://rust-lang.github.io/rustup/overrides.html#the-toolchain-file
+
+[toolchain]
+# The default profile includes rustc, rust-std, cargo, rust-docs, rustfmt and clippy.
+# https://rust-lang.github.io/rustup/concepts/profiles.html
+profile = "default"
+# Pin to 1.71.1 to avoid a compile time regression in 1.72.0 https://github.com/zachs18/zbus-repro/
+channel = "1.71.1"
