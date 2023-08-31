@@ -4,9 +4,9 @@
 
 A fast, simple TUI for interacting with [systemd](https://en.wikipedia.org/wiki/Systemd) services and their logs.
 
-![image](https://github.com/rgwood/systemctl-tui/assets/26268125/da1d4f06-ea8d-4ea0-805e-d0e26e641cd6)
+![image](https://github.com/rgwood/systemctl-tui/assets/26268125/a2039f7c-c271-4979-91fd-2534f6e8223c)
 
-`systemctl-tui` can quickly browse service status and logs, as well as start/stop/restart services. It aims to do a small number of things well.
+`systemctl-tui` can quickly browse service status and logs, and start/stop/restart services. It aims to do a small number of things well.
 
 ## Install
 
