@@ -1607,7 +1607,7 @@ dependencies = [
 
 [[package]]
 name = "systemctl-tui"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "better-panic",
