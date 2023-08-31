@@ -1,4 +1,4 @@
-// File taken from https://github.com/servicer-labs/servicer/blob/master/src/utils/systemd.rs and modified
+// File initially taken from https://github.com/servicer-labs/servicer/blob/master/src/utils/systemd.rs, since modified
 
 use anyhow::Result;
 use duct::cmd;
@@ -14,11 +14,12 @@ pub struct UnitStatus {
   pub load_state: String,   // The load state (i.e. whether the unit file has been loaded successfully)
   pub active_state: String, // The active state (i.e. whether the unit is currently started or not)
   pub sub_state: String, // The sub state (a more fine-grained version of the active state that is specific to the unit type, which the active state is not)
-  pub followed: String, // A unit that is being followed in its state by this unit, if there is any, otherwise the empty string.
-  pub path: String,     // The unit object path
-  pub job_id: u32,      // If there is a job queued for the job unit the numeric job id, 0 otherwise
-  pub job_type: String, // The job type as string
-  pub job_path: String, // The job object path
+  // We don't use any of these right now, might as well skip'em so there's less data to clone
+  // pub followed: String, // A unit that is being followed in its state by this unit, if there is any, otherwise the empty string.
+  // pub path: String,     // The unit object path
+  // pub job_id: u32,      // If there is a job queued for the job unit the numeric job id, 0 otherwise
+  // pub job_type: String, // The job type as string
+  // pub job_path: String, // The job object path
 }
 
 impl UnitStatus {
@@ -52,11 +53,11 @@ impl From<RawUnit> for UnitStatus {
       load_state,
       active_state,
       sub_state,
-      followed,
-      path: path.to_string(),
-      job_id,
-      job_type,
-      job_path: job_path.to_string(),
+      // followed,
+      // path: path.to_string(),
+      // job_id,
+      // job_type,
+      // job_path: job_path.to_string(),
     }
   }
 }
