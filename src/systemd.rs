@@ -82,7 +82,7 @@ pub async fn get_services() -> Result<Vec<UnitStatus>> {
 
 pub fn get_unit_file_location(service_name: &str) -> Result<String> {
   // show -P FragmentPath reitunes.service
-  match cmd!("systemctl", "show", "-P", "FragmentPath", service_name).read() {
+  match cmd!("systemctl", "--quiet", "show", "-P", "FragmentPath", service_name).read() {
     Ok(output) => Ok(output.trim().to_string()),
     Err(e) => anyhow::bail!("Failed to get unit file location: {}", e),
   }
