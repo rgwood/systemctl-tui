@@ -45,7 +45,7 @@ type RawUnit =
 
 impl From<RawUnit> for UnitStatus {
   fn from(raw_unit: RawUnit) -> Self {
-    let (name, description, load_state, active_state, sub_state, followed, path, job_id, job_type, job_path) = raw_unit;
+    let (name, description, load_state, active_state, sub_state, _followed, _path, _job_id, _job_type, _job_path) = raw_unit;
 
     Self {
       name,
