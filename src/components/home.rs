@@ -383,7 +383,7 @@ impl Component for Home {
         // First, get the N lines in a batch
         info!("Getting logs for {}", unit_name);
         let start = std::time::Instant::now();
-        match cmd!("journalctl", "-u", unit_name.clone(), "--output=short-iso", "--lines=500").read() {
+        match cmd!("journalctl", "--quiet", "-u", unit_name.clone(), "--output=short-iso", "--lines=500").read() {
           Ok(stdout) => {
             info!("Got logs for {} in {:?}", unit_name, start.elapsed());
 
