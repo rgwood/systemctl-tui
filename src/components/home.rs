@@ -391,7 +391,11 @@ impl Component for Home {
           Ok(stdout) => {
             info!("Got logs for {} in {:?}", unit_name, start.elapsed());
 
-            let logs = stdout.split("\n").map(String::from).collect_vec();
+            let mut logs = stdout.split("\n").map(String::from).collect_vec();
+
+            if logs.is_empty() || logs[0].is_empty() {
+              logs.push(String::from("No logs found/available. Maybe try relaunching with `sudo systemctl-tui`"));
+            }
             let _ = tx.send(Action::SetLogs { unit_name: unit_name.clone(), logs });
             let _ = tx.send(Action::Render);
           },
