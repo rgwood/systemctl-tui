@@ -372,10 +372,14 @@ impl Component for Home {
           handle.abort();
         }
 
+        // lazy debounce to avoid spamming journalctl on slow connections/systems
+        std::thread::sleep(Duration::from_millis(100));
+
         // get the unit file path
         match systemd::get_unit_file_location(&unit_name) {
           Ok(path) => {
-            let _ = tx.clone().send(Action::SetUnitFilePath { unit_name: unit_name.clone(), path });
+            let _ = tx.send(Action::SetUnitFilePath { unit_name: unit_name.clone(), path });
+            let _ = tx.send(Action::Render);
           },
           Err(e) => error!("Error getting unit file path for {}: {}", unit_name, e),
         }
