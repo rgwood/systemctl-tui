@@ -437,11 +437,12 @@ impl Component for Home {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
       match key.code {
         KeyCode::Char('c') => return vec![Action::Quit],
-        KeyCode::Char('d') => return vec![Action::Quit],
         KeyCode::Char('q') => return vec![Action::Quit],
         KeyCode::Char('z') => return vec![Action::Suspend],
         KeyCode::Char('f') => return vec![Action::EnterMode(Mode::Search)],
         KeyCode::Char('l') => return vec![Action::ToggleShowLogger],
+        KeyCode::Char('d') => return vec![Action::ScrollDown(1), Action::Render],
+        KeyCode::Char('u') => return vec![Action::ScrollUp(1), Action::Render],
         _ => (),
       }
     }
@@ -473,7 +474,16 @@ impl Component for Home {
             self.previous();
             vec![Action::Render]
           },
-          KeyCode::Down => {
+          KeyCode::Char('k') => {
+            // if we're filtering the list, and we're at the top, and there's text in the search box, go to search mode
+            if self.filtered_units.state.selected() == Some(0) {
+              return vec![Action::EnterMode(Mode::Search)];
+            }
+
+            self.previous();
+            vec![Action::Render]
+          },
+          KeyCode::Down | KeyCode::Char('j') => {
             self.next();
             vec![Action::Render]
           },
@@ -510,11 +520,11 @@ impl Component for Home {
       },
       Mode::ActionMenu => match key.code {
         KeyCode::Esc => vec![Action::EnterMode(Mode::Normal)],
-        KeyCode::Down => {
+        KeyCode::Down | KeyCode::Char('j') => {
           self.menu_items.next();
           vec![Action::Render]
         },
-        KeyCode::Up => {
+        KeyCode::Up | KeyCode::Char('k') => {
           self.menu_items.previous();
           vec![Action::Render]
         },
