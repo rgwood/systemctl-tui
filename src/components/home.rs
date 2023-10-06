@@ -441,6 +441,7 @@ impl Component for Home {
         KeyCode::Char('z') => return vec![Action::Suspend],
         KeyCode::Char('f') => return vec![Action::EnterMode(Mode::Search)],
         KeyCode::Char('l') => return vec![Action::ToggleShowLogger],
+        // vim keybindings, apparently
         KeyCode::Char('d') => return vec![Action::ScrollDown(1), Action::Render],
         KeyCode::Char('u') => return vec![Action::ScrollUp(1), Action::Render],
         _ => (),
@@ -465,16 +466,7 @@ impl Component for Home {
       Mode::Normal => {
         match key.code {
           KeyCode::Char('q') => vec![Action::Quit],
-          KeyCode::Up => {
-            // if we're filtering the list, and we're at the top, and there's text in the search box, go to search mode
-            if self.filtered_units.state.selected() == Some(0) {
-              return vec![Action::EnterMode(Mode::Search)];
-            }
-
-            self.previous();
-            vec![Action::Render]
-          },
-          KeyCode::Char('k') => {
+          KeyCode::Up | KeyCode::Char('k') => {
             // if we're filtering the list, and we're at the top, and there's text in the search box, go to search mode
             if self.filtered_units.state.selected() == Some(0) {
               return vec![Action::EnterMode(Mode::Search)];
