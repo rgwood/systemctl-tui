@@ -437,11 +437,13 @@ impl Component for Home {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
       match key.code {
         KeyCode::Char('c') => return vec![Action::Quit],
-        KeyCode::Char('d') => return vec![Action::Quit],
         KeyCode::Char('q') => return vec![Action::Quit],
         KeyCode::Char('z') => return vec![Action::Suspend],
         KeyCode::Char('f') => return vec![Action::EnterMode(Mode::Search)],
         KeyCode::Char('l') => return vec![Action::ToggleShowLogger],
+        // vim keybindings, apparently
+        KeyCode::Char('d') => return vec![Action::ScrollDown(1), Action::Render],
+        KeyCode::Char('u') => return vec![Action::ScrollUp(1), Action::Render],
         _ => (),
       }
     }
@@ -464,7 +466,7 @@ impl Component for Home {
       Mode::Normal => {
         match key.code {
           KeyCode::Char('q') => vec![Action::Quit],
-          KeyCode::Up => {
+          KeyCode::Up | KeyCode::Char('k') => {
             // if we're filtering the list, and we're at the top, and there's text in the search box, go to search mode
             if self.filtered_units.state.selected() == Some(0) {
               return vec![Action::EnterMode(Mode::Search)];
@@ -473,7 +475,7 @@ impl Component for Home {
             self.previous();
             vec![Action::Render]
           },
-          KeyCode::Down => {
+          KeyCode::Down | KeyCode::Char('j') => {
             self.next();
             vec![Action::Render]
           },
@@ -510,11 +512,11 @@ impl Component for Home {
       },
       Mode::ActionMenu => match key.code {
         KeyCode::Esc => vec![Action::EnterMode(Mode::Normal)],
-        KeyCode::Down => {
+        KeyCode::Down | KeyCode::Char('j') => {
           self.menu_items.next();
           vec![Action::Render]
         },
-        KeyCode::Up => {
+        KeyCode::Up | KeyCode::Char('k') => {
           self.menu_items.previous();
           vec![Action::Render]
         },
@@ -822,29 +824,38 @@ impl Component for Home {
     }
 
     if self.mode == Mode::Help {
-      let popup = centered_rect_abs(50, 12, f.size());
+      let popup = centered_rect_abs(50, 20, f.size());
 
-      fn white(s: &str) -> Span {
-        Span::styled(s, Style::default().fg(Color::White))
+      // fn white(s: &str) -> Span {
+      //   Span::styled(s, Style::default().fg(Color::White))
+      // }
+           
+      fn primary(s: &str) -> Span {
+        Span::styled(s, Style::default().fg(Color::Cyan))
       }
 
       let help_lines = vec![
         Line::from(""),
         Line::from(Span::styled("Keyboard Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
         Line::from(""),
-        Line::from(vec![white("CTRL+L"), Span::raw(" toggles the logger pane")]),
         Line::from(vec![
-          white("CTRL+C"),
+          primary("CTRL+C"),
           Span::raw(" or "),
-          white("CTRL+D"),
-          Span::raw(" or "),
-          white("CTRL+Q"),
+          primary("CTRL+Q"),
           Span::raw(" quit the application"),
         ]),
-        Line::from(vec![white("PageUp"), Span::raw(" / "), white("PageDown"), Span::raw(" scroll the logs")]),
-        Line::from(vec![white("Home"), Span::raw(" / "), white("End"), Span::raw(" scroll to top/bottom")]),
-        Line::from(vec![white("Enter"), Span::raw(" or "), white("Space"), Span::raw(" open the action menu")]),
-        Line::from(vec![white("?"), Span::raw(" or "), white("F1"), Span::raw(" open this help pane")]),
+        Line::from(vec![primary("CTRL+L"), Span::raw(" toggles the logger pane")]),
+        Line::from(vec![primary("PageUp"), Span::raw(" / "), primary("PageDown"), Span::raw(" scroll the logs")]),
+        Line::from(vec![primary("Home"), Span::raw(" / "), primary("End"), Span::raw(" scroll to top/bottom")]),
+        Line::from(vec![primary("Enter"), Span::raw(" or "), primary("Space"), Span::raw(" open the action menu")]),
+        Line::from(vec![primary("?"), Span::raw(" or "), primary("F1"), Span::raw(" open this help pane")]),
+        Line::from(""),
+
+        Line::from(Span::styled("Vim Style Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
+        Line::from(""),
+        Line::from(vec![primary("j"), Span::raw(" navigate down")]),
+        Line::from(vec![primary("k"), Span::raw(" navigate up")]),
+        Line::from(vec![primary("CTRL+u"), Span::raw(" / "), primary("CTRL+d"),Span::raw(" scroll the logs")])
       ];
 
       let name = env!("CARGO_PKG_NAME");
