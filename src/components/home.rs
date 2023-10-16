@@ -829,7 +829,7 @@ impl Component for Home {
       // fn white(s: &str) -> Span {
       //   Span::styled(s, Style::default().fg(Color::White))
       // }
-           
+
       fn primary(s: &str) -> Span {
         Span::styled(s, Style::default().fg(Color::Cyan))
       }
@@ -838,24 +838,18 @@ impl Component for Home {
         Line::from(""),
         Line::from(Span::styled("Keyboard Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
         Line::from(""),
-        Line::from(vec![
-          primary("CTRL+C"),
-          Span::raw(" or "),
-          primary("CTRL+Q"),
-          Span::raw(" quit the application"),
-        ]),
+        Line::from(vec![primary("CTRL+C"), Span::raw(" or "), primary("CTRL+Q"), Span::raw(" quit the application")]),
         Line::from(vec![primary("CTRL+L"), Span::raw(" toggles the logger pane")]),
         Line::from(vec![primary("PageUp"), Span::raw(" / "), primary("PageDown"), Span::raw(" scroll the logs")]),
         Line::from(vec![primary("Home"), Span::raw(" / "), primary("End"), Span::raw(" scroll to top/bottom")]),
         Line::from(vec![primary("Enter"), Span::raw(" or "), primary("Space"), Span::raw(" open the action menu")]),
         Line::from(vec![primary("?"), Span::raw(" or "), primary("F1"), Span::raw(" open this help pane")]),
         Line::from(""),
-
         Line::from(Span::styled("Vim Style Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
         Line::from(""),
         Line::from(vec![primary("j"), Span::raw(" navigate down")]),
         Line::from(vec![primary("k"), Span::raw(" navigate up")]),
-        Line::from(vec![primary("CTRL+u"), Span::raw(" / "), primary("CTRL+d"),Span::raw(" scroll the logs")])
+        Line::from(vec![primary("CTRL+u"), Span::raw(" / "), primary("CTRL+d"), Span::raw(" scroll the logs")]),
       ];
 
       let name = env!("CARGO_PKG_NAME");
