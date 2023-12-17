@@ -286,7 +286,7 @@ trait Service {
 /// * `connection`: zbus connection
 /// * `full_service_name`: Full name of the service name with '.service' in the end
 ///
-pub async fn get_active_state(connection: &Connection, full_service_name: &String) -> String {
+pub async fn get_active_state(connection: &Connection, full_service_name: &str) -> String {
   let object_path = get_unit_path(full_service_name);
 
   match zvariant::ObjectPath::try_from(object_path) {
@@ -307,7 +307,7 @@ pub async fn get_active_state(connection: &Connection, full_service_name: &Strin
 /// * `connection`: zbus connection
 /// * `full_service_name`: Full name of the service name with '.service' in the end
 ///
-pub async fn get_unit_file_state(connection: &Connection, full_service_name: &String) -> String {
+pub async fn get_unit_file_state(connection: &Connection, full_service_name: &str) -> String {
   let object_path = get_unit_path(full_service_name);
 
   match zvariant::ObjectPath::try_from(object_path) {
@@ -326,7 +326,7 @@ pub async fn get_unit_file_state(connection: &Connection, full_service_name: &St
 /// * `connection`: zbus connection
 /// * `full_service_name`: Full name of the service name with '.service' in the end
 ///
-pub async fn get_main_pid(connection: &Connection, full_service_name: &String) -> Result<u32, zbus::Error> {
+pub async fn get_main_pid(connection: &Connection, full_service_name: &str) -> Result<u32, zbus::Error> {
   let object_path = get_unit_path(full_service_name);
 
   let validated_object_path = zvariant::ObjectPath::try_from(object_path).unwrap();

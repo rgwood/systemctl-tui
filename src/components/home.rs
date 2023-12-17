@@ -261,7 +261,7 @@ impl Home {
       }
     } else {
       // if we can't, select the first item in the list
-      if self.filtered_units.items.len() > 0 {
+      if !self.filtered_units.items.is_empty() {
         self.select(Some(0), true);
       } else {
         self.unselect();
@@ -391,7 +391,7 @@ impl Component for Home {
           Ok(stdout) => {
             info!("Got logs for {} in {:?}", unit_name, start.elapsed());
 
-            let mut logs = stdout.split("\n").map(String::from).collect_vec();
+            let mut logs = stdout.split('\n').map(String::from).collect_vec();
 
             if logs.is_empty() || logs[0].is_empty() {
               logs.push(String::from("No logs found/available. Maybe try relaunching with `sudo systemctl-tui`"));
@@ -766,7 +766,7 @@ impl Component for Home {
       .iter()
       .rev()
       .map(|l| {
-        if let Some((date, rest)) = l.splitn(2, " ").collect_tuple() {
+        if let Some((date, rest)) = l.splitn(2, ' ').collect_tuple() {
           if date.len() != 24 {
             return Line::from(l.as_str());
           }
@@ -867,7 +867,7 @@ impl Component for Home {
 
     if self.mode == Mode::Error {
       let popup = centered_rect_abs(50, 12, f.size());
-      let error_lines = self.error_message.split("\n").map(Line::from).collect_vec();
+      let error_lines = self.error_message.split('\n').map(Line::from).collect_vec();
       let paragraph = Paragraph::new(error_lines)
         .block(
           Block::default().title(" ⚠️ Error ⚠️ ").borders(Borders::ALL).border_style(Style::default().fg(Color::Red)),
@@ -962,6 +962,5 @@ fn centered_rect_abs(width: u16, height: u16, r: Rect) -> Rect {
   let width = width.min(r.width);
   let height = height.min(r.height);
 
-  let r = Rect::new(offset_x, offset_y, width, height);
-  r
+  Rect::new(offset_x, offset_y, width, height)
 }
