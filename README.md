@@ -10,10 +10,15 @@ A fast, simple TUI for interacting with [systemd](https://en.wikipedia.org/wiki/
 
 ## Install
 
-This project only works on Linux. Currently you need to build from scratch with [Rust installed](https://rustup.rs/). Either:
+Note: this project only works on Linux. 
+
+To build from scratch you will need [Rust installed](https://rustup.rs/). Then either:
 
 1. Run `cargo install systemctl-tui`
 2. Clone the repo and run `cargo build --release` to get a release binary at `target/release/systemctl-tui`
+
+Alternately, [a Nix package](https://search.nixos.org/packages?query=systemctl-tui) is available.
+
 
 #### Optional:
 
