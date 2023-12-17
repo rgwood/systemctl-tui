@@ -24,7 +24,7 @@ sudo ln -s ~/.cargo/bin/systemctl-tui /usr/bin/systemctl-tui
 ```
 
 ## Help
-![image](https://github.com/rgwood/systemctl-tui/assets/26268125/512f269d-e221-4fa0-9479-a48f1b1a3f8d)
+![image](https://github.com/rgwood/systemctl-tui/assets/26268125/83e26502-665b-41a7-9940-b0c03d054e9a)
 
 ## Credits
 
