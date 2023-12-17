@@ -46,6 +46,7 @@ pub struct Home {
   pub logs: Vec<String>,
   pub logs_scroll_offset: u16,
   pub mode: Mode,
+  pub previous_mode: Option<Mode>,
   pub input: Input,
   pub menu_items: StatefulList<MenuItem>,
   pub cancel_token: Option<CancellationToken>,
@@ -484,7 +485,11 @@ impl Component for Home {
           _ => vec![],
         }
       },
-      Mode::Help | Mode::Error => match key.code {
+      Mode::Help => match key.code {
+        KeyCode::Esc | KeyCode::Enter => vec![Action::ToggleHelp],
+        _ => vec![],
+      },
+      Mode::Error => match key.code {
         KeyCode::Esc | KeyCode::Enter => vec![Action::EnterMode(Mode::ServiceList)],
         _ => vec![],
       },
@@ -571,11 +576,12 @@ impl Component for Home {
       },
       Action::ToggleHelp => {
         if self.mode != Mode::Help {
+          self.previous_mode = Some(self.mode);
           self.mode = Mode::Help;
         } else {
-          // TODO: go back to the previous mode
-          self.mode = Mode::ServiceList;
+          self.mode = self.previous_mode.unwrap_or(Mode::Search);
         }
+        return Some(Action::Render);
       },
       Action::CopyUnitFilePath => {
         if let Some(selected) = self.filtered_units.selected() {
@@ -832,20 +838,20 @@ impl Component for Home {
 
       let help_lines = vec![
         Line::from(""),
-        Line::from(Span::styled("Keyboard Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
+        Line::from(Span::styled("Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
         Line::from(""),
         Line::from(vec![primary("ctrl+C"), Span::raw(" or "), primary("ctrl+Q"), Span::raw(" to quit")]),
         Line::from(vec![primary("ctrl+L"), Span::raw(" toggles the logger pane")]),
         Line::from(vec![primary("PageUp"), Span::raw(" / "), primary("PageDown"), Span::raw(" scroll the logs")]),
         Line::from(vec![primary("Home"), Span::raw(" / "), primary("End"), Span::raw(" scroll to top/bottom")]),
         Line::from(vec![primary("Enter"), Span::raw(" or "), primary("Space"), Span::raw(" open the action menu")]),
-        Line::from(vec![primary("?"), Span::raw(" or "), primary("F1"), Span::raw(" open this help pane")]),
+        Line::from(vec![primary("?"), Span::raw(" / "), primary("F1"), Span::raw(" open this help pane")]),
         Line::from(""),
         Line::from(Span::styled("Vim Style Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
         Line::from(""),
         Line::from(vec![primary("j"), Span::raw(" navigate down")]),
         Line::from(vec![primary("k"), Span::raw(" navigate up")]),
-        Line::from(vec![primary("ctrl+u"), Span::raw(" / "), primary("ctrl+d"), Span::raw(" scroll the logs")]),
+        Line::from(vec![primary("ctrl+U"), Span::raw(" / "), primary("ctrl+D"), Span::raw(" scroll the logs")]),
       ];
 
       let name = env!("CARGO_PKG_NAME");
