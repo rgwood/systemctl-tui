@@ -29,8 +29,8 @@ use crate::{
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub enum Mode {
   #[default]
-  Normal,
   Search,
+  ServiceList,
   Help,
   ActionMenu,
   Processing,
@@ -314,7 +314,7 @@ impl Home {
       match action.await {
         Ok(_) => {
           info!("{} of service {} succeeded", action_name, service_name);
-          tx.send(Action::EnterMode(Mode::Normal)).unwrap();
+          tx.send(Action::EnterMode(Mode::ServiceList)).unwrap();
         },
         // would be nicer to check the error type here, but this is easier
         Err(_) if cancel_token.is_cancelled() => warn!("{} of service {} was cancelled", action_name, service_name),
@@ -463,7 +463,7 @@ impl Component for Home {
     }
 
     match self.mode {
-      Mode::Normal => {
+      Mode::ServiceList => {
         match key.code {
           KeyCode::Char('q') => vec![Action::Quit],
           KeyCode::Up | KeyCode::Char('k') => {
@@ -485,19 +485,19 @@ impl Component for Home {
         }
       },
       Mode::Help | Mode::Error => match key.code {
-        KeyCode::Esc | KeyCode::Enter => vec![Action::EnterMode(Mode::Normal)],
+        KeyCode::Esc | KeyCode::Enter => vec![Action::EnterMode(Mode::ServiceList)],
         _ => vec![],
       },
       Mode::Search => match key.code {
-        KeyCode::Esc => vec![Action::EnterMode(Mode::Normal)],
+        KeyCode::Esc => vec![Action::EnterMode(Mode::ServiceList)],
         KeyCode::Enter => vec![Action::EnterMode(Mode::ActionMenu)],
         KeyCode::Down | KeyCode::Tab => {
           self.next();
-          vec![Action::EnterMode(Mode::Normal)]
+          vec![Action::EnterMode(Mode::ServiceList)]
         },
         KeyCode::Up => {
           self.previous();
-          vec![Action::EnterMode(Mode::Normal)]
+          vec![Action::EnterMode(Mode::ServiceList)]
         },
         _ => {
           let prev_search_value = self.input.value().to_owned();
@@ -511,7 +511,7 @@ impl Component for Home {
         },
       },
       Mode::ActionMenu => match key.code {
-        KeyCode::Esc => vec![Action::EnterMode(Mode::Normal)],
+        KeyCode::Esc => vec![Action::EnterMode(Mode::ServiceList)],
         KeyCode::Down | KeyCode::Char('j') => {
           self.menu_items.next();
           vec![Action::Render]
@@ -522,7 +522,7 @@ impl Component for Home {
         },
         KeyCode::Enter | KeyCode::Char(' ') => match self.menu_items.selected() {
           Some(i) => vec![i.action.clone()],
-          None => vec![Action::EnterMode(Mode::Normal)],
+          None => vec![Action::EnterMode(Mode::ServiceList)],
         },
         _ => vec![],
       },
@@ -574,13 +574,13 @@ impl Component for Home {
           self.mode = Mode::Help;
         } else {
           // TODO: go back to the previous mode
-          self.mode = Mode::Normal;
+          self.mode = Mode::ServiceList;
         }
       },
       Action::CopyUnitFilePath => {
         if let Some(selected) = self.filtered_units.selected() {
           match clipboard_anywhere::set_clipboard(&selected.unit_file_path) {
-            Ok(_) => return Some(Action::EnterMode(Mode::Normal)),
+            Ok(_) => return Some(Action::EnterMode(Mode::ServiceList)),
             Err(e) => return Some(Action::EnterError { err: format!("Error copying to clipboard: {}", e) }),
           }
         }
@@ -648,7 +648,7 @@ impl Component for Home {
         if let Some(cancel_token) = self.cancel_token.take() {
           cancel_token.cancel();
         }
-        self.mode = Mode::Normal;
+        self.mode = Mode::ServiceList;
         return Some(Action::Render);
       },
       _ => (),
@@ -679,7 +679,7 @@ impl Component for Home {
       .block(
         Block::default()
           .borders(Borders::ALL)
-          .border_style(if self.mode == Mode::Normal {
+          .border_style(if self.mode == Mode::ServiceList {
             Style::default().fg(Color::LightGreen)
           } else {
             Style::default()
