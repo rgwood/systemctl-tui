@@ -27,6 +27,14 @@ impl UnitStatus {
     self.active_state == "active"
   }
 
+  pub fn is_failed(&self) -> bool {
+    self.active_state == "failed"
+  }
+
+  pub fn is_not_found(&self) -> bool {
+    self.load_state == "not-found"
+  }
+
   pub fn is_enabled(&self) -> bool {
     self.load_state == "loaded" && self.active_state == "active"
   }
