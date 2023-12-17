@@ -678,7 +678,34 @@ impl Component for Home {
     let search_panel = rects[0];
     let main_panel = rects[1];
 
-    let items: Vec<ListItem> = self.filtered_units.items.iter().map(|i| ListItem::new(i.short_name())).collect();
+    fn colored_line<'a>(value: &'a str, color: Color) -> Line<'a> {
+      Line::from(vec![Span::styled(value, Style::default().fg(color))])
+    }
+
+    // Helper for colouring based on the same logic as sysz
+    // https://github.com/joehillen/sysz/blob/8da8e0dcbfde8d68fbdb22382671e395bd370d69/sysz#L69C1-L72C24
+    //    Some units are colored based on state:
+    //    green       active
+    //    red         failed
+    //    yellow      not-found
+    fn unit_color(unit: &UnitStatus) -> Color {
+      if unit.is_active() {
+        Color::Green
+      } else if unit.is_failed() {
+        Color::Red
+      } else if unit.is_not_found() {
+        Color::Yellow
+      } else {
+        Color::White
+      }
+    }
+
+    let items: Vec<ListItem> = self.filtered_units.items.iter().map(|i| {
+        let color = unit_color(&i.inner);
+        let line = colored_line(i.short_name(), color);
+        ListItem::new(line)
+      }
+    ).collect();
 
     // Create a List from all list items and highlight the currently selected one
     let items = List::new(items)
@@ -724,9 +751,6 @@ impl Component for Home {
       vec![Line::from("Description: "), Line::from("Loaded: "), Line::from("Active: "), Line::from("Unit file: ")];
 
     let details_text = if let Some(i) = selected_item {
-      fn line_color<'a>(value: &'a str, color: Color) -> Line<'a> {
-        Line::from(vec![Span::styled(value, Style::default().fg(color))])
-      }
 
       fn line_color_string<'a>(value: String, color: Color) -> Line<'a> {
         Line::from(vec![Span::styled(value, Style::default().fg(color))])
@@ -741,17 +765,18 @@ impl Component for Home {
 
       let active_color = match i.inner.active_state.as_str() {
         "active" => Color::Green,
-        "inactive" => Color::Red,
+        "inactive" => Color::Gray,
+        "failed" => Color::Red,
         _ => Color::White,
       };
 
       let active_state_value = format!("{} ({})", i.inner.active_state, i.inner.sub_state);
 
       let lines = vec![
-        line_color(&i.inner.description, Color::White),
-        line_color(&i.inner.load_state, load_color),
+        colored_line(&i.inner.description, Color::White),
+        colored_line(&i.inner.load_state, load_color),
         line_color_string(active_state_value, active_color),
-        line_color(&i.unit_file_path, Color::White),
+        colored_line(&i.unit_file_path, Color::White),
       ];
 
       lines
