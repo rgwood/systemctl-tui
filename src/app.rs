@@ -76,7 +76,12 @@ impl App {
         }
 
         match action {
-          Action::Render => terminal.render().await,
+          Action::Render => {
+            let start = std::time::Instant::now();
+            terminal.render().await;
+            let duration = start.elapsed();
+            crate::utils::log_perf_event("render", duration);
+          },
           Action::DebouncedRender => debounce_tx.send(Action::Render).unwrap(),
           Action::Noop => {},
           Action::Quit => self.should_quit = true,

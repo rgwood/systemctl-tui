@@ -56,6 +56,8 @@ itertools = "0.11.0"
 duct = "0.13.6"
 indexmap = "2.0.0"
 clipboard-anywhere = "0.2.2"
+chrono = { version = "0.4.31", default-features = false }
+lazy_static = "1.4.0"
 
 # build with `cargo build --profile profiling`
 # to analyze performance with tooling like perf / samply / superluminal
