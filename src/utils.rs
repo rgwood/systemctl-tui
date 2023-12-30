@@ -22,7 +22,7 @@ pub fn initialize_panic_handler() {
 pub fn get_data_dir() -> Result<PathBuf> {
   let directory = if let Ok(s) = std::env::var("SYSTEMCTL_TUI_DATA") {
     PathBuf::from(s)
-  } else if let Some(proj_dirs) = ProjectDirs::from("com", "kdheepak", "systemctl-tui") {
+  } else if let Some(proj_dirs) = ProjectDirs::from("com", "rgwood", "systemctl-tui") {
     proj_dirs.data_local_dir().to_path_buf()
   } else {
     return Err(anyhow!("Unable to find data directory for systemctl-tui"));
@@ -33,7 +33,7 @@ pub fn get_data_dir() -> Result<PathBuf> {
 pub fn get_config_dir() -> Result<PathBuf> {
   let directory = if let Ok(s) = std::env::var("SYSTEMCTL_TUI_CONFIG") {
     PathBuf::from(s)
-  } else if let Some(proj_dirs) = ProjectDirs::from("com", "kdheepak", "systemctl-tui") {
+  } else if let Some(proj_dirs) = ProjectDirs::from("com", "rgwood", "systemctl-tui") {
     proj_dirs.config_local_dir().to_path_buf()
   } else {
     return Err(anyhow!("Unable to find config directory for systemctl-tui"));
