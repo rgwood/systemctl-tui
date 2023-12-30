@@ -700,12 +700,16 @@ impl Component for Home {
       }
     }
 
-    let items: Vec<ListItem> = self.filtered_units.items.iter().map(|i| {
+    let items: Vec<ListItem> = self
+      .filtered_units
+      .items
+      .iter()
+      .map(|i| {
         let color = unit_color(&i.inner);
         let line = colored_line(i.short_name(), color);
         ListItem::new(line)
-      }
-    ).collect();
+      })
+      .collect();
 
     // Create a List from all list items and highlight the currently selected one
     let items = List::new(items)
@@ -751,7 +755,6 @@ impl Component for Home {
       vec![Line::from("Description: "), Line::from("Loaded: "), Line::from("Active: "), Line::from("Unit file: ")];
 
     let details_text = if let Some(i) = selected_item {
-
       fn line_color_string<'a>(value: String, color: Color) -> Line<'a> {
         Line::from(vec![Span::styled(value, Style::default().fg(color))])
       }
