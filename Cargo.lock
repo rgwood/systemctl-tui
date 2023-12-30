@@ -1679,6 +1679,7 @@ version = "0.2.4"
 dependencies = [
  "anyhow",
  "better-panic",
+ "chrono",
  "clap",
  "clap_complete",
  "clipboard-anywhere",
@@ -1690,6 +1691,7 @@ dependencies = [
  "futures",
  "indexmap",
  "itertools",
+ "lazy_static",
  "libc",
  "log",
  "ratatui",

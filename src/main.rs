@@ -8,14 +8,18 @@ use systemctl_tui::{
 // Define the command line arguments structure
 #[derive(Parser, Debug)]
 #[command(version = version(), about = "A simple TUI for systemd services")]
-struct Args {}
+struct Args {
+  /// Enable performance tracing (in Chromium Event JSON format)
+  #[clap(short, long)]
+  trace: bool,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-  initialize_logging()?;
+  let args = Args::parse();
+  initialize_logging(args.trace)?;
   initialize_panic_handler();
 
-  let _args = Args::parse();
   let mut app = App::new()?;
   app.run().await?;
 
