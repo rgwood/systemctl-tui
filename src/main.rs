@@ -10,12 +10,12 @@ use systemctl_tui::{
 #[derive(Parser, Debug)]
 #[command(version = version(), about = "A simple TUI for systemd services")]
 struct Args {
-  /// Enable performance tracing (in Chromium Event JSON format)
-  #[clap(short, long)]
-  trace: bool,
   /// The scope of the services to display
   #[clap(short, long, default_value = "all")]
   scope: Scope,
+  /// Enable performance tracing (in Chromium Event JSON format)
+  #[clap(short, long)]
+  trace: bool,
 }
 
 #[derive(Parser, Debug, ValueEnum, Clone)]
