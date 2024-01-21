@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use duct::cmd;
+use log::error;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use zbus::Connection;
@@ -101,6 +102,8 @@ pub async fn get_all_services(scope: &Scope) -> Result<Vec<UnitWithStatus>> {
 
   let mut units = vec![];
 
+  let is_root = nix::unistd::geteuid().is_root();
+
   match scope {
     Scope::Global => {
       let system_units = get_services(UnitScope::Global).await?;
@@ -113,7 +116,15 @@ pub async fn get_all_services(scope: &Scope) -> Result<Vec<UnitWithStatus>> {
     Scope::All => {
       let (system_units, user_units) = tokio::join!(get_services(UnitScope::Global), get_services(UnitScope::User));
       units.extend(system_units?);
-      units.extend(user_units?);
+
+      // Should always be able to get user units, but it may fail when running as root
+      if let Ok(user_units) = user_units {
+        units.extend(user_units);
+      } else if is_root {
+        error!("Failed to get user units, ignoring because we're running as root")
+      } else {
+        user_units?;
+      }
     },
   }
 
