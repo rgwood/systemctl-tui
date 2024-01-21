@@ -1,7 +1,8 @@
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use systemctl_tui::{
   app::App,
+  systemd,
   utils::{initialize_logging, initialize_panic_handler, version},
 };
 
@@ -12,6 +13,16 @@ struct Args {
   /// Enable performance tracing (in Chromium Event JSON format)
   #[clap(short, long)]
   trace: bool,
+  /// The scope of the services to display
+  #[clap(short, long, default_value = "all")]
+  scope: Scope,
+}
+
+#[derive(Parser, Debug, ValueEnum, Clone)]
+pub enum Scope {
+  Global,
+  User,
+  All,
 }
 
 #[tokio::main]
@@ -20,7 +31,14 @@ async fn main() -> Result<()> {
   initialize_logging(args.trace)?;
   initialize_panic_handler();
 
-  let mut app = App::new()?;
+  // There's probably a nicer way to do this than defining scope in separate places, but this is fine for now
+  let scope = match args.scope {
+    Scope::Global => systemd::Scope::Global,
+    Scope::User => systemd::Scope::User,
+    Scope::All => systemd::Scope::All,
+  };
+
+  let mut app = App::new(scope)?;
   app.run().await?;
 
   Ok(())

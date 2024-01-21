@@ -8,11 +8,13 @@ use zbus::Connection;
 use zbus::{dbus_proxy, zvariant};
 
 #[derive(Debug, Clone)]
-pub struct UnitStatus {
-  pub name: String,         // The primary unit name as string
-  pub description: String,  // The human readable description string
-  pub load_state: String,   // The load state (i.e. whether the unit file has been loaded successfully)
-  pub active_state: String, // The active state (i.e. whether the unit is currently started or not)
+pub struct UnitWithStatus {
+  pub name: String,              // The primary unit name as string
+  pub scope: UnitScope,          // System or user?
+  pub description: String,       // The human readable description string
+  pub file_path: Option<String>, // The unit file path - populated later on demand
+  pub load_state: String,        // The load state (i.e. whether the unit file has been loaded successfully)
+  pub active_state: String,      // The active state (i.e. whether the unit is currently started or not)
   pub sub_state: String, // The sub state (a more fine-grained version of the active state that is specific to the unit type, which the active state is not)
                          // We don't use any of these right now, might as well skip'em so there's less data to clone
                          // pub followed: String, // A unit that is being followed in its state by this unit, if there is any, otherwise the empty string.
@@ -22,7 +24,20 @@ pub struct UnitStatus {
                          // pub job_path: String, // The job object path
 }
 
-impl UnitStatus {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UnitScope {
+  Global,
+  User,
+}
+
+/// Just enough info to fully identify a unit
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UnitId {
+  pub name: String,
+  pub scope: UnitScope,
+}
+
+impl UnitWithStatus {
   pub fn is_active(&self) -> bool {
     self.active_state == "active"
   }
@@ -46,39 +61,61 @@ impl UnitStatus {
       &self.name
     }
   }
+
+  // TODO: should we have a non-allocating version of this?
+  pub fn id(&self) -> UnitId {
+    UnitId { name: self.name.clone(), scope: self.scope.clone() }
+  }
+
+  // useful for updating without wiping out the file path
+  pub fn update(&mut self, other: UnitWithStatus) {
+    self.description = other.description;
+    self.load_state = other.load_state;
+    self.active_state = other.active_state;
+    self.sub_state = other.sub_state;
+  }
 }
 
 type RawUnit =
   (String, String, String, String, String, String, zvariant::OwnedObjectPath, u32, String, zvariant::OwnedObjectPath);
 
-impl From<RawUnit> for UnitStatus {
-  fn from(raw_unit: RawUnit) -> Self {
-    let (name, description, load_state, active_state, sub_state, _followed, _path, _job_id, _job_type, _job_path) =
-      raw_unit;
+fn to_unit_status(raw_unit: RawUnit, scope: UnitScope) -> UnitWithStatus {
+  let (name, description, load_state, active_state, sub_state, _followed, _path, _job_id, _job_type, _job_path) =
+    raw_unit;
 
-    Self {
-      name,
-      description,
-      load_state,
-      active_state,
-      sub_state,
-      // followed,
-      // path: path.to_string(),
-      // job_id,
-      // job_type,
-      // job_path: job_path.to_string(),
-    }
-  }
+  UnitWithStatus { name, scope, description, file_path: None, load_state, active_state, sub_state }
 }
 
-// this takes like 5-10 ms on 13th gen Intel i7
-pub async fn get_services() -> Result<Vec<UnitStatus>> {
-  let start = std::time::Instant::now();
-  let connection = Connection::system().await?;
-  let manager_proxy = ManagerProxy::new(&connection).await?;
-  let units = manager_proxy.list_units_by_patterns(vec![], vec!["*.service".into()]).await?;
+// Different from UnitScope in that this is not for 1 specific unit (i.e. it can include multiple scopes)
+#[derive(Clone, Default)]
+pub enum Scope {
+  Global,
+  User,
+  #[default]
+  All,
+}
 
-  let mut units: Vec<_> = units.into_iter().map(|u| UnitStatus::from(u)).collect();
+// this takes like 5-10 ms on 13th gen Intel i7 (scope=all)
+pub async fn get_all_services(scope: &Scope) -> Result<Vec<UnitWithStatus>> {
+  let start = std::time::Instant::now();
+
+  let mut units = vec![];
+
+  match scope {
+    Scope::Global => {
+      let system_units = get_services(UnitScope::Global).await?;
+      units.extend(system_units);
+    },
+    Scope::User => {
+      let user_units = get_services(UnitScope::User).await?;
+      units.extend(user_units);
+    },
+    Scope::All => {
+      let (system_units, user_units) = tokio::join!(get_services(UnitScope::Global), get_services(UnitScope::User));
+      units.extend(system_units?);
+      units.extend(user_units?);
+    },
+  }
 
   // sort by name case-insensitive
   units.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -88,19 +125,34 @@ pub async fn get_services() -> Result<Vec<UnitStatus>> {
   Ok(units)
 }
 
-pub fn get_unit_file_location(service_name: &str) -> Result<String> {
+async fn get_services(scope: UnitScope) -> Result<Vec<UnitWithStatus>, anyhow::Error> {
+  let connection = get_connection(scope).await?;
+  let manager_proxy = ManagerProxy::new(&connection).await?;
+  let units = manager_proxy.list_units_by_patterns(vec![], vec!["*.service".into()]).await?;
+  let units: Vec<_> = units.into_iter().map(|u| to_unit_status(u, scope)).collect();
+  Ok(units)
+}
+
+pub fn get_unit_file_location(service: &UnitId) -> Result<String> {
   // show -P FragmentPath reitunes.service
-  match cmd!("systemctl", "--quiet", "show", "-P", "FragmentPath", service_name).read() {
+  let mut args = vec!["--quiet", "show", "-P", "FragmentPath"];
+  args.push(&service.name);
+
+  if service.scope == UnitScope::User {
+    args.insert(0, "--user");
+  }
+
+  match cmd("systemctl", args).read() {
     Ok(output) => Ok(output.trim().to_string()),
     Err(e) => anyhow::bail!("Failed to get unit file location: {}", e),
   }
 }
 
-pub async fn start_service(service_name: String, cancel_token: CancellationToken) -> Result<()> {
-  async fn start_service(service_name: &str) -> Result<()> {
-    let connection = Connection::system().await?;
+pub async fn start_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
+  async fn start_service(service: UnitId) -> Result<()> {
+    let connection = get_connection(service.scope).await?;
     let manager_proxy = ManagerProxy::new(&connection).await?;
-    manager_proxy.start_unit(service_name.into(), "replace".into()).await?;
+    manager_proxy.start_unit(service.name.clone(), "replace".into()).await?;
     Ok(())
   }
 
@@ -110,17 +162,17 @@ pub async fn start_service(service_name: String, cancel_token: CancellationToken
         // The token was cancelled
         anyhow::bail!("cancelled");
     }
-    result = start_service(&service_name) => {
+    result = start_service(service) => {
         result
     }
   }
 }
 
-pub async fn stop_service(service_name: String, cancel_token: CancellationToken) -> Result<()> {
-  async fn stop_service(service_name: &str) -> Result<()> {
-    let connection = Connection::system().await?;
+pub async fn stop_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
+  async fn stop_service(service: UnitId) -> Result<()> {
+    let connection = get_connection(service.scope).await?;
     let manager_proxy = ManagerProxy::new(&connection).await?;
-    manager_proxy.stop_unit(service_name.into(), "replace".into()).await?;
+    manager_proxy.stop_unit(service.name, "replace".into()).await?;
     Ok(())
   }
 
@@ -130,17 +182,24 @@ pub async fn stop_service(service_name: String, cancel_token: CancellationToken)
         // The token was cancelled
         anyhow::bail!("cancelled");
     }
-    result = stop_service(&service_name) => {
+    result = stop_service(service) => {
         result
     }
   }
 }
 
-pub async fn restart_service(service_name: String, cancel_token: CancellationToken) -> Result<()> {
-  async fn restart(service_name: &str) -> Result<()> {
-    let connection = Connection::system().await?;
+async fn get_connection(scope: UnitScope) -> Result<Connection, anyhow::Error> {
+  match scope {
+    UnitScope::Global => Ok(Connection::system().await?),
+    UnitScope::User => Ok(Connection::session().await?),
+  }
+}
+
+pub async fn restart_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
+  async fn restart(service: UnitId) -> Result<()> {
+    let connection = get_connection(service.scope).await?;
     let manager_proxy = ManagerProxy::new(&connection).await?;
-    manager_proxy.restart_unit(service_name.into(), "replace".into()).await?;
+    manager_proxy.restart_unit(service.name, "replace".into()).await?;
     Ok(())
   }
 
@@ -150,7 +209,7 @@ pub async fn restart_service(service_name: String, cancel_token: CancellationTok
         // The token was cancelled
         anyhow::bail!("cancelled");
     }
-    result = restart(&service_name) => {
+    result = restart(service) => {
         result
     }
   }

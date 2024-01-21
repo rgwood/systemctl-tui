@@ -23,7 +23,7 @@ use std::{process::Stdio, time::Duration};
 use super::{logger::Logger, Component, Frame};
 use crate::{
   action::Action,
-  systemd::{self, UnitStatus},
+  systemd::{self, Scope, UnitId, UnitScope, UnitWithStatus},
 };
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
@@ -39,10 +39,11 @@ pub enum Mode {
 
 #[derive(Default)]
 pub struct Home {
+  pub scope: Scope,
   pub logger: Logger,
   pub show_logger: bool,
-  pub all_units: IndexMap<String, Unit>,
-  pub filtered_units: StatefulList<Unit>,
+  pub all_units: IndexMap<UnitId, UnitWithStatus>,
+  pub filtered_units: StatefulList<UnitWithStatus>,
   pub logs: Vec<String>,
   pub logs_scroll_offset: u16,
   pub mode: Mode,
@@ -53,7 +54,7 @@ pub struct Home {
   pub spinner_tick: u8,
   pub error_message: String,
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
-  pub journalctl_tx: Option<std::sync::mpsc::Sender<String>>,
+  pub journalctl_tx: Option<std::sync::mpsc::Sender<UnitId>>,
 }
 
 pub struct MenuItem {
@@ -64,26 +65,6 @@ pub struct MenuItem {
 impl MenuItem {
   pub fn new(name: &str, action: Action) -> Self {
     Self { name: name.to_owned(), action }
-  }
-}
-
-#[derive(Clone, Debug)]
-pub struct Unit {
-  pub inner: UnitStatus,
-  pub unit_file_path: String,
-}
-
-impl Unit {
-  pub fn new(inner: UnitStatus) -> Self {
-    Self { inner, unit_file_path: String::new() }
-  }
-
-  pub fn name(&self) -> &str {
-    &self.inner.name
-  }
-
-  fn short_name(&self) -> &str {
-    self.inner.short_name()
   }
 }
 
@@ -166,10 +147,10 @@ impl Home {
     Self::default()
   }
 
-  pub fn set_units(&mut self, units: Vec<UnitStatus>) {
+  pub fn set_units(&mut self, units: Vec<UnitWithStatus>) {
     self.all_units.clear();
     for unit_status in units.into_iter() {
-      self.all_units.insert(unit_status.name.to_string(), Unit::new(unit_status));
+      self.all_units.insert(unit_status.id(), unit_status);
     }
     self.refresh_filtered_units();
   }
@@ -178,14 +159,14 @@ impl Home {
   // This is inefficient but it's fast enough
   // (on gen 13 i7: ~100 microseconds to update, ~100 microseconds to filter)
   // revisit if needed
-  pub fn update_units(&mut self, units: Vec<UnitStatus>) {
+  pub fn update_units(&mut self, units: Vec<UnitWithStatus>) {
     let now = std::time::Instant::now();
 
     for unit in units {
-      if let Some(existing) = self.all_units.get_mut(&unit.name) {
-        existing.inner = unit;
+      if let Some(existing) = self.all_units.get_mut(&unit.id()) {
+        existing.update(unit);
       } else {
-        self.all_units.insert(unit.name.clone(), Unit::new(unit));
+        self.all_units.insert(unit.id(), unit);
       }
     }
     info!("Updated units in {:?}", now.elapsed());
@@ -225,14 +206,14 @@ impl Home {
     self.filtered_units.unselect();
   }
 
-  pub fn selected_service(&self) -> Option<String> {
-    self.filtered_units.selected().map(|u| u.name().to_string())
+  pub fn selected_service(&self) -> Option<UnitId> {
+    self.filtered_units.selected().map(|u| u.id())
   }
 
   pub fn get_logs(&mut self) {
     if let Some(selected) = self.filtered_units.selected() {
-      let unit_name = selected.name().to_string();
-      if let Err(e) = self.journalctl_tx.as_ref().unwrap().send(unit_name) {
+      let unit_id = selected.id();
+      if let Err(e) = self.journalctl_tx.as_ref().unwrap().send(unit_id) {
         warn!("Error sending unit name to journalctl thread: {}", e);
       }
     } else {
@@ -255,7 +236,12 @@ impl Home {
     // try to select the same item we had selected before
     // TODO: this is horrible, clean it up
     if let Some(previously_selected) = previously_selected {
-      if let Some(index) = self.filtered_units.items.iter().position(|u| u.name() == previously_selected) {
+      if let Some(index) = self
+        .filtered_units
+        .items
+        .iter()
+        .position(|u| u.name == previously_selected.name && u.scope == previously_selected.scope)
+      {
         self.select(Some(index), false);
       } else {
         self.select(Some(0), true);
@@ -270,31 +256,26 @@ impl Home {
     }
   }
 
-  fn start_service(&mut self, service_name: String) {
+  fn start_service(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
-    let future = systemd::start_service(service_name.clone(), cancel_token.clone());
-    self.service_action(service_name, "Start".into(), cancel_token, future);
+    let future = systemd::start_service(service.clone(), cancel_token.clone());
+    self.service_action(service, "Start".into(), cancel_token, future);
   }
 
-  fn stop_service(&mut self, service_name: String) {
+  fn stop_service(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
-    let future = systemd::stop_service(service_name.clone(), cancel_token.clone());
-    self.service_action(service_name, "Stop".into(), cancel_token, future);
+    let future = systemd::stop_service(service.clone(), cancel_token.clone());
+    self.service_action(service, "Stop".into(), cancel_token, future);
   }
 
-  fn restart_service(&mut self, service_name: String) {
+  fn restart_service(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
-    let future = systemd::restart_service(service_name.clone(), cancel_token.clone());
-    self.service_action(service_name, "Restart".into(), cancel_token, future);
+    let future = systemd::restart_service(service.clone(), cancel_token.clone());
+    self.service_action(service, "Restart".into(), cancel_token, future);
   }
 
-  fn service_action<Fut>(
-    &mut self,
-    service_name: String,
-    action_name: String,
-    cancel_token: CancellationToken,
-    action: Fut,
-  ) where
+  fn service_action<Fut>(&mut self, service: UnitId, action_name: String, cancel_token: CancellationToken, action: Fut)
+  where
     Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
   {
     let tx = self.action_tx.clone().unwrap();
@@ -314,13 +295,15 @@ impl Home {
       tx.send(Action::EnterMode(Mode::Processing)).unwrap();
       match action.await {
         Ok(_) => {
-          info!("{} of service {} succeeded", action_name, service_name);
+          info!("{} of {:?} service {} succeeded", action_name, service.scope, service.name);
           tx.send(Action::EnterMode(Mode::ServiceList)).unwrap();
         },
         // would be nicer to check the error type here, but this is easier
-        Err(_) if cancel_token.is_cancelled() => warn!("{} of service {} was cancelled", action_name, service_name),
+        Err(_) if cancel_token.is_cancelled() => {
+          warn!("{} of {:?} service {} was cancelled", action_name, service.scope, service.name)
+        },
         Err(e) => {
-          error!("{} of service {} failed: {}", action_name, service_name, e);
+          error!("{} of {:?} service {} failed: {}", action_name, service.scope, service.name, e);
           let mut error_string = e.to_string();
 
           if error_string.contains("AccessDenied") {
@@ -349,7 +332,7 @@ impl Component for Home {
     self.action_tx = Some(tx.clone());
     // TODO find a better name for these. They're used to run any async data loading that needs to happen after the selection is changed,
     // not just journalctl stuff
-    let (journalctl_tx, journalctl_rx) = std::sync::mpsc::channel::<String>();
+    let (journalctl_tx, journalctl_rx) = std::sync::mpsc::channel::<UnitId>();
     self.journalctl_tx = Some(journalctl_tx);
 
     // TODO: move into function
@@ -357,15 +340,15 @@ impl Component for Home {
       let mut last_follow_handle: Option<JoinHandle<()>> = None;
 
       loop {
-        let mut unit_name: String = match journalctl_rx.recv() {
+        let mut unit: UnitId = match journalctl_rx.recv() {
           Ok(unit) => unit,
           Err(_) => return,
         };
 
         // drain the channel, use the last value
         while let Ok(service) = journalctl_rx.try_recv() {
-          info!("Skipping logs for {}...", unit_name);
-          unit_name = service;
+          info!("Skipping logs for {}...", unit.name);
+          unit = service;
         }
 
         if let Some(handle) = last_follow_handle.take() {
@@ -377,30 +360,39 @@ impl Component for Home {
         std::thread::sleep(Duration::from_millis(100));
 
         // get the unit file path
-        match systemd::get_unit_file_location(&unit_name) {
+        match systemd::get_unit_file_location(&unit) {
           Ok(path) => {
-            let _ = tx.send(Action::SetUnitFilePath { unit_name: unit_name.clone(), path });
+            let _ = tx.send(Action::SetUnitFilePath { unit: unit.clone(), path });
             let _ = tx.send(Action::Render);
           },
-          Err(e) => error!("Error getting unit file path for {}: {}", unit_name, e),
+          Err(e) => error!("Error getting unit file path for {}: {}", unit.name, e),
         }
 
         // First, get the N lines in a batch
-        info!("Getting logs for {}", unit_name);
+        info!("Getting logs for {}", unit.name);
         let start = std::time::Instant::now();
-        match cmd!("journalctl", "--quiet", "-u", unit_name.clone(), "--output=short-iso", "--lines=500").read() {
+
+        let mut args = vec!["--quiet", "--output=short-iso", "--lines=500", "-u"];
+
+        args.push(&unit.name);
+
+        if unit.scope == UnitScope::User {
+          args.push("--user");
+        }
+
+        match cmd("journalctl", args).read() {
           Ok(stdout) => {
-            info!("Got logs for {} in {:?}", unit_name, start.elapsed());
+            info!("Got logs for {} in {:?}", unit.name, start.elapsed());
 
             let mut logs = stdout.split('\n').map(String::from).collect_vec();
 
             if logs.is_empty() || logs[0].is_empty() {
               logs.push(String::from("No logs found/available. Maybe try relaunching with `sudo systemctl-tui`"));
             }
-            let _ = tx.send(Action::SetLogs { unit_name: unit_name.clone(), logs });
+            let _ = tx.send(Action::SetLogs { unit: unit.clone(), logs });
             let _ = tx.send(Action::Render);
           },
-          Err(e) => warn!("Error getting logs for {}: {}", unit_name, e),
+          Err(e) => warn!("Error getting logs for {}: {}", unit.name, e),
         }
 
         // Then follow the logs
@@ -408,24 +400,28 @@ impl Component for Home {
         // This does mean that we'll miss any logs that are written between the two commands, low enough risk for now
         let tx = tx.clone();
         last_follow_handle = Some(tokio::spawn(async move {
-          let mut command = tokio::process::Command::new("journalctl")
-            .arg("-u")
-            .arg(unit_name.clone())
-            .arg("--output=short-iso")
-            .arg("--follow")
-            .arg("--lines=0")
-            .arg("--quiet")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("failed to execute process");
+          let mut command = tokio::process::Command::new("journalctl");
+          command.arg("-u");
+          command.arg(unit.name.clone());
+          command.arg("--output=short-iso");
+          command.arg("--follow");
+          command.arg("--lines=0");
+          command.arg("--quiet");
+          command.stdout(Stdio::piped());
+          command.stderr(Stdio::piped());
 
-          let stdout = command.stdout.take().unwrap();
+          if unit.scope == UnitScope::User {
+            command.arg("--user");
+          }
+
+          let mut child = command.spawn().expect("failed to execute process");
+
+          let stdout = child.stdout.take().unwrap();
 
           let reader = tokio::io::BufReader::new(stdout);
           let mut lines = reader.lines();
           while let Some(line) = lines.next_line().await.unwrap() {
-            let _ = tx.send(Action::AppendLogLine { unit_name: unit_name.clone(), line });
+            let _ = tx.send(Action::AppendLogLine { unit: unit.clone(), line });
             let _ = tx.send(Action::Render);
           }
         }));
@@ -547,7 +543,7 @@ impl Component for Home {
       Action::EnterMode(mode) => {
         if mode == Mode::ActionMenu {
           let selected = match self.filtered_units.selected() {
-            Some(s) => s.name().to_string(),
+            Some(s) => s.id(),
             None => return None,
           };
 
@@ -585,28 +581,32 @@ impl Component for Home {
       },
       Action::CopyUnitFilePath => {
         if let Some(selected) = self.filtered_units.selected() {
-          match clipboard_anywhere::set_clipboard(&selected.unit_file_path) {
-            Ok(_) => return Some(Action::EnterMode(Mode::ServiceList)),
-            Err(e) => return Some(Action::EnterError { err: format!("Error copying to clipboard: {}", e) }),
+          if let Some(file_path) = &selected.file_path {
+            match clipboard_anywhere::set_clipboard(&file_path) {
+              Ok(_) => return Some(Action::EnterMode(Mode::ServiceList)),
+              Err(e) => return Some(Action::EnterError { err: format!("Error copying to clipboard: {}", e) }),
+            }
+          } else {
+            return Some(Action::EnterError { err: "No unit file path available".into() });
           }
         }
       },
-      Action::SetUnitFilePath { unit_name, path } => {
-        if let Some(unit) = self.all_units.get_mut(&unit_name) {
-          unit.unit_file_path = path.clone();
+      Action::SetUnitFilePath { unit, path } => {
+        if let Some(unit) = self.all_units.get_mut(&unit) {
+          unit.file_path = Some(path.clone());
         }
         self.refresh_filtered_units(); // copy the updated unit file path to the filtered list
       },
-      Action::SetLogs { unit_name: service_name, logs } => {
+      Action::SetLogs { unit, logs } => {
         if let Some(selected) = self.filtered_units.selected() {
-          if selected.name() == service_name {
+          if selected.id() == unit {
             self.logs = logs;
           }
         }
       },
-      Action::AppendLogLine { unit_name, line } => {
+      Action::AppendLogLine { unit, line } => {
         if let Some(selected) = self.filtered_units.selected() {
-          if selected.name() == unit_name {
+          if selected.id() == unit {
             self.logs.push(line);
           }
         }
@@ -635,8 +635,9 @@ impl Component for Home {
       Action::RestartService(service_name) => self.restart_service(service_name),
       Action::RefreshServices => {
         let tx = self.action_tx.clone().unwrap();
+        let scope = self.scope.clone();
         tokio::spawn(async move {
-          let units = systemd::get_services()
+          let units = systemd::get_all_services(&scope)
             .await
             .expect("Failed to get services. Check that systemd is running and try running this tool with sudo.");
           tx.send(Action::SetServices(units)).unwrap();
@@ -688,7 +689,7 @@ impl Component for Home {
     //    green       active
     //    red         failed
     //    yellow      not-found
-    fn unit_color(unit: &UnitStatus) -> Color {
+    fn unit_color(unit: &UnitWithStatus) -> Color {
       if unit.is_active() {
         Color::Green
       } else if unit.is_failed() {
@@ -705,7 +706,7 @@ impl Component for Home {
       .items
       .iter()
       .map(|i| {
-        let color = unit_color(&i.inner);
+        let color = unit_color(&i);
         let line = colored_line(i.short_name(), color);
         ListItem::new(line)
       })
@@ -737,7 +738,7 @@ impl Component for Home {
 
     let right_panel = Layout::default()
       .direction(Direction::Vertical)
-      .constraints([Constraint::Min(6), Constraint::Percentage(100)].as_ref())
+      .constraints([Constraint::Min(7), Constraint::Percentage(100)].as_ref())
       .split(right_panel);
 
     let details_panel = right_panel[0];
@@ -751,36 +752,50 @@ impl Component for Home {
     let props_pane = details_panel_panes[0];
     let values_pane = details_panel_panes[1];
 
-    let props_lines =
-      vec![Line::from("Description: "), Line::from("Loaded: "), Line::from("Active: "), Line::from("Unit file: ")];
+    let props_lines = vec![
+      Line::from("Description: "),
+      Line::from("Scope: "),
+      Line::from("Loaded: "),
+      Line::from("Active: "),
+      Line::from("Unit file: "),
+    ];
 
     let details_text = if let Some(i) = selected_item {
       fn line_color_string<'a>(value: String, color: Color) -> Line<'a> {
         Line::from(vec![Span::styled(value, Style::default().fg(color))])
       }
 
-      let load_color = match i.inner.load_state.as_str() {
+      let load_color = match i.load_state.as_str() {
         "loaded" => Color::Green,
         "not-found" => Color::Yellow,
         "error" => Color::Red,
         _ => Color::White,
       };
 
-      let active_color = match i.inner.active_state.as_str() {
+      let active_color = match i.active_state.as_str() {
         "active" => Color::Green,
         "inactive" => Color::Gray,
         "failed" => Color::Red,
         _ => Color::White,
       };
 
-      let active_state_value = format!("{} ({})", i.inner.active_state, i.inner.sub_state);
+      let active_state_value = format!("{} ({})", i.active_state, i.sub_state);
 
-      let lines = vec![
-        colored_line(&i.inner.description, Color::White),
-        colored_line(&i.inner.load_state, load_color),
+      let scope = match i.scope {
+        UnitScope::Global => "Global",
+        UnitScope::User => "User",
+      };
+
+      let mut lines = vec![
+        colored_line(&i.description, Color::White),
+        colored_line(&scope, Color::White),
+        colored_line(&i.load_state, load_color),
         line_color_string(active_state_value, active_color),
-        colored_line(&i.unit_file_path, Color::White),
       ];
+
+      if let Some(file_path) = &i.file_path {
+        lines.push(Line::from(file_path.as_str()));
+      }
 
       lines
     } else {
@@ -913,7 +928,7 @@ impl Component for Home {
       None => return,
     };
 
-    let min_width = selected_item.name().len() as u16 + 14;
+    let min_width = selected_item.name.len() as u16 + 14;
     let desired_width = min_width + 4; // idk, looks alright
     let popup_width = desired_width.min(f.size().width);
 
@@ -927,7 +942,7 @@ impl Component for Home {
           Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::LightGreen))
-            .title(format!("Actions for {}", self.filtered_units.selected().unwrap().name())),
+            .title(format!("Actions for {}", self.filtered_units.selected().unwrap().name)),
         )
         .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
 
