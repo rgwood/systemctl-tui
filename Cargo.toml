@@ -58,6 +58,7 @@ indexmap = "2.0.0"
 clipboard-anywhere = "0.2.2"
 chrono = { version = "0.4.31", default-features = false }
 lazy_static = "1.4.0"
+nix = { version = "0.27.1", features = ["user"] }
 
 # build with `cargo build --profile profiling`
 # to analyze performance with tooling like perf / samply / superluminal
