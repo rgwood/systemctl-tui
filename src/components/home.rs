@@ -665,17 +665,16 @@ impl Component for Home {
 
   fn render(&mut self, f: &mut Frame<'_>, rect: Rect) {
     let rect = if self.show_logger {
-      let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(rect);
+      let chunks =
+        Layout::new(Direction::Vertical, [Constraint::Percentage(50), Constraint::Percentage(50)]).split(rect);
+
       self.logger.render(f, chunks[1]);
       chunks[0]
     } else {
       rect
     };
 
-    let rects = Layout::default().constraints([Constraint::Min(3), Constraint::Percentage(100)].as_ref()).split(rect);
+    let rects = Layout::new(Direction::Vertical, [Constraint::Min(3), Constraint::Percentage(100)]).split(rect);
     let search_panel = rects[0];
     let main_panel = rects[1];
 
@@ -726,28 +725,21 @@ impl Component for Home {
       )
       .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
 
-    let chunks = Layout::default()
-      .direction(Direction::Horizontal)
-      .constraints([Constraint::Min(30), Constraint::Percentage(100)].as_ref())
-      .split(main_panel);
+    let chunks =
+      Layout::new(Direction::Horizontal, [Constraint::Min(30), Constraint::Percentage(100)]).split(main_panel);
     let right_panel = chunks[1];
 
     f.render_stateful_widget(items, chunks[0], &mut self.filtered_units.state);
 
     let selected_item = self.filtered_units.selected();
 
-    let right_panel = Layout::default()
-      .direction(Direction::Vertical)
-      .constraints([Constraint::Min(7), Constraint::Percentage(100)].as_ref())
-      .split(right_panel);
-
+    let right_panel =
+      Layout::new(Direction::Vertical, [Constraint::Min(7), Constraint::Percentage(100)]).split(right_panel);
     let details_panel = right_panel[0];
     let logs_panel = right_panel[1];
 
     let details_block = Block::default().title(" 🕵️ Details ").borders(Borders::ALL);
-    let details_panel_panes = Layout::default()
-      .direction(Direction::Horizontal)
-      .constraints([Constraint::Min(14), Constraint::Percentage(100)].as_ref())
+    let details_panel_panes = Layout::new(Direction::Horizontal, [Constraint::Min(14), Constraint::Percentage(100)])
       .split(details_block.inner(details_panel));
     let props_pane = details_panel_panes[0];
     let values_pane = details_panel_panes[1];
@@ -976,29 +968,25 @@ impl Component for Home {
 
 /// helper function to create a centered rect using up certain percentage of the available rect `r`
 fn _centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-  let popup_layout = Layout::default()
-    .direction(Direction::Vertical)
-    .constraints(
-      [
-        Constraint::Percentage((100 - percent_y) / 2),
-        Constraint::Percentage(percent_y),
-        Constraint::Percentage((100 - percent_y) / 2),
-      ]
-      .as_ref(),
-    )
-    .split(r);
+  let popup_layout = Layout::new(
+    Direction::Vertical,
+    [
+      Constraint::Percentage((100 - percent_y) / 2),
+      Constraint::Percentage(percent_y),
+      Constraint::Percentage((100 - percent_y) / 2),
+    ],
+  )
+  .split(r);
 
-  Layout::default()
-    .direction(Direction::Horizontal)
-    .constraints(
-      [
-        Constraint::Percentage((100 - percent_x) / 2),
-        Constraint::Percentage(percent_x),
-        Constraint::Percentage((100 - percent_x) / 2),
-      ]
-      .as_ref(),
-    )
-    .split(popup_layout[1])[1]
+  Layout::new(
+    Direction::Horizontal,
+    [
+      Constraint::Percentage((100 - percent_x) / 2),
+      Constraint::Percentage(percent_x),
+      Constraint::Percentage((100 - percent_x) / 2),
+    ],
+  )
+  .split(popup_layout[1])[1]
 }
 
 fn centered_rect_abs(width: u16, height: u16, r: Rect) -> Rect {
