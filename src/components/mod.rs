@@ -1,9 +1,9 @@
 use anyhow::Result;
 use crossterm::event::{KeyEvent, MouseEvent};
-use ratatui::layout::Rect;
+use ratatui::{layout::Rect, Frame};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::{action::Action, event::Event, terminal::Frame};
+use crate::{action::Action, event::Event};
 
 pub mod home;
 pub mod logger;

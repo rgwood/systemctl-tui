@@ -18,7 +18,7 @@ use tokio::{
 
 use crate::components::{home::Home, Component};
 
-pub type Frame<'a> = ratatui::Frame<'a, Backend<std::io::Stderr>>;
+// pub type Frame<'a> = ratatui::Frame<'a, Backend<std::io::Stderr>>;
 
 pub struct Tui {
   pub terminal: ratatui::Terminal<Backend<std::io::Stderr>>,
