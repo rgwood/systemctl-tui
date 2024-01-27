@@ -5,5 +5,9 @@
 # The default profile includes rustc, rust-std, cargo, rust-docs, rustfmt and clippy.
 # https://rust-lang.github.io/rustup/concepts/profiles.html
 profile = "default"
-# Pin to 1.71.1 to avoid a compile time regression in 1.72.0 https://github.com/zachs18/zbus-repro/
+# Pin to 1.71.1 to avoid a compile time regression in 1.72.0:
+#   https://github.com/rust-lang/rust/issues/115283
+#   https://github.com/zachs18/zbus-repro/
+# This is pretty annoying and still not fully fixed on stable Rust as of Jan 26 2024.
+# It sometimes manifests itself during iterative development, and the compiler will get stuck on the last 2 crates for up to a minute
 channel = "1.71.1"
