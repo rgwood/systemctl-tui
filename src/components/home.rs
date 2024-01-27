@@ -665,8 +665,7 @@ impl Component for Home {
 
   fn render(&mut self, f: &mut Frame<'_>, rect: Rect) {
     let rect = if self.show_logger {
-      let chunks =
-        Layout::new(Direction::Vertical, [Constraint::Percentage(50), Constraint::Percentage(50)]).split(rect);
+      let chunks = Layout::new(Direction::Vertical, Constraint::from_percentages([50, 50])).split(rect);
 
       self.logger.render(f, chunks[1]);
       chunks[0]
