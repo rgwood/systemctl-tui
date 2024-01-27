@@ -12,7 +12,7 @@ license = "MIT"
 
 [dependencies]
 ratatui = {version = "0.25.0"}
-crossterm = { version = "0.26.1", default-features = false, features = [
+crossterm = { version = "0.27.0", default-features = false, features = [
   "event-stream",
 ] }
 tokio = { version = "1.28.2", features = ["full"] }
@@ -47,11 +47,11 @@ tui-logger = { version = "0.10.1", default-features = false, features = [
 colored = "2.0.0"
 log = "0.4.19"
 libc = "0.2.146"
-tui-input = "0.7.1"
+tui-input = "0.8.0"
 signal-hook = "0.3.15"
 tokio-util = "0.7.8"
 zbus = { version = "3.14.1", default-features = false, features = ["tokio"] }
-itertools = "0.11.0"
+itertools = "0.12.0"
 duct = "0.13.6"
 indexmap = "2.0.0"
 clipboard-anywhere = "0.2.2"
