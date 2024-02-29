@@ -27,6 +27,11 @@ pub enum Scope {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+  // Help users help me with bug reports by making sure they have stack traces
+  if std::env::var("RUST_BACKTRACE").is_err() {
+    std::env::set_var("RUST_BACKTRACE", "1");
+  }
+
   let args = Args::parse();
   initialize_logging(args.trace)?;
   initialize_panic_handler();
