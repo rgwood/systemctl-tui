@@ -10,7 +10,7 @@ A fast, simple TUI for interacting with [systemd](https://en.wikipedia.org/wiki/
 
 ## Install
 
-Note: this project only works on Linux. Binaries are published for x64 and ARM64 in the GitHub releases, and [a Nix package](https://search.nixos.org/packages?query=systemctl-tui) is available.
+Note: this project only works on Linux (WSL works _if_ you [have systemd enabled](https://devblogs.microsoft.com/commandline/systemd-support-is-now-available-in-wsl/)). Binaries are published for x64 and ARM64 in the GitHub releases, and [a Nix package](https://search.nixos.org/packages?query=systemctl-tui) is available.
 
 If you'd rather build from scratch you will need [Rust installed](https://rustup.rs/). Then either:
 
