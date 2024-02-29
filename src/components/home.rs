@@ -720,7 +720,7 @@ impl Component for Home {
           } else {
             Style::default()
           })
-          .title(" 💻 Services "),
+          .title(" Services "),
       )
       .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
 
@@ -737,7 +737,7 @@ impl Component for Home {
     let details_panel = right_panel[0];
     let logs_panel = right_panel[1];
 
-    let details_block = Block::default().title(" 🕵️ Details ").borders(Borders::ALL);
+    let details_block = Block::default().title(" Details ").borders(Borders::ALL);
     let details_panel_panes = Layout::new(Direction::Horizontal, [Constraint::Min(14), Constraint::Percentage(100)])
       .split(details_block.inner(details_panel));
     let props_pane = details_panel_panes[0];
@@ -818,7 +818,7 @@ impl Component for Home {
       .collect_vec();
 
     let paragraph = Paragraph::new(log_lines)
-      .block(Block::default().title(" 🪵 Service Logs ").borders(Borders::ALL))
+      .block(Block::default().title(" Service Logs ").borders(Borders::ALL))
       .style(Style::default())
       .wrap(Wrap { trim: true })
       .scroll((self.logs_scroll_offset, 0));
@@ -833,7 +833,7 @@ impl Component for Home {
       })
       .scroll((0, scroll as u16))
       .block(Block::default().borders(Borders::ALL).title(Line::from(vec![
-        Span::raw(" 🔍️ Search "),
+        Span::raw(" Search "),
         Span::styled("(", Style::default().fg(Color::DarkGray)),
         Span::styled("ctrl+f", Style::default().add_modifier(Modifier::BOLD).fg(Color::Gray)),
         Span::styled(" or ", Style::default().fg(Color::DarkGray)),
