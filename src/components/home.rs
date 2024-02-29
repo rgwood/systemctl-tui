@@ -143,8 +143,10 @@ impl<T> StatefulList<T> {
 }
 
 impl Home {
-  pub fn new() -> Self {
-    Self::default()
+  pub fn new(scope: Scope) -> Self {
+    let mut ret = Self::default();
+    ret.scope = scope;
+    ret
   }
 
   pub fn set_units(&mut self, units: Vec<UnitWithStatus>) {

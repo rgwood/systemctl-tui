@@ -21,7 +21,7 @@ pub struct App {
 
 impl App {
   pub fn new(scope: Scope) -> Result<Self> {
-    let home = Home::new();
+    let home = Home::new(scope);
     let home = Arc::new(Mutex::new(home));
     Ok(Self { scope, home, should_quit: false, should_suspend: false })
   }

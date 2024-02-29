@@ -88,7 +88,7 @@ fn to_unit_status(raw_unit: RawUnit, scope: UnitScope) -> UnitWithStatus {
 }
 
 // Different from UnitScope in that this is not for 1 specific unit (i.e. it can include multiple scopes)
-#[derive(Clone, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 pub enum Scope {
   Global,
   User,
