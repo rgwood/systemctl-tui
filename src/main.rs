@@ -10,9 +10,9 @@ use systemctl_tui::{
 #[derive(Parser, Debug)]
 #[command(version = version(), about = "A simple TUI for systemd services")]
 struct Args {
-  /// The scope of the services to display
-  #[clap(short, long, default_value = "all")]
-  scope: Scope,
+  /// The scope of the services to display. Defaults to "all" normally and "global" on WSL
+  #[clap(short, long)]
+  scope: Option<Scope>,
   /// Enable performance tracing (in Chromium Event JSON format)
   #[clap(short, long)]
   trace: bool,
@@ -36,12 +36,17 @@ async fn main() -> Result<()> {
   initialize_logging(args.trace)?;
   initialize_panic_handler();
 
-  // There's probably a nicer way to do this than defining scope in separate places, but this is fine for now
+  // There's probably a nicer way to do this than defining the scope enum twice, but this is fine for now
   let scope = match args.scope {
-    Scope::Global => systemd::Scope::Global,
-    Scope::User => systemd::Scope::User,
-    Scope::All => systemd::Scope::All,
+    Some(Scope::Global) => systemd::Scope::Global,
+    Some(Scope::User) => systemd::Scope::User,
+    Some(Scope::All) => systemd::Scope::All,
+    // So, WSL doesn't *really* support user services yet: https://github.com/microsoft/WSL/issues/8842
+    // Revisit this if that changes
+    None => if is_wsl::is_wsl() { systemd::Scope::Global } else { systemd::Scope::All },
   };
+
+  eprintln!("Using scope: {:?}", scope);
 
   let mut app = App::new(scope)?;
   app.run().await?;
