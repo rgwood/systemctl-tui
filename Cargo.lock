@@ -1738,6 +1738,7 @@ dependencies = [
  "env_logger",
  "futures",
  "indexmap",
+ "is-wsl",
  "itertools",
  "lazy_static",
  "libc",
