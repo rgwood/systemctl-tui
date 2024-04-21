@@ -46,8 +46,6 @@ async fn main() -> Result<()> {
     None => if is_wsl::is_wsl() { systemd::Scope::Global } else { systemd::Scope::All },
   };
 
-  eprintln!("Using scope: {:?}", scope);
-
   let mut app = App::new(scope)?;
   app.run().await?;
 
