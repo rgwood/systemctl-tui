@@ -144,9 +144,7 @@ impl<T> StatefulList<T> {
 
 impl Home {
   pub fn new(scope: Scope) -> Self {
-    let mut ret = Self::default();
-    ret.scope = scope;
-    ret
+    Self { scope, ..Default::default() }
   }
 
   pub fn set_units(&mut self, units: Vec<UnitWithStatus>) {
@@ -584,7 +582,7 @@ impl Component for Home {
       Action::CopyUnitFilePath => {
         if let Some(selected) = self.filtered_units.selected() {
           if let Some(file_path) = &selected.file_path {
-            match clipboard_anywhere::set_clipboard(&file_path) {
+            match clipboard_anywhere::set_clipboard(file_path) {
               Ok(_) => return Some(Action::EnterMode(Mode::ServiceList)),
               Err(e) => return Some(Action::EnterError { err: format!("Error copying to clipboard: {}", e) }),
             }
@@ -637,9 +635,9 @@ impl Component for Home {
       Action::RestartService(service_name) => self.restart_service(service_name),
       Action::RefreshServices => {
         let tx = self.action_tx.clone().unwrap();
-        let scope = self.scope.clone();
+        let scope = self.scope;
         tokio::spawn(async move {
-          let units = systemd::get_all_services(&scope)
+          let units = systemd::get_all_services(scope)
             .await
             .expect("Failed to get services. Check that systemd is running and try running this tool with sudo.");
           tx.send(Action::SetServices(units)).unwrap();
@@ -679,7 +677,7 @@ impl Component for Home {
     let search_panel = rects[0];
     let main_panel = rects[1];
 
-    fn colored_line<'a>(value: &'a str, color: Color) -> Line<'a> {
+    fn colored_line(value: &str, color: Color) -> Line {
       Line::from(vec![Span::styled(value, Style::default().fg(color))])
     }
 
@@ -706,7 +704,7 @@ impl Component for Home {
       .items
       .iter()
       .map(|i| {
-        let color = unit_color(&i);
+        let color = unit_color(i);
         let line = colored_line(i.short_name(), color);
         ListItem::new(line)
       })
@@ -781,7 +779,7 @@ impl Component for Home {
 
       let mut lines = vec![
         colored_line(&i.description, Color::White),
-        colored_line(&scope, Color::White),
+        colored_line(scope, Color::White),
         colored_line(&i.load_state, load_color),
         line_color_string(active_state_value, active_color),
       ];
