@@ -5,8 +5,7 @@ use duct::cmd;
 use log::error;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
-use zbus::Connection;
-use zbus::{dbus_proxy, zvariant};
+use zbus::{proxy, Connection, zvariant};
 
 #[derive(Debug, Clone)]
 pub struct UnitWithStatus {
@@ -242,7 +241,7 @@ pub async fn sleep_test(_service: String, cancel_token: CancellationToken) -> Re
 
 /// Proxy object for `org.freedesktop.systemd1.Manager`.
 /// Partially taken from https://github.com/lucab/zbus_systemd/blob/main/src/systemd1/generated.rs
-#[dbus_proxy(
+#[proxy(
   interface = "org.freedesktop.systemd1.Manager",
   default_service = "org.freedesktop.systemd1",
   default_path = "/org/freedesktop/systemd1",
@@ -321,7 +320,7 @@ pub trait Manager {
 
 /// Proxy object for `org.freedesktop.systemd1.Unit`.
 /// Taken from https://github.com/lucab/zbus_systemd/blob/main/src/systemd1/generated.rs
-#[dbus_proxy(
+#[proxy(
   interface = "org.freedesktop.systemd1.Unit",
   default_service = "org.freedesktop.systemd1",
   assume_defaults = false,
@@ -343,7 +342,7 @@ pub trait Unit {
 
 /// Proxy object for `org.freedesktop.systemd1.Service`.
 /// Taken from https://github.com/lucab/zbus_systemd/blob/main/src/systemd1/generated.rs
-#[dbus_proxy(
+#[proxy(
   interface = "org.freedesktop.systemd1.Service",
   default_service = "org.freedesktop.systemd1",
   assume_defaults = false,
