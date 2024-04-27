@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
     // Revisit this if that changes
     None => if is_wsl::is_wsl() { systemd::Scope::Global } else { systemd::Scope::All },
   };
-
+  
   let mut app = App::new(scope)?;
   app.run().await?;
 

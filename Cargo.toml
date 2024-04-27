@@ -11,7 +11,7 @@ license = "MIT"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ratatui = {version = "0.25.0"}
+ratatui = {version = "0.26.2"}
 crossterm = { version = "0.27.0", default-features = false, features = [
   "event-stream",
 ] }
@@ -41,7 +41,7 @@ tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 env_logger = "0.11.1"
 directories = "5.0.1"
-tui-logger = { version = "0.10.1", default-features = false, features = [
+tui-logger = { version = "0.11.1", default-features = false, features = [
   "tracing-support",
 ] }
 colored = "2.0.0"
@@ -50,14 +50,14 @@ libc = "0.2.146"
 tui-input = "0.8.0"
 signal-hook = "0.3.15"
 tokio-util = "0.7.8"
-zbus = { version = "3.14.1", default-features = false, features = ["tokio"] }
+zbus = { version = "4.1.2", default-features = false, features = ["tokio"] }
 itertools = "0.12.0"
 duct = "0.13.6"
 indexmap = "2.0.0"
 clipboard-anywhere = "0.2.2"
 chrono = { version = "0.4.31", default-features = false }
 lazy_static = "1.4.0"
-nix = { version = "0.27.1", features = ["user"] }
+nix = { version = "0.28.0", features = ["user"] }
 is-wsl = "0.4.0"
 
 # build with `cargo build --profile profiling`
