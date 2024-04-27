@@ -43,9 +43,15 @@ async fn main() -> Result<()> {
     Some(Scope::All) => systemd::Scope::All,
     // So, WSL doesn't *really* support user services yet: https://github.com/microsoft/WSL/issues/8842
     // Revisit this if that changes
-    None => if is_wsl::is_wsl() { systemd::Scope::Global } else { systemd::Scope::All },
+    None => {
+      if is_wsl::is_wsl() {
+        systemd::Scope::Global
+      } else {
+        systemd::Scope::All
+      }
+    },
   };
-  
+
   let mut app = App::new(scope)?;
   app.run().await?;
 

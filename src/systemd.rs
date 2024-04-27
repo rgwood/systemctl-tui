@@ -5,7 +5,7 @@ use duct::cmd;
 use log::error;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
-use zbus::{proxy, Connection, zvariant};
+use zbus::{proxy, zvariant, Connection};
 
 #[derive(Debug, Clone)]
 pub struct UnitWithStatus {
@@ -64,7 +64,7 @@ impl UnitWithStatus {
 
   // TODO: should we have a non-allocating version of this?
   pub fn id(&self) -> UnitId {
-    UnitId { name: self.name.clone(), scope: self.scope.clone() }
+    UnitId { name: self.name.clone(), scope: self.scope }
   }
 
   // useful for updating without wiping out the file path
@@ -96,7 +96,7 @@ pub enum Scope {
 }
 
 // this takes like 5-10 ms on 13th gen Intel i7 (scope=all)
-pub async fn get_all_services(scope: &Scope) -> Result<Vec<UnitWithStatus>> {
+pub async fn get_all_services(scope: Scope) -> Result<Vec<UnitWithStatus>> {
   let start = std::time::Instant::now();
 
   let mut units = vec![];
