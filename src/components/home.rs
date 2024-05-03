@@ -1,5 +1,4 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use duct::cmd;
 use futures::Future;
 use indexmap::IndexMap;
 use itertools::Itertools;
@@ -18,7 +17,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use tui_input::{backend::crossterm::EventHandler, Input};
 
-use std::{process::Stdio, time::Duration};
+use std::{
+  process::{Command, Stdio},
+  time::Duration,
+};
 
 use super::{logger::Logger, Component, Frame};
 use crate::{
@@ -365,7 +367,11 @@ impl Component for Home {
             let _ = tx.send(Action::SetUnitFilePath { unit: unit.clone(), path });
             let _ = tx.send(Action::Render);
           },
-          Err(e) => error!("Error getting unit file path for {}: {}", unit.name, e),
+          Err(e) => {
+            let _ = tx.send(Action::SetUnitFilePath { unit: unit.clone(), path: "(could not be determined)".into() });
+            let _ = tx.send(Action::Render);
+            error!("Error getting unit file path for {}: {}", unit.name, e);
+          },
         }
 
         // First, get the N lines in a batch
@@ -380,17 +386,24 @@ impl Component for Home {
           args.push("--user");
         }
 
-        match cmd("journalctl", args).read() {
-          Ok(stdout) => {
-            info!("Got logs for {} in {:?}", unit.name, start.elapsed());
+        match Command::new("journalctl").args(&args).output() {
+          Ok(output) => {
+            if output.status.success() {
+              info!("Got logs for {} in {:?}", unit.name, start.elapsed());
+              if let Ok(stdout) = std::str::from_utf8(&output.stdout) {
+                let mut logs = stdout.trim().split('\n').map(String::from).collect_vec();
 
-            let mut logs = stdout.split('\n').map(String::from).collect_vec();
-
-            if logs.is_empty() || logs[0].is_empty() {
-              logs.push(String::from("No logs found/available. Maybe try relaunching with `sudo systemctl-tui`"));
+                if logs.is_empty() || logs[0].is_empty() {
+                  logs.push(String::from("No logs found/available. Maybe try relaunching with `sudo systemctl-tui`"));
+                }
+                let _ = tx.send(Action::SetLogs { unit: unit.clone(), logs });
+                let _ = tx.send(Action::Render);
+              } else {
+                warn!("Error parsing stdout for {}", unit.name);
+              }
+            } else {
+              warn!("Error getting logs for {}: {}", unit.name, String::from_utf8_lossy(&output.stderr));
             }
-            let _ = tx.send(Action::SetLogs { unit: unit.clone(), logs });
-            let _ = tx.send(Action::Render);
           },
           Err(e) => warn!("Error getting logs for {}: {}", unit.name, e),
         }
