@@ -1785,7 +1785,7 @@ dependencies = [
 
 [[package]]
 name = "systemctl-tui"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "anyhow",
  "better-panic",
@@ -1796,7 +1796,6 @@ dependencies = [
  "colored",
  "crossterm",
  "directories",
- "duct",
  "env_logger",
  "futures",
  "indexmap",

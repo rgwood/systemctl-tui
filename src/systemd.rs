@@ -1,7 +1,8 @@
 // File initially taken from https://github.com/servicer-labs/servicer/blob/master/src/utils/systemd.rs, since modified
 
-use anyhow::Result;
-use duct::cmd;
+use std::process::Command;
+
+use anyhow::{bail, Result};
 use log::error;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -152,9 +153,14 @@ pub fn get_unit_file_location(service: &UnitId) -> Result<String> {
     args.insert(0, "--user");
   }
 
-  match cmd("systemctl", args).read() {
-    Ok(output) => Ok(output.trim().to_string()),
-    Err(e) => anyhow::bail!("Failed to get unit file location: {}", e),
+  let output = Command::new("systemctl").args(&args).output()?;
+
+  if output.status.success() {
+    let path = String::from_utf8(output.stdout)?;
+    Ok(path.trim().to_string())
+  } else {
+    let stderr = String::from_utf8(output.stderr)?;
+    bail!(stderr);
   }
 }
 
