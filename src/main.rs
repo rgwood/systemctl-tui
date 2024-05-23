@@ -16,6 +16,9 @@ struct Args {
   /// Enable performance tracing (in Chromium Event JSON format)
   #[clap(short, long)]
   trace: bool,
+  /// Limit view to only these unit files
+  #[clap(short, long, default_value="*.service", num_args=0..)]
+  limit_units: Vec<String>,
 }
 
 #[derive(Parser, Debug, ValueEnum, Clone)]
@@ -52,7 +55,7 @@ async fn main() -> Result<()> {
     },
   };
 
-  let mut app = App::new(scope)?;
+  let mut app = App::new(scope, args.limit_units)?;
   app.run().await?;
 
   Ok(())

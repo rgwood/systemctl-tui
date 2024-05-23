@@ -15,15 +15,16 @@ use crate::{
 pub struct App {
   pub scope: Scope,
   pub home: Arc<Mutex<Home>>,
+  pub limit_units: Vec<String>,
   pub should_quit: bool,
   pub should_suspend: bool,
 }
 
 impl App {
-  pub fn new(scope: Scope) -> Result<Self> {
-    let home = Home::new(scope);
+  pub fn new(scope: Scope, limit_units : Vec<String>) -> Result<Self> {
+    let home = Home::new(scope, &limit_units);
     let home = Arc::new(Mutex::new(home));
-    Ok(Self { scope, home, should_quit: false, should_suspend: false })
+    Ok(Self { scope, home, limit_units, should_quit: false, should_suspend: false })
   }
 
   pub async fn run(&mut self) -> Result<()> {
@@ -57,7 +58,7 @@ impl App {
 
     self.home.lock().await.init(action_tx.clone())?;
 
-    let units = get_all_services(self.scope)
+    let units = get_all_services(self.scope, &self.limit_units)
       .await
       .context("Unable to get services. Check that systemd is running and try running this tool with sudo.")?;
     self.home.lock().await.set_units(units);
