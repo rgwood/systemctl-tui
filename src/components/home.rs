@@ -6,7 +6,7 @@ use ratatui::{
   layout::{Constraint, Direction, Layout, Rect},
   style::{Color, Modifier, Style},
   text::{Line, Span},
-  widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+  widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use tokio::{
   io::AsyncBufReadExt,
@@ -728,12 +728,13 @@ impl Component for Home {
       .block(
         Block::default()
           .borders(Borders::ALL)
+          .border_type(BorderType::Rounded)
           .border_style(if self.mode == Mode::ServiceList {
             Style::default().fg(Color::LightGreen)
           } else {
             Style::default()
           })
-          .title(" Services "),
+          .title("─Services"),
       )
       .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
 
@@ -750,7 +751,7 @@ impl Component for Home {
     let details_panel = right_panel[0];
     let logs_panel = right_panel[1];
 
-    let details_block = Block::default().title(" Details ").borders(Borders::ALL);
+    let details_block = Block::default().title("─Details").borders(Borders::ALL).border_type(BorderType::Rounded);
     let details_panel_panes = Layout::new(Direction::Horizontal, [Constraint::Min(14), Constraint::Percentage(100)])
       .split(details_block.inner(details_panel));
     let props_pane = details_panel_panes[0];
@@ -831,7 +832,7 @@ impl Component for Home {
       .collect_vec();
 
     let paragraph = Paragraph::new(log_lines)
-      .block(Block::default().title(" Service Logs ").borders(Borders::ALL))
+      .block(Block::default().title("─Service Logs").borders(Borders::ALL).border_type(BorderType::Rounded))
       .style(Style::default())
       .wrap(Wrap { trim: true })
       .scroll((self.logs_scroll_offset, 0));
@@ -845,14 +846,13 @@ impl Component for Home {
         _ => Style::default(),
       })
       .scroll((0, scroll as u16))
-      .block(Block::default().borders(Borders::ALL).title(Line::from(vec![
-        Span::raw(" Search "),
+      .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(Line::from(vec![
+        Span::raw("─Search "),
         Span::styled("(", Style::default().fg(Color::DarkGray)),
         Span::styled("ctrl+f", Style::default().add_modifier(Modifier::BOLD).fg(Color::Gray)),
         Span::styled(" or ", Style::default().fg(Color::DarkGray)),
         Span::styled("/", Style::default().add_modifier(Modifier::BOLD).fg(Color::Gray)),
-        Span::styled(" to focus", Style::default().fg(Color::DarkGray)),
-        Span::styled(") ", Style::default().fg(Color::DarkGray)),
+        Span::styled(")", Style::default().fg(Color::DarkGray)),
       ])));
     f.render_widget(input, search_panel);
     // clear top right of search panel so we can put help instructions there
@@ -903,10 +903,10 @@ impl Component for Home {
 
       let name = env!("CARGO_PKG_NAME");
       let version = env!("CARGO_PKG_VERSION");
-      let title = format!(" ✨️ Help for {} v{} ✨️ ", name, version);
+      let title = format!("─Help for {} v{}", name, version);
 
       let paragraph = Paragraph::new(help_lines)
-        .block(Block::default().title(title).borders(Borders::ALL))
+        .block(Block::default().title(title).borders(Borders::ALL).border_type(BorderType::Rounded))
         .style(Style::default())
         .wrap(Wrap { trim: true });
 
@@ -919,7 +919,11 @@ impl Component for Home {
       let error_lines = self.error_message.split('\n').map(Line::from).collect_vec();
       let paragraph = Paragraph::new(error_lines)
         .block(
-          Block::default().title(" ⚠️ Error ⚠️ ").borders(Borders::ALL).border_style(Style::default().fg(Color::Red)),
+          Block::default()
+            .title("─Error")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Red)),
         )
         .wrap(Wrap { trim: true });
 
@@ -945,6 +949,7 @@ impl Component for Home {
         .block(
           Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(Color::LightGreen))
             .title(format!("Actions for {}", self.filtered_units.selected().unwrap().name)),
         )
@@ -966,6 +971,7 @@ impl Component for Home {
         .block(
           Block::default()
             .title("Processing")
+            .border_type(BorderType::Rounded)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::LightGreen)),
         )
