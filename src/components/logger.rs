@@ -3,7 +3,7 @@ use log::LevelFilter;
 use ratatui::{
   layout::Rect,
   style::{Color, Style},
-  widgets::{Block, Borders},
+  widgets::{Block, BorderType, Borders},
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tui_logger::{TuiLoggerLevelOutput, TuiLoggerWidget, TuiWidgetState};
@@ -24,7 +24,7 @@ impl Component for Logger {
 
   fn render(&mut self, f: &mut Frame<'_>, rect: Rect) {
     let w = TuiLoggerWidget::default()
-      .block(Block::default().title(" systemctl-tui logs ").borders(Borders::ALL))
+      .block(Block::default().title("─systemctl-tui logs").borders(Borders::ALL).border_type(BorderType::Rounded))
       .style_error(Style::default().fg(Color::Red))
       .style_debug(Style::default().fg(Color::Green))
       .style_warn(Style::default().fg(Color::Yellow))
