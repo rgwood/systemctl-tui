@@ -17,7 +17,7 @@ struct Args {
   #[clap(short, long)]
   trace: bool,
   /// Limit view to only these unit files
-  #[clap(short, long, default_value="*.service", num_args=0..)]
+  #[clap(short, long, default_value="*.service", num_args=1..)]
   limit_units: Vec<String>,
 }
 
