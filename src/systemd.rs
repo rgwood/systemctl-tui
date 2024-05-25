@@ -97,7 +97,7 @@ pub enum Scope {
 }
 
 // this takes like 5-10 ms on 13th gen Intel i7 (scope=all)
-pub async fn get_all_services(scope: Scope) -> Result<Vec<UnitWithStatus>> {
+pub async fn get_all_services(scope: Scope, services: &[String]) -> Result<Vec<UnitWithStatus>> {
   let start = std::time::Instant::now();
 
   let mut units = vec![];
@@ -106,15 +106,16 @@ pub async fn get_all_services(scope: Scope) -> Result<Vec<UnitWithStatus>> {
 
   match scope {
     Scope::Global => {
-      let system_units = get_services(UnitScope::Global).await?;
+      let system_units = get_services(UnitScope::Global, services).await?;
       units.extend(system_units);
     },
     Scope::User => {
-      let user_units = get_services(UnitScope::User).await?;
+      let user_units = get_services(UnitScope::User, services).await?;
       units.extend(user_units);
     },
     Scope::All => {
-      let (system_units, user_units) = tokio::join!(get_services(UnitScope::Global), get_services(UnitScope::User));
+      let (system_units, user_units) =
+        tokio::join!(get_services(UnitScope::Global, services), get_services(UnitScope::User, services));
       units.extend(system_units?);
 
       // Should always be able to get user units, but it may fail when running as root
@@ -136,10 +137,10 @@ pub async fn get_all_services(scope: Scope) -> Result<Vec<UnitWithStatus>> {
   Ok(units)
 }
 
-async fn get_services(scope: UnitScope) -> Result<Vec<UnitWithStatus>, anyhow::Error> {
+async fn get_services(scope: UnitScope, services: &[String]) -> Result<Vec<UnitWithStatus>, anyhow::Error> {
   let connection = get_connection(scope).await?;
   let manager_proxy = ManagerProxy::new(&connection).await?;
-  let units = manager_proxy.list_units_by_patterns(vec![], vec!["*.service".into()]).await?;
+  let units = manager_proxy.list_units_by_patterns(vec![], services.to_vec()).await?;
   let units: Vec<_> = units.into_iter().map(|u| to_unit_status(u, scope)).collect();
   Ok(units)
 }
