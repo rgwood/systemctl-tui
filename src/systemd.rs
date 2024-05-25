@@ -114,7 +114,8 @@ pub async fn get_all_services(scope: Scope, services: &[String]) -> Result<Vec<U
       units.extend(user_units);
     },
     Scope::All => {
-      let (system_units, user_units) = tokio::join!(get_services(UnitScope::Global, services), get_services(UnitScope::User, services));
+      let (system_units, user_units) =
+        tokio::join!(get_services(UnitScope::Global, services), get_services(UnitScope::User, services));
       units.extend(system_units?);
 
       // Should always be able to get user units, but it may fail when running as root
