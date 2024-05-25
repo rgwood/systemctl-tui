@@ -42,6 +42,7 @@ pub enum Mode {
 #[derive(Default)]
 pub struct Home {
   pub scope: Scope,
+  pub limit_units: Vec<String>,
   pub logger: Logger,
   pub show_logger: bool,
   pub all_units: IndexMap<UnitId, UnitWithStatus>,
@@ -145,8 +146,9 @@ impl<T> StatefulList<T> {
 }
 
 impl Home {
-  pub fn new(scope: Scope) -> Self {
-    Self { scope, ..Default::default() }
+  pub fn new(scope: Scope, limit_units: &[String]) -> Self {
+    let limit_units = limit_units.to_vec();
+    Self { scope, limit_units, ..Default::default() }
   }
 
   pub fn set_units(&mut self, units: Vec<UnitWithStatus>) {
@@ -649,8 +651,9 @@ impl Component for Home {
       Action::RefreshServices => {
         let tx = self.action_tx.clone().unwrap();
         let scope = self.scope;
+        let limit_units = self.limit_units.to_vec();
         tokio::spawn(async move {
-          let units = systemd::get_all_services(scope)
+          let units = systemd::get_all_services(scope, &limit_units)
             .await
             .expect("Failed to get services. Check that systemd is running and try running this tool with sudo.");
           tx.send(Action::SetServices(units)).unwrap();
