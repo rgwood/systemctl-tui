@@ -11,8 +11,8 @@ license = "MIT"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ratatui = {version = "0.26.2"}
-crossterm = { version = "0.27.0", default-features = false, features = [
+ratatui = {version = "0.28.0"}
+crossterm = { version = "0.28.1", default-features = false, features = [
   "event-stream",
 ] }
 tokio = { version = "1.28.2", features = ["full"] }
@@ -41,13 +41,13 @@ tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 env_logger = "0.11.1"
 directories = "5.0.1"
-tui-logger = { version = "0.11.1", default-features = false, features = [
+tui-logger = { version = "0.12.0", default-features = false, features = [
   "tracing-support",
 ] }
 colored = "2.0.0"
 log = "0.4.19"
 libc = "0.2.146"
-tui-input = "0.8.0"
+tui-input = "0.10.0"
 signal-hook = "0.3.15"
 tokio-util = "0.7.8"
 zbus = { version = "4.1.2", default-features = false, features = ["tokio"] }
