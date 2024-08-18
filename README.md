@@ -13,7 +13,7 @@ Note: this project only works on Linux (WSL works _if_ you [have systemd enabled
 
 If you'd rather build from scratch you will need [Rust installed](https://rustup.rs/). Then either:
 
-1. Run `cargo install systemctl-tui`
+1. Run `cargo install systemctl-tui --locked`
 2. Clone the repo and run `cargo build --release` to get a release binary at `target/release/systemctl-tui`
 
 ### Distro Packages
