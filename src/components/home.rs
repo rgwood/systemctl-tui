@@ -873,14 +873,14 @@ impl Component for Home {
     f.render_widget(help_text, help_area);
 
     if self.mode == Mode::Search {
-      f.set_cursor(
+      f.set_cursor_position((
         (search_panel.x + 1 + self.input.cursor() as u16).min(search_panel.x + search_panel.width - 2),
         search_panel.y + 1,
-      )
+      ));
     }
 
     if self.mode == Mode::Help {
-      let popup = centered_rect_abs(50, 18, f.size());
+      let popup = centered_rect_abs(50, 18, f.area());
 
       fn primary(s: &str) -> Span {
         Span::styled(s, Style::default().fg(Color::Cyan))
@@ -918,7 +918,7 @@ impl Component for Home {
     }
 
     if self.mode == Mode::Error {
-      let popup = centered_rect_abs(50, 12, f.size());
+      let popup = centered_rect_abs(50, 12, f.area());
       let error_lines = self.error_message.split('\n').map(Line::from).collect_vec();
       let paragraph = Paragraph::new(error_lines)
         .block(
@@ -941,11 +941,11 @@ impl Component for Home {
 
     let min_width = selected_item.name.len() as u16 + 14;
     let desired_width = min_width + 4; // idk, looks alright
-    let popup_width = desired_width.min(f.size().width);
+    let popup_width = desired_width.min(f.area().width);
 
     if self.mode == Mode::ActionMenu {
       let height = self.menu_items.items.len() as u16 + 2;
-      let popup = centered_rect_abs(popup_width, height, f.size());
+      let popup = centered_rect_abs(popup_width, height, f.area());
 
       let items: Vec<ListItem> = self.menu_items.items.iter().map(|i| ListItem::new(i.name.as_str())).collect();
       let items = List::new(items)
@@ -964,7 +964,7 @@ impl Component for Home {
 
     if self.mode == Mode::Processing {
       let height = self.menu_items.items.len() as u16 + 2;
-      let popup = centered_rect_abs(popup_width, height, f.size());
+      let popup = centered_rect_abs(popup_width, height, f.area());
 
       static SPINNER_CHARS: &[char] = &['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '⣾'];
 

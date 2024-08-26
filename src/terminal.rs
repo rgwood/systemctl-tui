@@ -157,7 +157,7 @@ impl TerminalHandler {
 fn render(tui: &mut Tui, home: &mut Home) {
   tui
     .draw(|f| {
-      home.render(f, f.size());
+      home.render(f, f.area());
     })
     .expect("Unable to draw");
 }
