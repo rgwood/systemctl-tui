@@ -14,15 +14,25 @@ pub struct UnitWithStatus {
   pub scope: UnitScope,          // System or user?
   pub description: String,       // The human readable description string
   pub file_path: Option<String>, // The unit file path - populated later on demand
-  pub load_state: String,        // The load state (i.e. whether the unit file has been loaded successfully)
-  pub active_state: String,      // The active state (i.e. whether the unit is currently started or not)
-  pub sub_state: String, // The sub state (a more fine-grained version of the active state that is specific to the unit type, which the active state is not)
-                         // We don't use any of these right now, might as well skip'em so there's less data to clone
-                         // pub followed: String, // A unit that is being followed in its state by this unit, if there is any, otherwise the empty string.
-                         // pub path: String,     // The unit object path
-                         // pub job_id: u32,      // If there is a job queued for the job unit the numeric job id, 0 otherwise
-                         // pub job_type: String, // The job type as string
-                         // pub job_path: String, // The job object path
+
+  pub load_state: String, // The load state (i.e. whether the unit file has been loaded successfully)
+
+  // Some comments re: state from this helpful comment: https://www.reddit.com/r/linuxquestions/comments/r58dvz/comment/hmlemfk/
+  /// One state, called the "activation state", essentially describes what the unit is doing now. The two most common values for this state are active and inactive, though there are a few other possibilities. (Each unit type has its own set of "substates" that map to these activation states. For instance, service units can be running or stopped. Again, there's a variety of other substates, and the list differs for each unit type.)
+  pub activation_state: String,
+  /// The sub state (a more fine-grained version of the active state that is specific to the unit type, which the active state is not)
+  pub sub_state: String,
+
+  /// The other state all units have is called the "enablement state". It describes how the unit might be automatically started in the future. A unit is enabled if it has been added to the requirements list of any other unit though symlinks in the filesystem. The set of symlinks to be created when enabling a unit is described by the unit's [Install] section. A unit is disabled if no symlinks are present. Again there's a variety of other values other than these two (e.g. not all units even have [Install] sections).
+  /// Only populated when needed b/c this is much slower to get
+  pub enablement_state: Option<String>,
+
+  // We don't use any of these right now, might as well skip'em so there's less data to clone
+  // pub followed: String, // A unit that is being followed in its state by this unit, if there is any, otherwise the empty string.
+  // pub path: String,     // The unit object path
+  // pub job_id: u32,      // If there is a job queued for the job unit the numeric job id, 0 otherwise
+  // pub job_type: String, // The job type as string
+  // pub job_path: String, // The job object path
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -40,11 +50,11 @@ pub struct UnitId {
 
 impl UnitWithStatus {
   pub fn is_active(&self) -> bool {
-    self.active_state == "active"
+    self.activation_state == "active"
   }
 
   pub fn is_failed(&self) -> bool {
-    self.active_state == "failed"
+    self.activation_state == "failed"
   }
 
   pub fn is_not_found(&self) -> bool {
@@ -52,7 +62,7 @@ impl UnitWithStatus {
   }
 
   pub fn is_enabled(&self) -> bool {
-    self.load_state == "loaded" && self.active_state == "active"
+    self.load_state == "loaded" && self.activation_state == "active"
   }
 
   pub fn short_name(&self) -> &str {
@@ -72,7 +82,7 @@ impl UnitWithStatus {
   pub fn update(&mut self, other: UnitWithStatus) {
     self.description = other.description;
     self.load_state = other.load_state;
-    self.active_state = other.active_state;
+    self.activation_state = other.activation_state;
     self.sub_state = other.sub_state;
   }
 }
@@ -84,7 +94,16 @@ fn to_unit_status(raw_unit: RawUnit, scope: UnitScope) -> UnitWithStatus {
   let (name, description, load_state, active_state, sub_state, _followed, _path, _job_id, _job_type, _job_path) =
     raw_unit;
 
-  UnitWithStatus { name, scope, description, file_path: None, load_state, active_state, sub_state }
+  UnitWithStatus {
+    name,
+    scope,
+    description,
+    file_path: None,
+    enablement_state: None,
+    load_state,
+    activation_state: active_state,
+    sub_state,
+  }
 }
 
 // Different from UnitScope in that this is not for 1 specific unit (i.e. it can include multiple scopes)
