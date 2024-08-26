@@ -780,14 +780,14 @@ impl Component for Home {
         _ => Color::White,
       };
 
-      let active_color = match i.active_state.as_str() {
+      let active_color = match i.activation_state.as_str() {
         "active" => Color::Green,
         "inactive" => Color::Gray,
         "failed" => Color::Red,
         _ => Color::White,
       };
 
-      let active_state_value = format!("{} ({})", i.active_state, i.sub_state);
+      let active_state_value = format!("{} ({})", i.activation_state, i.sub_state);
 
       let scope = match i.scope {
         UnitScope::Global => "Global",
