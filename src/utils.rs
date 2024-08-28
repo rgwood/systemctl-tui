@@ -4,7 +4,11 @@ use anyhow::{anyhow, Context, Result};
 use better_panic::Settings;
 use directories::ProjectDirs;
 use lazy_static::lazy_static;
-use tracing::error;
+use tracing::{error, level_filters::LevelFilter};
+use tracing_appender::{
+  non_blocking::WorkerGuard,
+  rolling::{RollingFileAppender, Rotation},
+};
 use tracing_subscriber::{
   self, filter::EnvFilter, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt, Layer,
 };
@@ -52,40 +56,41 @@ pub fn get_config_dir() -> Result<PathBuf> {
   Ok(directory)
 }
 
-pub fn initialize_logging(enable_tracing: bool) -> Result<()> {
+pub fn initialize_logging(enable_tracing: bool) -> Result<WorkerGuard> {
   let directory = get_data_dir()?;
   std::fs::create_dir_all(directory.clone()).context(format!("{directory:?} could not be created"))?;
-  let log_path = directory.join("systemctl-tui.log");
-  let log_file = std::fs::File::create(log_path)?;
-  let file_subscriber = tracing_subscriber::fmt::layer()
+  // let log_path = directory.join("systemctl-tui.log");
+
+  // create a file appender that rolls daily
+  let file_appender = RollingFileAppender::new(Rotation::DAILY, &directory, "systemctl-tui.log");
+
+  // create a non-blocking writer
+  let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+  // create a layer for the file logger
+  let file_layer = tracing_subscriber::fmt::layer()
+    .with_writer(non_blocking)
     .with_file(true)
     .with_line_number(true)
-    .with_writer(log_file)
     .with_target(false)
     .with_ansi(false)
-    .with_filter(EnvFilter::from_default_env());
-  tracing_subscriber::registry().with(file_subscriber).with(tui_logger::tracing_subscriber_layer()).init();
-  let default_level =
-    std::env::var("RUST_LOG").map_or(log::LevelFilter::Debug, |val| match val.to_lowercase().as_str() {
-      "off" => log::LevelFilter::Off,
-      "error" => log::LevelFilter::Error,
-      "warn" => log::LevelFilter::Warn,
-      "info" => log::LevelFilter::Info,
-      "debug" => log::LevelFilter::Debug,
-      "trace" => log::LevelFilter::Trace,
-      _ => log::LevelFilter::Debug,
-    });
+    .with_filter(EnvFilter::builder().with_default_directive(LevelFilter::INFO.into()).from_env_lossy());
 
-  tui_logger::set_default_level(default_level);
+  let tui_layer = tui_logger::tracing_subscriber_layer()
+  .with_filter(EnvFilter::builder().with_default_directive(LevelFilter::INFO.into()).from_env_lossy());
 
+  tracing_subscriber::registry().with(file_layer).with(tui_layer).init();
+  
   if enable_tracing {
     TRACING_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
     let mut trace_file = std::fs::File::create(&*TRACE_FILE_NAME).unwrap();
     trace_file.write_all(b"[\n").unwrap(); // start of chrome://tracing file
   }
 
-  tracing::info!("Logging initialized, data directory: {directory:?}", directory = directory);
-  Ok(())
+  let directory = directory.to_string_lossy().into_owned();
+  tracing::info!(directory, "Logging initialized");
+
+  Ok(guard)
 }
 
 // Write an event in chrome://tracing format
