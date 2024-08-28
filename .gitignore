@@ -19,3 +19,4 @@ target/
 
 # Samply
 profile.json
+.aider*
