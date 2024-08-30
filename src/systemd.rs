@@ -1,14 +1,13 @@
 // File initially taken from https://github.com/servicer-labs/servicer/blob/master/src/utils/systemd.rs, since modified
 
 use core::str;
-use std::process::Command;
 
-use anyhow::{bail, Result};
-use log::error;
+use anyhow::Result;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, warn};
 use zbus::{proxy, zvariant, Connection};
 
+// TODO: start representing more of these fields with enums instead of strings
 #[derive(Debug, Clone)]
 pub struct UnitWithStatus {
   pub name: String,              // The primary unit name as string
@@ -27,7 +26,6 @@ pub struct UnitWithStatus {
   /// The other state all units have is called the "enablement state". It describes how the unit might be automatically started in the future. A unit is enabled if it has been added to the requirements list of any other unit though symlinks in the filesystem. The set of symlinks to be created when enabling a unit is described by the unit's [Install] section. A unit is disabled if no symlinks are present. Again there's a variety of other values other than these two (e.g. not all units even have [Install] sections).
   /// Only populated when needed b/c this is much slower to get
   pub enablement_state: Option<String>,
-
   // We don't use any of these right now, might as well skip'em so there's less data to clone
   // pub followed: String, // A unit that is being followed in its state by this unit, if there is any, otherwise the empty string.
   // pub path: String,     // The unit object path
@@ -60,10 +58,6 @@ impl UnitWithStatus {
 
   pub fn is_not_found(&self) -> bool {
     self.load_state == "not-found"
-  }
-
-  pub fn is_enabled(&self) -> bool {
-    self.load_state == "loaded" && self.activation_state == "active"
   }
 
   pub fn short_name(&self) -> &str {
@@ -117,7 +111,7 @@ pub enum Scope {
 }
 
 // this takes like 5-10 ms on 13th gen Intel i7 (scope=all)
-pub async fn get_all_services(scope: Scope, services: &[String]) -> Result<Vec<UnitWithStatus>> {
+pub async fn get_services_from_list_units(scope: Scope, services: &[String]) -> Result<Vec<UnitWithStatus>> {
   let start = std::time::Instant::now();
 
   let mut units = vec![];
@@ -142,7 +136,7 @@ pub async fn get_all_services(scope: Scope, services: &[String]) -> Result<Vec<U
       if let Ok(user_units) = user_units {
         units.extend(user_units);
       } else if is_root {
-        error!("Failed to get user units, ignoring because we're running as root")
+        warn!("Failed to get user units, ignoring because we're running as root and that's kinda expected");
       } else {
         user_units?;
       }
@@ -165,27 +159,75 @@ async fn get_services(scope: UnitScope, services: &[String]) -> Result<Vec<UnitW
   Ok(units)
 }
 
-pub fn get_unit_file_location(service: &UnitId) -> Result<String> {
-  // show -P FragmentPath reitunes.service
-  let mut args = vec!["--quiet", "show", "-P", "FragmentPath"];
-  args.push(&service.name);
+pub struct UnitFile {
+  pub name: String,
+  pub scope: UnitScope,
+  pub enablement_state: String,
+  pub path: String,
+}
 
-  if service.scope == UnitScope::User {
-    args.insert(0, "--user");
+impl UnitFile {
+  pub fn id(&self) -> UnitId {
+    UnitId { name: self.name.clone(), scope: self.scope }
+  }
+}
+
+/// Uses ListUnitFiles to get info for all services, including disabled ones
+/// The tradeoff is that this is slow, we don't get as much info as from ListUnits,
+/// and this returns a ton of static/masked/generated services that are not super interesting (at least to me)
+pub async fn get_unit_files(scope: Scope) -> Result<Vec<UnitFile>> {
+  let start = std::time::Instant::now();
+  let mut unit_scopes = vec![];
+  match scope {
+    Scope::Global => unit_scopes.push(UnitScope::Global),
+    Scope::User => unit_scopes.push(UnitScope::User),
+    Scope::All => {
+      unit_scopes.push(UnitScope::Global);
+      unit_scopes.push(UnitScope::User);
+    },
   }
 
-  let output = Command::new("systemctl").args(&args).output()?;
+  let mut ret = vec![];
 
-  if output.status.success() {
-    let path = str::from_utf8(&output.stdout)?.trim();
-    if path.is_empty() {
-      bail!("No unit file found for {}", service.name);
-    }
-    Ok(path.trim().to_string())
-  } else {
-    let stderr = String::from_utf8(output.stderr)?;
-    bail!(stderr);
+  for unit_scope in unit_scopes {
+    let unit_files = match get_service_unit_files(unit_scope).await {
+      Ok(unit_files) => unit_files,
+      Err(e) => {
+        if nix::unistd::geteuid().is_root() {
+          warn!("Failed to get user units, ignoring because we're running as root and that's kinda expected");
+          vec![]
+        } else {
+          return Err(e);
+        }
+      },
+    };
+
+    let services = unit_files
+      .iter()
+      .map(|(path, state)| {
+        // get the service name, e.g. foo.bar.baz.service from /somewhere/foo.bar.baz.service
+        let rust_path = std::path::Path::new(path);
+        let file_stem = rust_path.file_name().unwrap_or_default().to_str().unwrap_or_default();
+        (file_stem.to_string(), state.to_string(), path.to_string())
+      })
+      .map(|(name, state, path)| UnitFile { name, scope: unit_scope, enablement_state: state, path })
+      .collect::<Vec<_>>();
+    ret.extend(services);
   }
+
+  info!("Loaded {} unit files in {:?}", ret.len(), start.elapsed());
+
+  Ok(ret)
+}
+
+/// Get unit files for all services, INCLUDING DISABLED ONES (the normal systemd APIs don't include those, which is annoying)
+/// This is slow. Takes about 100ms (user) and 300ms (global) on 13th gen Intel i7
+/// Returns a list of (path, state)s
+pub async fn get_service_unit_files(scope: UnitScope) -> Result<Vec<(String, String)>> {
+  let connection = get_connection(scope).await?;
+  let manager_proxy = ManagerProxy::new(&connection).await?;
+  let unit_files = manager_proxy.list_unit_files_by_patterns(vec![], vec!["*.service".into()]).await?;
+  Ok(unit_files)
 }
 
 pub async fn start_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
@@ -342,6 +384,16 @@ pub trait Manager {
       zvariant::OwnedObjectPath,
     )>,
   >;
+
+  /// [📖](https://www.freedesktop.org/software/systemd/man/latest/systemd.directives.html#ListUnitFiles()) Call interface method `ListUnitFiles`.
+  fn list_unit_files(&self) -> zbus::Result<Vec<(String, String)>>;
+
+  /// [📖](https://www.freedesktop.org/software/systemd/man/latest/systemd.directives.html#ListUnitFilesByPatterns()) Call interface method `ListUnitFilesByPatterns`.
+  fn list_unit_files_by_patterns(
+    &self,
+    states: Vec<String>,
+    patterns: Vec<String>,
+  ) -> zbus::Result<Vec<(String, String)>>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#Reload()) Call interface method `Reload`.
   #[dbus_proxy(name = "Reload")]

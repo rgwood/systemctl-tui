@@ -180,6 +180,11 @@ impl Home {
     info!("Filtered units in {:?}", now.elapsed());
   }
 
+  pub fn sort_units(&mut self) {
+    // sort by name case-insensitive
+    self.all_units.sort_by(|_: &systemd::UnitId, v1, _, v2| v1.name.to_lowercase().cmp(&v2.name.to_lowercase()));
+  }
+
   pub fn next(&mut self) {
     self.logs = vec![];
     self.filtered_units.next();
@@ -225,7 +230,7 @@ impl Home {
     }
   }
 
-  fn refresh_filtered_units(&mut self) {
+  pub fn refresh_filtered_units(&mut self) {
     let previously_selected = self.selected_service();
     let search_value_lower = self.input.value().to_lowercase();
     // TODO: use fuzzy find
@@ -363,19 +368,6 @@ impl Component for Home {
         // lazy debounce to avoid spamming journalctl on slow connections/systems
         std::thread::sleep(Duration::from_millis(100));
 
-        // get the unit file path
-        match systemd::get_unit_file_location(&unit) {
-          Ok(path) => {
-            let _ = tx.send(Action::SetUnitFilePath { unit: unit.clone(), path });
-            let _ = tx.send(Action::Render);
-          },
-          Err(e) => {
-            let _ = tx.send(Action::SetUnitFilePath { unit: unit.clone(), path: "(could not be determined)".into() });
-            let _ = tx.send(Action::Render);
-            error!("Error getting unit file path for {}: {}", unit.name, e);
-          },
-        }
-
         // First, get the N lines in a batch
         info!("Getting logs for {}", unit.name);
         let start = std::time::Instant::now();
@@ -442,6 +434,7 @@ impl Component for Home {
         }));
       }
     });
+
     Ok(())
   }
 
@@ -653,7 +646,7 @@ impl Component for Home {
         let scope = self.scope;
         let limit_units = self.limit_units.to_vec();
         tokio::spawn(async move {
-          let units = systemd::get_all_services(scope, &limit_units)
+          let units = systemd::get_services_from_list_units(scope, &limit_units)
             .await
             .expect("Failed to get services. Check that systemd is running and try running this tool with sudo.");
           tx.send(Action::SetServices(units)).unwrap();
@@ -750,7 +743,7 @@ impl Component for Home {
     let selected_item = self.filtered_units.selected();
 
     let right_panel =
-      Layout::new(Direction::Vertical, [Constraint::Min(7), Constraint::Percentage(100)]).split(right_panel);
+      Layout::new(Direction::Vertical, [Constraint::Min(8), Constraint::Percentage(100)]).split(right_panel);
     let details_panel = right_panel[0];
     let logs_panel = right_panel[1];
 
@@ -762,6 +755,7 @@ impl Component for Home {
 
     let props_lines = vec![
       Line::from("Description: "),
+      Line::from("Enablement: "),
       Line::from("Scope: "),
       Line::from("Loaded: "),
       Line::from("Active: "),
@@ -794,8 +788,10 @@ impl Component for Home {
         UnitScope::User => "User",
       };
 
+      let enablement_state = i.enablement_state.as_deref().unwrap_or("Unknown");
       let mut lines = vec![
         colored_line(&i.description, Color::White),
+        colored_line(&enablement_state, Color::White),
         colored_line(scope, Color::White),
         colored_line(&i.load_state, load_color),
         line_color_string(active_state_value, active_color),
