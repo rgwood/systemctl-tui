@@ -36,7 +36,7 @@ async fn main() -> Result<()> {
   }
 
   let args = Args::parse();
-  initialize_logging(args.trace)?;
+  let _guard = initialize_logging(args.trace)?;
   initialize_panic_handler();
 
   // There's probably a nicer way to do this than defining the scope enum twice, but this is fine for now

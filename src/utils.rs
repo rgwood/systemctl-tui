@@ -77,10 +77,10 @@ pub fn initialize_logging(enable_tracing: bool) -> Result<WorkerGuard> {
     .with_filter(EnvFilter::builder().with_default_directive(LevelFilter::INFO.into()).from_env_lossy());
 
   let tui_layer = tui_logger::tracing_subscriber_layer()
-  .with_filter(EnvFilter::builder().with_default_directive(LevelFilter::INFO.into()).from_env_lossy());
+    .with_filter(EnvFilter::builder().with_default_directive(LevelFilter::INFO.into()).from_env_lossy());
 
   tracing_subscriber::registry().with(file_layer).with(tui_layer).init();
-  
+
   if enable_tracing {
     TRACING_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
     let mut trace_file = std::fs::File::create(&*TRACE_FILE_NAME).unwrap();
