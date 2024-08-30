@@ -1,5 +1,6 @@
 // File initially taken from https://github.com/servicer-labs/servicer/blob/master/src/utils/systemd.rs, since modified
 
+use core::str;
 use std::process::Command;
 
 use anyhow::{bail, Result};
@@ -176,7 +177,10 @@ pub fn get_unit_file_location(service: &UnitId) -> Result<String> {
   let output = Command::new("systemctl").args(&args).output()?;
 
   if output.status.success() {
-    let path = String::from_utf8(output.stdout)?;
+    let path = str::from_utf8(&output.stdout)?.trim();
+    if path.is_empty() {
+      bail!("No unit file found for {}", service.name);
+    }
     Ok(path.trim().to_string())
   } else {
     let stderr = String::from_utf8(output.stderr)?;
