@@ -784,11 +784,11 @@ impl Component for Home {
       let active_state_value = format!("{} ({})", i.activation_state, i.sub_state);
 
       let scope = match i.scope {
-        UnitScope::Global => "Global",
-        UnitScope::User => "User",
+        UnitScope::Global => "global",
+        UnitScope::User => "user",
       };
 
-      let enablement_state = i.enablement_state.as_deref().unwrap_or("Unknown");
+      let enablement_state = i.enablement_state.as_deref().unwrap_or("unknown");
       let mut lines = vec![
         colored_line(&i.description, Color::White),
         colored_line(&enablement_state, Color::White),
