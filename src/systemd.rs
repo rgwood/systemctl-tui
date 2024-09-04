@@ -1,6 +1,6 @@
 // File initially taken from https://github.com/servicer-labs/servicer/blob/master/src/utils/systemd.rs, since modified
 
-use core::str;
+use core::{fmt, str};
 
 use anyhow::Result;
 use tokio_util::sync::CancellationToken;
@@ -19,7 +19,7 @@ pub struct UnitWithStatus {
 
   // Some comments re: state from this helpful comment: https://www.reddit.com/r/linuxquestions/comments/r58dvz/comment/hmlemfk/
   /// One state, called the "activation state", essentially describes what the unit is doing now. The two most common values for this state are active and inactive, though there are a few other possibilities. (Each unit type has its own set of "substates" that map to these activation states. For instance, service units can be running or stopped. Again, there's a variety of other substates, and the list differs for each unit type.)
-  pub activation_state: String,
+  pub activation_state: ActivationState,
   /// The sub state (a more fine-grained version of the active state that is specific to the unit type, which the active state is not)
   pub sub_state: String,
 
@@ -32,6 +32,39 @@ pub struct UnitWithStatus {
   // pub job_id: u32,      // If there is a job queued for the job unit the numeric job id, 0 otherwise
   // pub job_type: String, // The job type as string
   // pub job_path: String, // The job object path
+}
+
+#[derive(Debug, Clone)]
+pub enum ActivationState {
+  Active,
+  Inactive,
+  Failed,
+  Unknown,
+  Other(String),
+}
+
+impl From<String> for ActivationState {
+  fn from(s: String) -> Self {
+    match s.as_str() {
+      "active" => ActivationState::Active,
+      "inactive" => ActivationState::Inactive,
+      "failed" => ActivationState::Failed,
+      "unknown" => ActivationState::Unknown,
+      _ => ActivationState::Other(s),
+    }
+  }
+}
+
+impl fmt::Display for ActivationState {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    match self {
+        ActivationState::Active => write!(f, "active"),
+        ActivationState::Inactive => write!(f, "inactive"),
+        ActivationState::Failed => write!(f, "failed"),
+        ActivationState::Unknown => write!(f, "unknown"),
+        ActivationState::Other(s) => write!(f, "{}", s),
+    }
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -49,11 +82,11 @@ pub struct UnitId {
 
 impl UnitWithStatus {
   pub fn is_active(&self) -> bool {
-    self.activation_state == "active"
+    matches!(self.activation_state, ActivationState::Active)
   }
 
   pub fn is_failed(&self) -> bool {
-    self.activation_state == "failed"
+    matches!(self.activation_state, ActivationState::Failed)
   }
 
   pub fn is_not_found(&self) -> bool {
@@ -86,7 +119,7 @@ type RawUnit =
   (String, String, String, String, String, String, zvariant::OwnedObjectPath, u32, String, zvariant::OwnedObjectPath);
 
 fn to_unit_status(raw_unit: RawUnit, scope: UnitScope) -> UnitWithStatus {
-  let (name, description, load_state, active_state, sub_state, _followed, _path, _job_id, _job_type, _job_path) =
+  let (name, description, load_state, activation_state, sub_state, _followed, _path, _job_id, _job_type, _job_path) =
     raw_unit;
 
   UnitWithStatus {
@@ -96,7 +129,7 @@ fn to_unit_status(raw_unit: RawUnit, scope: UnitScope) -> UnitWithStatus {
     file_path: None,
     enablement_state: None,
     load_state,
-    activation_state: active_state,
+    activation_state: activation_state.into(),
     sub_state,
   }
 }

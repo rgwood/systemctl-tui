@@ -11,7 +11,7 @@ use crate::{
   action::Action,
   components::{home::Home, Component},
   event::EventHandler,
-  systemd::{self, get_services_from_list_units, Scope, UnitWithStatus},
+  systemd::{self, get_services_from_list_units, ActivationState, Scope, UnitWithStatus},
   terminal::TerminalHandler,
 };
 
@@ -100,8 +100,8 @@ impl App {
                     description: "".into(),
                     file_path: Some(service.path),
                     load_state: "unknown".into(),
-                    activation_state: "unknown".into(),
-                    sub_state: "unknown".into(),
+                    activation_state: ActivationState::Unknown,
+                    sub_state: "".into(),
                     enablement_state: Some(service.enablement_state),
                   };
 

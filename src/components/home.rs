@@ -25,7 +25,7 @@ use std::{
 use super::{logger::Logger, Component, Frame};
 use crate::{
   action::Action,
-  systemd::{self, Scope, UnitId, UnitScope, UnitWithStatus},
+  systemd::{self, ActivationState, Scope, UnitId, UnitScope, UnitWithStatus},
 };
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
@@ -57,7 +57,7 @@ pub struct Home {
   pub spinner_tick: u8,
   pub error_message: String,
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
-  pub journalctl_tx: Option<std::sync::mpsc::Sender<UnitId>>,
+  pub journalctl_tx: Option<std::sync::mpsc::Sender<UnitWithStatus>>,
 }
 
 pub struct MenuItem {
@@ -221,8 +221,7 @@ impl Home {
 
   pub fn get_logs(&mut self) {
     if let Some(selected) = self.filtered_units.selected() {
-      let unit_id = selected.id();
-      if let Err(e) = self.journalctl_tx.as_ref().unwrap().send(unit_id) {
+      if let Err(e) = self.journalctl_tx.as_ref().unwrap().send(selected.clone()) {
         warn!("Error sending unit name to journalctl thread: {}", e);
       }
     } else {
@@ -341,7 +340,7 @@ impl Component for Home {
     self.action_tx = Some(tx.clone());
     // TODO find a better name for these. They're used to run any async data loading that needs to happen after the selection is changed,
     // not just journalctl stuff
-    let (journalctl_tx, journalctl_rx) = std::sync::mpsc::channel::<UnitId>();
+    let (journalctl_tx, journalctl_rx) = std::sync::mpsc::channel::<UnitWithStatus>();
     self.journalctl_tx = Some(journalctl_tx);
 
     // TODO: move into function
@@ -349,7 +348,7 @@ impl Component for Home {
       let mut last_follow_handle: Option<JoinHandle<()>> = None;
 
       loop {
-        let mut unit: UnitId = match journalctl_rx.recv() {
+        let mut unit: UnitWithStatus = match journalctl_rx.recv() {
           Ok(unit) => unit,
           Err(_) => return,
         };
@@ -367,6 +366,11 @@ impl Component for Home {
 
         // lazy debounce to avoid spamming journalctl on slow connections/systems
         std::thread::sleep(Duration::from_millis(100));
+
+        if unit.description.is_empty() && unit.file_path.is_some() {
+          // TODO read the unit file and get the description
+          _ = tx.send(Action::SetUnitDescription { unit: unit.id(), description: "waddup?".into() });
+        }
 
         // First, get the N lines in a batch
         info!("Getting logs for {}", unit.name);
@@ -390,7 +394,7 @@ impl Component for Home {
                 if logs.is_empty() || logs[0].is_empty() {
                   logs.push(String::from("No logs found/available. Maybe try relaunching with `sudo systemctl-tui`"));
                 }
-                let _ = tx.send(Action::SetLogs { unit: unit.clone(), logs });
+                let _ = tx.send(Action::SetLogs { unit: unit.id(), logs });
                 let _ = tx.send(Action::Render);
               } else {
                 warn!("Error parsing stdout for {}", unit.name);
@@ -428,7 +432,7 @@ impl Component for Home {
           let reader = tokio::io::BufReader::new(stdout);
           let mut lines = reader.lines();
           while let Some(line) = lines.next_line().await.unwrap() {
-            let _ = tx.send(Action::AppendLogLine { unit: unit.clone(), line });
+            let _ = tx.send(Action::AppendLogLine { unit: unit.id(), line });
             let _ = tx.send(Action::Render);
           }
         }));
@@ -619,6 +623,12 @@ impl Component for Home {
           }
         }
       },
+      Action::SetUnitDescription { unit, description } => {
+        if let Some(unit) = self.all_units.get_mut(&unit) {
+          unit.description = description;
+        }
+        self.refresh_filtered_units(); // copy the updated description to the filtered list
+      },
       Action::ScrollUp(offset) => {
         self.logs_scroll_offset = self.logs_scroll_offset.saturating_sub(offset);
         info!("scroll offset: {}", self.logs_scroll_offset);
@@ -774,14 +784,18 @@ impl Component for Home {
         _ => Color::White,
       };
 
-      let active_color = match i.activation_state.as_str() {
-        "active" => Color::Green,
-        "inactive" => Color::Gray,
-        "failed" => Color::Red,
+      let active_color = match i.activation_state {
+        ActivationState::Active => Color::Green,
+        ActivationState::Inactive => Color::Gray,
+        ActivationState::Failed => Color::Red,
         _ => Color::White,
       };
 
-      let active_state_value = format!("{} ({})", i.activation_state, i.sub_state);
+      let active_state_value = if i.sub_state.is_empty() {
+        i.activation_state.to_string()
+      } else {
+        format!("{} ({})", i.activation_state, i.sub_state)
+      };
 
       let scope = match i.scope {
         UnitScope::Global => "global",

@@ -21,6 +21,7 @@ pub enum Action {
   ToggleHelp,
   SetUnitFilePath { unit: UnitId, path: String },
   CopyUnitFilePath,
+  SetUnitDescription { unit: UnitId, description: String },
   SetLogs { unit: UnitId, logs: Vec<String> },
   AppendLogLine { unit: UnitId, line: String },
   StartService(UnitId),
