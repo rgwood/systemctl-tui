@@ -5,7 +5,6 @@ use core::{fmt, str};
 use anyhow::{bail, Result};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use zbus::{proxy, zvariant, Connection};
 

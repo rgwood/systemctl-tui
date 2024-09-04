@@ -99,7 +99,9 @@ impl App {
                     scope: service.scope,
                     description: "".into(),
                     file_path: Some(service.path),
-                    load_state: "unknown".into(),
+                    // ListUnits returns all loaded units, so we can assume that anything not already returned by ListUnits is not loaded
+                    // Depending on timing there may be some cases where this is not true, but ListUnits should fix that on the next iteration
+                    load_state: "no".into(),
                     activation_state: ActivationState::Unknown,
                     sub_state: "".into(),
                     enablement_state: Some(service.enablement_state),
