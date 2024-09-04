@@ -3,11 +3,11 @@
 use core::{fmt, str};
 
 use anyhow::{bail, Result};
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use zbus::{proxy, zvariant, Connection};
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 
 // TODO: start representing more of these fields with enums instead of strings
 #[derive(Debug, Clone)]
@@ -60,11 +60,11 @@ impl From<String> for ActivationState {
 impl fmt::Display for ActivationState {
   fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
     match self {
-        ActivationState::Active => write!(f, "active"),
-        ActivationState::Inactive => write!(f, "inactive"),
-        ActivationState::Failed => write!(f, "failed"),
-        ActivationState::Unknown => write!(f, "unknown"),
-        ActivationState::Other(s) => write!(f, "{}", s),
+      ActivationState::Active => write!(f, "active"),
+      ActivationState::Inactive => write!(f, "inactive"),
+      ActivationState::Failed => write!(f, "failed"),
+      ActivationState::Unknown => write!(f, "unknown"),
+      ActivationState::Other(s) => write!(f, "{}", s),
     }
   }
 }
@@ -553,15 +553,15 @@ pub fn get_unit_path(full_service_name: &str) -> String {
 }
 
 pub fn get_description_from_unit_file(path: &str) -> Result<String> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
+  let file = File::open(path)?;
+  let reader = BufReader::new(file);
 
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().starts_with("Description=") {
-            return Ok(line.trim_start_matches("Description=").trim().to_string());
-        }
+  for line in reader.lines() {
+    let line = line?;
+    if line.trim().starts_with("Description=") {
+      return Ok(line.trim_start_matches("Description=").trim().to_string());
     }
+  }
 
-    bail!("Description not found in unit file")
+  bail!("Description not found in unit file")
 }
