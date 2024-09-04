@@ -6,6 +6,8 @@ use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use zbus::{proxy, zvariant, Connection};
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 
 // TODO: start representing more of these fields with enums instead of strings
 #[derive(Debug, Clone)]
@@ -548,4 +550,21 @@ fn encode_as_dbus_object_path(input_string: &str) -> String {
 ///
 pub fn get_unit_path(full_service_name: &str) -> String {
   format!("/org/freedesktop/systemd1/unit/{}", encode_as_dbus_object_path(full_service_name))
+}
+
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+pub fn get_description_from_unit_file(path: &str) -> Result<String> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().starts_with("Description=") {
+            return Ok(line.trim_start_matches("Description=").trim().to_string());
+        }
+    }
+
+    Err(anyhow::anyhow!("Description not found in unit file"))
 }
