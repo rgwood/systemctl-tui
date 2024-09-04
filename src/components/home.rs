@@ -57,7 +57,7 @@ pub struct Home {
   pub spinner_tick: u8,
   pub error_message: String,
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
-  pub journalctl_tx: Option<std::sync::mpsc::Sender<UnitWithStatus>>,
+  pub selected_service_tx: Option<std::sync::mpsc::Sender<UnitWithStatus>>,
 }
 
 pub struct MenuItem {
@@ -221,7 +221,7 @@ impl Home {
 
   pub fn get_logs(&mut self) {
     if let Some(selected) = self.filtered_units.selected() {
-      if let Err(e) = self.journalctl_tx.as_ref().unwrap().send(selected.clone()) {
+      if let Err(e) = self.selected_service_tx.as_ref().unwrap().send(selected.clone()) {
         warn!("Error sending unit name to journalctl thread: {}", e);
       }
     } else {
@@ -336,116 +336,15 @@ impl Home {
 }
 
 impl Component for Home {
-  fn init(&mut self, tx: UnboundedSender<Action>) -> anyhow::Result<()> {
-    self.action_tx = Some(tx.clone());
+  fn init(&mut self, action_tx: UnboundedSender<Action>) -> anyhow::Result<()> {
+    self.action_tx = Some(action_tx.clone());
     // TODO find a better name for these. They're used to run any async data loading that needs to happen after the selection is changed,
     // not just journalctl stuff
-    let (journalctl_tx, journalctl_rx) = std::sync::mpsc::channel::<UnitWithStatus>();
-    self.journalctl_tx = Some(journalctl_tx);
+    let (selected_service_tx, selected_service_rx) = std::sync::mpsc::channel::<UnitWithStatus>();
+    self.selected_service_tx = Some(selected_service_tx);
 
-    // TODO: move into function
-    tokio::task::spawn_blocking(move || {
-      let mut last_follow_handle: Option<JoinHandle<()>> = None;
-
-      loop {
-        let mut unit: UnitWithStatus = match journalctl_rx.recv() {
-          Ok(unit) => unit,
-          Err(_) => return,
-        };
-
-        // drain the channel, use the last value
-        while let Ok(service) = journalctl_rx.try_recv() {
-          info!("Skipping logs for {}...", unit.name);
-          unit = service;
-        }
-
-        if let Some(handle) = last_follow_handle.take() {
-          info!("Cancelling previous journalctl task");
-          handle.abort();
-        }
-
-        // lazy debounce to avoid spamming journalctl on slow connections/systems
-        std::thread::sleep(Duration::from_millis(100));
-
-        if unit.description.is_empty() {
-          if let Some(unit_file_path) = &unit.file_path {
-            match systemd::get_description_from_unit_file(unit_file_path) {
-              Ok(description) => {
-                let _ = tx.send(Action::SetUnitDescription { unit: unit.id(), description });
-              },
-              Err(e) => {
-                warn!("Error getting description for {}: {}", unit.name, e);
-              },
-            }
-          }
-        }
-
-        // First, get the N lines in a batch
-        info!("Getting logs for {}", unit.name);
-        let start = std::time::Instant::now();
-
-        let mut args = vec!["--quiet", "--output=short-iso", "--lines=500", "-u"];
-
-        args.push(&unit.name);
-
-        if unit.scope == UnitScope::User {
-          args.push("--user");
-        }
-
-        match Command::new("journalctl").args(&args).output() {
-          Ok(output) => {
-            if output.status.success() {
-              info!("Got logs for {} in {:?}", unit.name, start.elapsed());
-              if let Ok(stdout) = std::str::from_utf8(&output.stdout) {
-                let mut logs = stdout.trim().split('\n').map(String::from).collect_vec();
-
-                if logs.is_empty() || logs[0].is_empty() {
-                  logs.push(String::from("No logs found/available. Maybe try relaunching with `sudo systemctl-tui`"));
-                }
-                let _ = tx.send(Action::SetLogs { unit: unit.id(), logs });
-                let _ = tx.send(Action::Render);
-              } else {
-                warn!("Error parsing stdout for {}", unit.name);
-              }
-            } else {
-              warn!("Error getting logs for {}: {}", unit.name, String::from_utf8_lossy(&output.stderr));
-            }
-          },
-          Err(e) => warn!("Error getting logs for {}: {}", unit.name, e),
-        }
-
-        // Then follow the logs
-        // Splitting this into two commands is a bit of a hack that makes it easier to get the initial batch of logs
-        // This does mean that we'll miss any logs that are written between the two commands, low enough risk for now
-        let tx = tx.clone();
-        last_follow_handle = Some(tokio::spawn(async move {
-          let mut command = tokio::process::Command::new("journalctl");
-          command.arg("-u");
-          command.arg(unit.name.clone());
-          command.arg("--output=short-iso");
-          command.arg("--follow");
-          command.arg("--lines=0");
-          command.arg("--quiet");
-          command.stdout(Stdio::piped());
-          command.stderr(Stdio::piped());
-
-          if unit.scope == UnitScope::User {
-            command.arg("--user");
-          }
-
-          let mut child = command.spawn().expect("failed to execute process");
-
-          let stdout = child.stdout.take().unwrap();
-
-          let reader = tokio::io::BufReader::new(stdout);
-          let mut lines = reader.lines();
-          while let Some(line) = lines.next_line().await.unwrap() {
-            let _ = tx.send(Action::AppendLogLine { unit: unit.id(), line });
-            let _ = tx.send(Action::Render);
-          }
-        }));
-      }
-    });
+    // Spawn a task to fetch detailed service info when a service is selected (journalctl logs, unit file path, etc)
+    tokio::task::spawn_blocking(move || fetch_selected_service_info(selected_service_rx, action_tx));
 
     Ok(())
   }
@@ -1002,6 +901,115 @@ impl Component for Home {
       f.render_widget(Clear, popup);
       f.render_widget(paragraph, popup);
     }
+  }
+}
+
+/// Fetches detailed service info when a service is selected (journalctl logs, unit file path, etc)
+/// Basically does all the stuff that's too slow to do ahead of time or that needs to be updated in real time
+fn fetch_selected_service_info(
+  journalctl_rx: std::sync::mpsc::Receiver<UnitWithStatus>,
+  action_tx: UnboundedSender<Action>,
+) {
+  let mut last_follow_handle: Option<JoinHandle<()>> = None;
+  // do something with a variable named `journalctl_rx`
+  // do something with a variable named `tx`
+  loop {
+    let mut unit: UnitWithStatus = match journalctl_rx.recv() {
+      Ok(unit) => unit,
+      Err(_) => return,
+    };
+
+    // drain the channel, use the last value
+    while let Ok(service) = journalctl_rx.try_recv() {
+      info!("Skipping logs for {}...", unit.name);
+      unit = service;
+    }
+
+    if let Some(handle) = last_follow_handle.take() {
+      info!("Cancelling previous journalctl task");
+      handle.abort();
+    }
+
+    // lazy debounce to avoid spamming journalctl on slow connections/systems
+    std::thread::sleep(Duration::from_millis(100));
+
+    if unit.description.is_empty() {
+      if let Some(unit_file_path) = &unit.file_path {
+        match systemd::get_description_from_unit_file(unit_file_path) {
+          Ok(description) => {
+            let _ = action_tx.send(Action::SetUnitDescription { unit: unit.id(), description });
+          },
+          Err(e) => {
+            warn!("Error getting description for {}: {}", unit.name, e);
+          },
+        }
+      }
+    }
+
+    // First, get the N lines in a batch
+    info!("Getting logs for {}", unit.name);
+    let start = std::time::Instant::now();
+
+    let mut args = vec!["--quiet", "--output=short-iso", "--lines=500", "-u"];
+
+    args.push(&unit.name);
+
+    if unit.scope == UnitScope::User {
+      args.push("--user");
+    }
+
+    match Command::new("journalctl").args(&args).output() {
+      Ok(output) => {
+        if output.status.success() {
+          info!("Got logs for {} in {:?}", unit.name, start.elapsed());
+          if let Ok(stdout) = std::str::from_utf8(&output.stdout) {
+            let mut logs = stdout.trim().split('\n').map(String::from).collect_vec();
+
+            if logs.is_empty() || logs[0].is_empty() {
+              logs.push(String::from("No logs found/available. Maybe try relaunching with `sudo systemctl-tui`"));
+            }
+            let _ = action_tx.send(Action::SetLogs { unit: unit.id(), logs });
+            let _ = action_tx.send(Action::Render);
+          } else {
+            warn!("Error parsing stdout for {}", unit.name);
+          }
+        } else {
+          warn!("Error getting logs for {}: {}", unit.name, String::from_utf8_lossy(&output.stderr));
+        }
+      },
+      Err(e) => warn!("Error getting logs for {}: {}", unit.name, e),
+    }
+
+    // Then follow the logs
+    // Splitting this into two commands is a bit of a hack that makes it easier to get the initial batch of logs
+    // This does mean that we'll miss any logs that are written between the two commands, low enough risk for now
+    let tx = action_tx.clone();
+    last_follow_handle = Some(tokio::spawn(async move {
+      let mut command = tokio::process::Command::new("journalctl");
+      command.arg("-u");
+      command.arg(unit.name.clone());
+      command.arg("--output=short-iso");
+      command.arg("--follow");
+      command.arg("--lines=0");
+      command.arg("--quiet");
+      command.stdout(Stdio::piped());
+      command.stderr(Stdio::piped());
+
+      if unit.scope == UnitScope::User {
+        command.arg("--user");
+      }
+
+      let mut child = command.spawn().expect("failed to execute process");
+
+      let stdout = child.stdout.take().unwrap();
+
+      let reader = tokio::io::BufReader::new(stdout);
+      let mut lines = reader.lines();
+      while let Some(line) = lines.next_line().await.unwrap() {
+        let _ = tx.send(Action::AppendLogLine { unit: unit.id(), line });
+        let _ = tx.send(Action::Render);
+      }
+    }));
   }
 }
 
