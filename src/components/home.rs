@@ -367,9 +367,17 @@ impl Component for Home {
         // lazy debounce to avoid spamming journalctl on slow connections/systems
         std::thread::sleep(Duration::from_millis(100));
 
-        if unit.description.is_empty() && unit.file_path.is_some() {
-          // TODO read the unit file and get the description
-          _ = tx.send(Action::SetUnitDescription { unit: unit.id(), description: "waddup?".into() });
+        if unit.description.is_empty() {
+          if let Some(unit_file_path) = &unit.file_path {
+            match systemd::get_description_from_unit_file(unit_file_path) {
+              Ok(description) => {
+                let _ = tx.send(Action::SetUnitDescription { unit: unit.id(), description });
+              },
+              Err(e) => {
+                warn!("Error getting description for {}: {}", unit.name, e);
+              },
+            }
+          }
         }
 
         // First, get the N lines in a batch

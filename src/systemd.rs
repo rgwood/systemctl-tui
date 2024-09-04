@@ -2,7 +2,7 @@
 
 use core::{fmt, str};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use zbus::{proxy, zvariant, Connection};
@@ -552,9 +552,6 @@ pub fn get_unit_path(full_service_name: &str) -> String {
   format!("/org/freedesktop/systemd1/unit/{}", encode_as_dbus_object_path(full_service_name))
 }
 
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-
 pub fn get_description_from_unit_file(path: &str) -> Result<String> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
@@ -566,5 +563,5 @@ pub fn get_description_from_unit_file(path: &str) -> Result<String> {
         }
     }
 
-    Err(anyhow::anyhow!("Description not found in unit file"))
+    bail!("Description not found in unit file")
 }
