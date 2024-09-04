@@ -265,35 +265,14 @@ pub async fn get_service_unit_files(scope: UnitScope) -> Result<Vec<(String, Str
   Ok(unit_files)
 }
 
-pub async fn start_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
-  with_cancellation(cancel_token, async {
-    let connection = get_connection(service.scope).await?;
-    let manager_proxy = ManagerProxy::new(&connection).await?;
-    manager_proxy.start_unit(service.name.clone(), "replace".into()).await?;
-    Ok(())
-  })
-  .await
+pub async fn start_service(service: UnitId) -> Result<()> {
+  let connection = get_connection(service.scope).await?;
+  let manager_proxy = ManagerProxy::new(&connection).await?;
+  manager_proxy.start_unit(service.name.clone(), "replace".into()).await?;
+  Ok(())
 }
 
-pub async fn stop_service_cancellable(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
-  with_cancellation(cancel_token, stop_service(service)).await
-}
-
-async fn with_cancellation<F, T>(cancel_token: CancellationToken, future: F) -> Result<T>
-where
-  F: std::future::Future<Output = Result<T>>,
-{
-  tokio::select! {
-    _ = cancel_token.cancelled() => {
-      anyhow::bail!("cancelled")
-    }
-    result = future => {
-      result
-    }
-  }
-}
-
-async fn stop_service(service: UnitId) -> Result<()> {
+pub async fn stop_service(service: UnitId) -> Result<()> {
   let connection = get_connection(service.scope).await?;
   let manager_proxy = ManagerProxy::new(&connection).await?;
   manager_proxy.stop_unit(service.name, "replace".into()).await?;
@@ -307,19 +286,10 @@ async fn get_connection(scope: UnitScope) -> Result<Connection, anyhow::Error> {
   }
 }
 
-pub async fn restart_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
-  with_cancellation(cancel_token, async {
-    let connection = get_connection(service.scope).await?;
-    let manager_proxy = ManagerProxy::new(&connection).await?;
-    manager_proxy.restart_unit(service.name, "replace".into()).await?;
-    Ok(())
-  })
-  .await
-}
-
-// useless function only added to test that cancellation works
-pub async fn sleep_test(_service: String, cancel_token: CancellationToken) -> Result<()> {
-  with_cancellation(cancel_token, tokio::time::sleep(std::time::Duration::from_secs(2))).await?;
+pub async fn restart_service(service: UnitId) -> Result<()> {
+  let connection = get_connection(service.scope).await?;
+  let manager_proxy = ManagerProxy::new(&connection).await?;
+  manager_proxy.restart_unit(service.name, "replace".into()).await?;
   Ok(())
 }
 

@@ -1,3 +1,4 @@
+use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use futures::Future;
 use indexmap::IndexMap;
@@ -266,25 +267,25 @@ impl Home {
 
   fn start_service(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
-    let future = systemd::start_service(service.clone(), cancel_token.clone());
+    let future = with_cancellation(cancel_token.clone(), systemd::start_service(service.clone()));
     self.service_action(service, "Start".into(), cancel_token, future);
   }
 
   fn stop_service(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
-    let future = systemd::stop_service(service.clone(), cancel_token.clone());
+    let future = with_cancellation(cancel_token.clone(), systemd::stop_service(service.clone()));
     self.service_action(service, "Stop".into(), cancel_token, future);
   }
 
   fn restart_service(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
-    let future = systemd::restart_service(service.clone(), cancel_token.clone());
+    let future = with_cancellation(cancel_token.clone(), systemd::restart_service(service.clone()));
     self.service_action(service, "Restart".into(), cancel_token, future);
   }
 
   fn service_action<Fut>(&mut self, service: UnitId, action_name: String, cancel_token: CancellationToken, action: Fut)
   where
-    Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+    Fut: Future<Output = Result<()>> + Send + 'static,
   {
     let tx = self.action_tx.clone().unwrap();
 
@@ -336,7 +337,7 @@ impl Home {
 }
 
 impl Component for Home {
-  fn init(&mut self, action_tx: UnboundedSender<Action>) -> anyhow::Result<()> {
+  fn init(&mut self, action_tx: UnboundedSender<Action>) -> Result<()> {
     self.action_tx = Some(action_tx.clone());
     // TODO find a better name for these. They're used to run any async data loading that needs to happen after the selection is changed,
     // not just journalctl stuff
@@ -1043,4 +1044,19 @@ fn centered_rect_abs(width: u16, height: u16, r: Rect) -> Rect {
   let height = height.min(r.height);
 
   Rect::new(offset_x, offset_y, width, height)
+}
+
+// TODO: test that this works as expected after moving it out to a function
+async fn with_cancellation<F, T>(cancel_token: CancellationToken, future: F) -> Result<T>
+where
+  F: std::future::Future<Output = Result<T>>,
+{
+  tokio::select! {
+    _ = cancel_token.cancelled() => {
+      anyhow::bail!("cancelled")
+    }
+    result = future => {
+      result
+    }
+  }
 }
