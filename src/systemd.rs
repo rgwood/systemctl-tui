@@ -285,14 +285,7 @@ pub async fn start_service(service: UnitId, cancel_token: CancellationToken) -> 
   }
 }
 
-pub async fn stop_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
-  async fn stop_service(service: UnitId) -> Result<()> {
-    let connection = get_connection(service.scope).await?;
-    let manager_proxy = ManagerProxy::new(&connection).await?;
-    manager_proxy.stop_unit(service.name, "replace".into()).await?;
-    Ok(())
-  }
-
+pub async fn stop_service_cancellable(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
   // god these select macros are ugly, is there really no better way to select?
   tokio::select! {
     _ = cancel_token.cancelled() => {
@@ -303,6 +296,13 @@ pub async fn stop_service(service: UnitId, cancel_token: CancellationToken) -> R
         result
     }
   }
+}
+
+async fn stop_service(service: UnitId) -> Result<()> {
+  let connection = get_connection(service.scope).await?;
+  let manager_proxy = ManagerProxy::new(&connection).await?;
+  manager_proxy.stop_unit(service.name, "replace".into()).await?;
+  Ok(())
 }
 
 async fn get_connection(scope: UnitScope) -> Result<Connection, anyhow::Error> {
