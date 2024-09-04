@@ -292,6 +292,15 @@ pub async fn restart_service(service: UnitId) -> Result<()> {
   Ok(())
 }
 
+pub async fn enable_service(service: UnitId) -> Result<()> {
+  let connection = get_connection(service.scope).await?;
+  let manager_proxy = ManagerProxy::new(&connection).await?;
+  let files = vec![service.name];
+  let (_, changes) = manager_proxy.enable_unit_files(files, false, false).await?;
+  // You might want to log or return the changes
+  Ok(())
+}
+
 /// Proxy object for `org.freedesktop.systemd1.Manager`.
 /// Partially taken from https://github.com/lucab/zbus_systemd/blob/main/src/systemd1/generated.rs
 #[proxy(
