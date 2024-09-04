@@ -266,34 +266,29 @@ pub async fn get_service_unit_files(scope: UnitScope) -> Result<Vec<(String, Str
 }
 
 pub async fn start_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
-  async fn start_service(service: UnitId) -> Result<()> {
+  with_cancellation(cancel_token, async {
     let connection = get_connection(service.scope).await?;
     let manager_proxy = ManagerProxy::new(&connection).await?;
     manager_proxy.start_unit(service.name.clone(), "replace".into()).await?;
     Ok(())
-  }
-
-  // god these select macros are ugly, is there really no better way to select?
-  tokio::select! {
-    _ = cancel_token.cancelled() => {
-        // The token was cancelled
-        anyhow::bail!("cancelled");
-    }
-    result = start_service(service) => {
-        result
-    }
-  }
+  })
+  .await
 }
 
 pub async fn stop_service_cancellable(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
-  // god these select macros are ugly, is there really no better way to select?
+  with_cancellation(cancel_token, stop_service(service)).await
+}
+
+async fn with_cancellation<F, T>(cancel_token: CancellationToken, future: F) -> Result<T>
+where
+  F: std::future::Future<Output = Result<T>>,
+{
   tokio::select! {
     _ = cancel_token.cancelled() => {
-        // The token was cancelled
-        anyhow::bail!("cancelled");
+      anyhow::bail!("cancelled")
     }
-    result = stop_service(service) => {
-        result
+    result = future => {
+      result
     }
   }
 }
@@ -313,37 +308,19 @@ async fn get_connection(scope: UnitScope) -> Result<Connection, anyhow::Error> {
 }
 
 pub async fn restart_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
-  async fn restart(service: UnitId) -> Result<()> {
+  with_cancellation(cancel_token, async {
     let connection = get_connection(service.scope).await?;
     let manager_proxy = ManagerProxy::new(&connection).await?;
     manager_proxy.restart_unit(service.name, "replace".into()).await?;
     Ok(())
-  }
-
-  // god these select macros are ugly, is there really no better way to select?
-  tokio::select! {
-    _ = cancel_token.cancelled() => {
-        // The token was cancelled
-        anyhow::bail!("cancelled");
-    }
-    result = restart(service) => {
-        result
-    }
-  }
+  })
+  .await
 }
 
 // useless function only added to test that cancellation works
 pub async fn sleep_test(_service: String, cancel_token: CancellationToken) -> Result<()> {
-  // god these select macros are ugly, is there really no better way to select?
-  tokio::select! {
-      _ = cancel_token.cancelled() => {
-          // The token was cancelled
-          anyhow::bail!("cancelled");
-      }
-      _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
-          Ok(())
-      }
-  }
+  with_cancellation(cancel_token, tokio::time::sleep(std::time::Duration::from_secs(2))).await?;
+  Ok(())
 }
 
 /// Proxy object for `org.freedesktop.systemd1.Manager`.
