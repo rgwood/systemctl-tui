@@ -711,7 +711,7 @@ impl Component for Home {
       } else if unit.is_not_found() {
         Color::Yellow
       } else {
-        Color::White
+        Color::Reset
       }
     }
 
@@ -777,14 +777,14 @@ impl Component for Home {
         "loaded" => Color::Green,
         "not-found" => Color::Yellow,
         "error" => Color::Red,
-        _ => Color::White,
+        _ => Color::Reset,
       };
 
       let active_color = match i.activation_state.as_str() {
         "active" => Color::Green,
         "inactive" => Color::Gray,
         "failed" => Color::Red,
-        _ => Color::White,
+        _ => Color::Reset,
       };
 
       let active_state_value = format!("{} ({})", i.activation_state, i.sub_state);
@@ -795,8 +795,8 @@ impl Component for Home {
       };
 
       let mut lines = vec![
-        colored_line(&i.description, Color::White),
-        colored_line(scope, Color::White),
+        colored_line(&i.description, Color::Reset),
+        colored_line(scope, Color::Reset),
         colored_line(&i.load_state, load_color),
         line_color_string(active_state_value, active_color),
       ];
