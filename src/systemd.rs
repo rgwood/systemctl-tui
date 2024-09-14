@@ -288,6 +288,7 @@ async fn get_connection(scope: UnitScope) -> Result<Connection, anyhow::Error> {
 pub async fn restart_service(service: UnitId) -> Result<()> {
   let connection = get_connection(service.scope).await?;
   let manager_proxy = ManagerProxy::new(&connection).await?;
+
   manager_proxy.restart_unit(service.name, "replace".into()).await?;
   Ok(())
 }
@@ -297,7 +298,13 @@ pub async fn enable_service(service: UnitId) -> Result<()> {
   let manager_proxy = ManagerProxy::new(&connection).await?;
   let files = vec![service.name];
   let (_, changes) = manager_proxy.enable_unit_files(files, false, false).await?;
-  // You might want to log or return the changes
+
+  for (change_type, name, destination) in changes {
+    info!("{}: {} -> {}", change_type, name, destination);
+  }
+  // enabling without reloading seems to put things in a weird state where `systemctl status foo` tells me to run daemon-reload
+  // weird given that `systemctl enable foo` doesn't
+  manager_proxy.reload().await?;
   Ok(())
 }
 

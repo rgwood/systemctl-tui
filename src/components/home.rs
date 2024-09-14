@@ -283,6 +283,12 @@ impl Home {
     self.service_action(service, "Restart".into(), cancel_token, future);
   }
 
+  fn enable_service(&mut self, service: UnitId) {
+    let cancel_token = CancellationToken::new();
+    let future = with_cancellation(cancel_token.clone(), systemd::enable_service(service.clone()));
+    self.service_action(service, "Enable".into(), cancel_token, future);
+  }
+
   fn service_action<Fut>(&mut self, service: UnitId, action_name: String, cancel_token: CancellationToken, action: Fut)
   where
     Fut: Future<Output = Result<()>> + Send + 'static,
@@ -472,6 +478,7 @@ impl Component for Home {
             MenuItem::new("Start", Action::StartService(selected.clone())),
             MenuItem::new("Stop", Action::StopService(selected.clone())),
             MenuItem::new("Restart", Action::RestartService(selected.clone())),
+            MenuItem::new("Enable", Action::EnableService(selected.clone())),
             MenuItem::new("Copy unit file path to clipboard", Action::CopyUnitFilePath),
             // TODO add these
             // MenuItem::new("Reload", Action::ReloadService(selected.clone())),
@@ -556,9 +563,10 @@ impl Component for Home {
         self.logs_scroll_offset = self.logs.len() as u16;
       },
 
-      Action::StartService(service_name) => self.start_service(service_name),
-      Action::StopService(service_name) => self.stop_service(service_name),
-      Action::RestartService(service_name) => self.restart_service(service_name),
+      Action::StartService(id) => self.start_service(id),
+      Action::StopService(id) => self.stop_service(id),
+      Action::RestartService(id) => self.restart_service(id),
+      Action::EnableService(id) => self.enable_service(id),
       Action::RefreshServices => {
         let tx = self.action_tx.clone().unwrap();
         let scope = self.scope;
