@@ -98,7 +98,7 @@ impl App {
             let mut tui = terminal.tui.lock().await;
             tui.exit()?;
             let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
-            match Command::new(editor).arg(path).status() {
+            match Command::new(&editor).arg(path).status() {
               Ok(_) => {
                 tui.enter()?;
                 tui.clear()?;
@@ -106,7 +106,10 @@ impl App {
                 action_tx.send(Action::EnterMode(Mode::ServiceList))?;
               },
               Err(e) => {
-                action_tx.send(Action::EnterError(format!("Failed to open editor: {}", e)))?;
+                tui.enter()?;
+                tui.clear()?;
+                event = EventHandler::new(self.home.clone(), action_tx.clone());
+                action_tx.send(Action::EnterError(format!("Failed to open editor `{}`: {}", editor, e)))?;
               },
             }
           },
