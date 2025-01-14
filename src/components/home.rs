@@ -316,7 +316,7 @@ impl Home {
             error_string.push_str("Try running this tool with sudo.");
           }
 
-          tx.send(Action::EnterError { err: error_string }).unwrap();
+          tx.send(Action::EnterError(error_string)).unwrap();
         },
       }
       spinner_task.abort();
@@ -366,11 +366,13 @@ impl Component for Home {
         // get the unit file path
         match systemd::get_unit_file_location(&unit) {
           Ok(path) => {
-            let _ = tx.send(Action::SetUnitFilePath { unit: unit.clone(), path });
+            let _ = tx.send(Action::SetUnitFilePath { unit: unit.clone(), path: Ok(path) });
             let _ = tx.send(Action::Render);
           },
           Err(e) => {
-            let _ = tx.send(Action::SetUnitFilePath { unit: unit.clone(), path: "(could not be determined)".into() });
+            // Fix this!!! Set the path to an error enum variant instead of a string
+            let _ =
+              tx.send(Action::SetUnitFilePath { unit: unit.clone(), path: Err("could not be determined".into()) });
             let _ = tx.send(Action::Render);
             error!("Error getting unit file path for {}: {}", unit.name, e);
           },
@@ -557,31 +559,34 @@ impl Component for Home {
       },
       Action::EnterMode(mode) => {
         if mode == Mode::ActionMenu {
-          let selected = match self.filtered_units.selected() {
-            Some(s) => s.id(),
-            None => return None,
-          };
+          if let Some(selected) = self.filtered_units.selected() {
+            let mut menu_items = vec![
+              MenuItem::new("Start", Action::StartService(selected.id())),
+              MenuItem::new("Stop", Action::StopService(selected.id())),
+              MenuItem::new("Restart", Action::RestartService(selected.id())),
+              // TODO add these
+              // MenuItem::new("Reload", Action::ReloadService(selected.clone())),
+              // MenuItem::new("Enable", Action::EnableService(selected.clone())),
+              // MenuItem::new("Disable", Action::DisableService(selected.clone())),
+            ];
 
-          // TODO: use current status to determine which actions are available?
-          let menu_items = vec![
-            MenuItem::new("Start", Action::StartService(selected.clone())),
-            MenuItem::new("Stop", Action::StopService(selected.clone())),
-            MenuItem::new("Restart", Action::RestartService(selected.clone())),
-            MenuItem::new("Copy unit file path to clipboard", Action::CopyUnitFilePath),
-            // TODO add these
-            // MenuItem::new("Reload", Action::ReloadService(selected.clone())),
-            // MenuItem::new("Enable", Action::EnableService(selected.clone())),
-            // MenuItem::new("Disable", Action::DisableService(selected.clone())),
-          ];
+            if let Some(Ok(file_path)) = &selected.file_path {
+              menu_items.push(MenuItem::new("Copy unit file path to clipboard", Action::CopyUnitFilePath));
+              menu_items.push(MenuItem::new("Edit unit file", Action::EditUnitFile { path: file_path.clone() }));
+            }
 
-          self.menu_items = StatefulList::with_items(menu_items);
-          self.menu_items.state.select(Some(0));
+            self.menu_items = StatefulList::with_items(menu_items);
+            self.menu_items.state.select(Some(0));
+          } else {
+            return None;
+          }
         }
 
         self.mode = mode;
         return Some(Action::Render);
       },
-      Action::EnterError { err } => {
+      Action::EnterError(err) => {
+        tracing::error!(err);
         self.error_message = err;
         return Some(Action::EnterMode(Mode::Error));
       },
@@ -596,13 +601,13 @@ impl Component for Home {
       },
       Action::CopyUnitFilePath => {
         if let Some(selected) = self.filtered_units.selected() {
-          if let Some(file_path) = &selected.file_path {
+          if let Some(Ok(file_path)) = &selected.file_path {
             match clipboard_anywhere::set_clipboard(file_path) {
               Ok(_) => return Some(Action::EnterMode(Mode::ServiceList)),
-              Err(e) => return Some(Action::EnterError { err: format!("Error copying to clipboard: {}", e) }),
+              Err(e) => return Some(Action::EnterError(format!("Error copying to clipboard: {}", e))),
             }
           } else {
-            return Some(Action::EnterError { err: "No unit file path available".into() });
+            return Some(Action::EnterError("No unit file path available".into()));
           }
         }
       },
@@ -794,16 +799,17 @@ impl Component for Home {
         UnitScope::User => "User",
       };
 
-      let mut lines = vec![
+      let lines = vec![
         colored_line(&i.description, Color::Reset),
         colored_line(scope, Color::Reset),
         colored_line(&i.load_state, load_color),
         line_color_string(active_state_value, active_color),
+        match &i.file_path {
+          Some(Ok(file_path)) => Line::from(file_path.as_str()),
+          Some(Err(e)) => colored_line(e, Color::Red),
+          None => Line::from(""),
+        },
       ];
-
-      if let Some(file_path) = &i.file_path {
-        lines.push(Line::from(file_path.as_str()));
-      }
 
       lines
     } else {

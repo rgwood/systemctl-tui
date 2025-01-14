@@ -18,8 +18,7 @@ use tokio::{
 
 use crate::components::{home::Home, Component};
 
-// pub type Frame<'a> = ratatui::Frame<'a, Backend<std::io::Stderr>>;
-
+// A struct that mostly exists to be a catch-all for terminal operations that should be synchronized
 pub struct Tui {
   pub terminal: ratatui::Terminal<Backend<std::io::Stderr>>,
 }
@@ -47,7 +46,7 @@ impl Tui {
   }
 
   pub fn suspend(&self) -> Result<()> {
-    exit()?;
+    self.exit()?;
     #[cfg(not(windows))]
     signal_hook::low_level::raise(signal_hook::consts::signal::SIGTSTP)?;
     Ok(())
@@ -57,8 +56,13 @@ impl Tui {
     self.enter()?;
     Ok(())
   }
+
+  pub fn exit(&self) -> Result<()> {
+    exit()
+  }
 }
 
+// This one's public because we want to expose it to the panic handler
 pub fn exit() -> Result<()> {
   crossterm::execute!(std::io::stderr(), LeaveAlternateScreen, DisableMouseCapture, cursor::Show)?;
   crossterm::terminal::disable_raw_mode()?;
@@ -96,7 +100,7 @@ pub struct TerminalHandler {
   pub task: JoinHandle<()>,
   tx: mpsc::UnboundedSender<Message>,
   home: Arc<Mutex<Home>>,
-  tui: Arc<Mutex<Tui>>,
+  pub tui: Arc<Mutex<Tui>>,
 }
 
 impl TerminalHandler {

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{process::Command, sync::Arc};
 
 use anyhow::{Context, Result};
 use tokio::sync::{mpsc, Mutex};
@@ -6,7 +6,10 @@ use tracing::debug;
 
 use crate::{
   action::Action,
-  components::{home::Home, Component},
+  components::{
+    home::{Home, Mode},
+    Component,
+  },
   event::EventHandler,
   systemd::{get_all_services, Scope},
   terminal::TerminalHandler,
@@ -90,6 +93,23 @@ impl App {
           Action::Suspend => self.should_suspend = true,
           Action::Resume => self.should_suspend = false,
           Action::Resize(_, _) => terminal.render().await,
+          Action::EditUnitFile { path } => {
+            event.stop();
+            let mut tui = terminal.tui.lock().await;
+            tui.exit()?;
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
+            match Command::new(editor).arg(path).status() {
+              Ok(_) => {
+                tui.enter()?;
+                tui.clear()?;
+                event = EventHandler::new(self.home.clone(), action_tx.clone());
+                action_tx.send(Action::EnterMode(Mode::ServiceList))?;
+              },
+              Err(e) => {
+                action_tx.send(Action::EnterError(format!("Failed to open editor: {}", e)))?;
+              },
+            }
+          },
           _ => {
             if let Some(_action) = self.home.lock().await.dispatch(action) {
               action_tx.send(_action)?
