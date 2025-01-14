@@ -11,10 +11,10 @@ use zbus::{proxy, zvariant, Connection};
 
 #[derive(Debug, Clone)]
 pub struct UnitWithStatus {
-  pub name: String,              // The primary unit name as string
-  pub scope: UnitScope,          // System or user?
-  pub description: String,       // The human readable description string
-  pub file_path: Option<String>, // The unit file path - populated later on demand
+  pub name: String,                              // The primary unit name as string
+  pub scope: UnitScope,                          // System or user?
+  pub description: String,                       // The human readable description string
+  pub file_path: Option<Result<String, String>>, // The unit file path - populated later on demand
 
   pub load_state: String, // The load state (i.e. whether the unit file has been loaded successfully)
 
@@ -27,7 +27,6 @@ pub struct UnitWithStatus {
   /// The other state all units have is called the "enablement state". It describes how the unit might be automatically started in the future. A unit is enabled if it has been added to the requirements list of any other unit though symlinks in the filesystem. The set of symlinks to be created when enabling a unit is described by the unit's [Install] section. A unit is disabled if no symlinks are present. Again there's a variety of other values other than these two (e.g. not all units even have [Install] sections).
   /// Only populated when needed b/c this is much slower to get
   pub enablement_state: Option<String>,
-
   // We don't use any of these right now, might as well skip'em so there's less data to clone
   // pub followed: String, // A unit that is being followed in its state by this unit, if there is any, otherwise the empty string.
   // pub path: String,     // The unit object path
