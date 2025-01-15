@@ -33,6 +33,6 @@ pub enum Action {
   ScrollDown(u16),
   ScrollToTop,
   ScrollToBottom,
-  EditUnitFile { path: String },
+  EditUnitFile { unit: UnitId, path: String },
   Noop,
 }
