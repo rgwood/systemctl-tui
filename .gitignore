@@ -20,3 +20,6 @@ target/
 # Samply
 profile.json
 .aider*
+
+# from nix
+.direnv/
