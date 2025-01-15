@@ -3,7 +3,7 @@
 use core::str;
 use std::process::Command;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use log::error;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -198,7 +198,6 @@ pub async fn start_service(service: UnitId, cancel_token: CancellationToken) -> 
   // god these select macros are ugly, is there really no better way to select?
   tokio::select! {
     _ = cancel_token.cancelled() => {
-        // The token was cancelled
         anyhow::bail!("cancelled");
     }
     result = start_service(service) => {
@@ -218,10 +217,32 @@ pub async fn stop_service(service: UnitId, cancel_token: CancellationToken) -> R
   // god these select macros are ugly, is there really no better way to select?
   tokio::select! {
     _ = cancel_token.cancelled() => {
-        // The token was cancelled
         anyhow::bail!("cancelled");
     }
     result = stop_service(service) => {
+        result
+    }
+  }
+}
+
+pub async fn reload(scope: UnitScope, cancel_token: CancellationToken) -> Result<()> {
+  async fn reload_(scope: UnitScope) -> Result<()> {
+    let connection = get_connection(scope).await?;
+    let manager_proxy: ManagerProxy<'_> = ManagerProxy::new(&connection).await?;
+    let error_message = match scope {
+      UnitScope::Global => "Failed to reload units, probably because superuser permissions are needed. Try running `sudo systemctl daemon-reload`",
+      UnitScope::User => "Failed to reload units. Try running `systemctl --user daemon-reload`",
+    };
+    manager_proxy.reload().await.context(error_message)?;
+    Ok(())
+  }
+
+  // god these select macros are ugly, is there really no better way to select?
+  tokio::select! {
+    _ = cancel_token.cancelled() => {
+        anyhow::bail!("cancelled");
+    }
+    result = reload_(scope) => {
         result
     }
   }
@@ -284,6 +305,10 @@ pub trait Manager {
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#StopUnit()) Call interface method `StopUnit`.
   #[dbus_proxy(name = "StopUnit")]
   fn stop_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
+
+  /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#ReloadUnit()) Call interface method `ReloadUnit`.
+  #[dbus_proxy(name = "ReloadUnit")]
+  fn reload_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#RestartUnit()) Call interface method `RestartUnit`.
   #[dbus_proxy(name = "RestartUnit")]

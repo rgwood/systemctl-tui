@@ -1,6 +1,7 @@
 use std::{process::Command, sync::Arc};
 
 use anyhow::{Context, Result};
+use log::error;
 use tokio::sync::{mpsc, Mutex};
 use tracing::debug;
 
@@ -93,16 +94,33 @@ impl App {
           Action::Suspend => self.should_suspend = true,
           Action::Resume => self.should_suspend = false,
           Action::Resize(_, _) => terminal.render().await,
-          Action::EditUnitFile { path } => {
+          // This would normally be in home.rs, but it needs to do some terminal and event handling stuff that's easier here
+          Action::EditUnitFile { unit, path } => {
             event.stop();
             let mut tui = terminal.tui.lock().await;
             tui.exit()?;
+
+            let read_unit_file_contents = || match std::fs::read_to_string(&path) {
+              Ok(contents) => contents,
+              Err(e) => {
+                error!("Failed to read unit file `{}`: {}", path, e);
+                "".to_string()
+              },
+            };
+
+            let unit_file_contents = read_unit_file_contents();
             let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
-            match Command::new(&editor).arg(path).status() {
+            match Command::new(&editor).arg(&path).status() {
               Ok(_) => {
                 tui.enter()?;
                 tui.clear()?;
                 event = EventHandler::new(self.home.clone(), action_tx.clone());
+
+                let new_unit_file_contents = read_unit_file_contents();
+                if unit_file_contents != new_unit_file_contents {
+                  action_tx.send(Action::ReloadService(unit))?;
+                }
+
                 action_tx.send(Action::EnterMode(Mode::ServiceList))?;
               },
               Err(e) => {
