@@ -272,6 +272,12 @@ impl Home {
     self.service_action(service, "Stop".into(), cancel_token, future);
   }
 
+  fn reload_service(&mut self, service: UnitId) {
+    let cancel_token = CancellationToken::new();
+    let future = systemd::reload(service.scope, cancel_token.clone());
+    self.service_action(service, "Reload".into(), cancel_token, future);
+  }
+
   fn restart_service(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
     let future = systemd::restart_service(service.clone(), cancel_token.clone());
@@ -564,15 +570,18 @@ impl Component for Home {
               MenuItem::new("Start", Action::StartService(selected.id())),
               MenuItem::new("Stop", Action::StopService(selected.id())),
               MenuItem::new("Restart", Action::RestartService(selected.id())),
+              MenuItem::new("Reload", Action::ReloadService(selected.id())),
               // TODO add these
-              // MenuItem::new("Reload", Action::ReloadService(selected.clone())),
               // MenuItem::new("Enable", Action::EnableService(selected.clone())),
               // MenuItem::new("Disable", Action::DisableService(selected.clone())),
             ];
 
             if let Some(Ok(file_path)) = &selected.file_path {
               menu_items.push(MenuItem::new("Copy unit file path to clipboard", Action::CopyUnitFilePath));
-              menu_items.push(MenuItem::new("Edit unit file", Action::EditUnitFile { path: file_path.clone() }));
+              menu_items.push(MenuItem::new(
+                "Edit unit file",
+                Action::EditUnitFile { unit: selected.id(), path: file_path.clone() },
+              ));
             }
 
             self.menu_items = StatefulList::with_items(menu_items);
@@ -652,6 +661,7 @@ impl Component for Home {
 
       Action::StartService(service_name) => self.start_service(service_name),
       Action::StopService(service_name) => self.stop_service(service_name),
+      Action::ReloadService(service_name) => self.reload_service(service_name),
       Action::RestartService(service_name) => self.restart_service(service_name),
       Action::RefreshServices => {
         let tx = self.action_tx.clone().unwrap();
