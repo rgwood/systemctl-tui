@@ -500,6 +500,14 @@ impl Component for Home {
             vec![Action::Render]
           },
           KeyCode::Char('/') => vec![Action::EnterMode(Mode::Search)],
+          KeyCode::Char('e') => {
+            if let Some(selected) = self.filtered_units.selected() {
+              if let Some(Ok(file_path)) = &selected.file_path {
+                return vec![Action::EditUnitFile { unit: selected.id(), path: file_path.clone() }];
+              }
+            }
+            vec![]
+          },
           KeyCode::Enter | KeyCode::Char(' ') => vec![Action::EnterMode(Mode::ActionMenu)],
           _ => vec![],
         }
