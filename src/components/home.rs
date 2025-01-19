@@ -695,6 +695,18 @@ impl Component for Home {
   }
 
   fn render(&mut self, f: &mut Frame<'_>, rect: Rect) {
+    fn primary(s: &str) -> Span {
+      Span::styled(s, Style::default().fg(Color::Cyan))
+    }
+
+    fn span(s: &str, color: Color) -> Span {
+      Span::styled(s, Style::default().fg(color))
+    }
+
+    fn colored_line(value: &str, color: Color) -> Line {
+      Line::from(vec![Span::styled(value, Style::default().fg(color))])
+    }
+
     let rect = if self.show_logger {
       let chunks = Layout::new(Direction::Vertical, Constraint::from_percentages([50, 50])).split(rect);
 
@@ -704,13 +716,12 @@ impl Component for Home {
       rect
     };
 
-    let rects = Layout::new(Direction::Vertical, [Constraint::Min(3), Constraint::Percentage(100)]).split(rect);
+    let rects =
+      Layout::new(Direction::Vertical, [Constraint::Min(3), Constraint::Percentage(100), Constraint::Length(1)])
+        .split(rect);
     let search_panel = rects[0];
     let main_panel = rects[1];
-
-    fn colored_line(value: &str, color: Color) -> Line {
-      Line::from(vec![Span::styled(value, Style::default().fg(color))])
-    }
+    let help_line_rect = rects[2];
 
     // Helper for colouring based on the same logic as sysz
     // https://github.com/joehillen/sysz/blob/8da8e0dcbfde8d68fbdb22382671e395bd370d69/sysz#L69C1-L72C24
@@ -898,10 +909,6 @@ impl Component for Home {
     if self.mode == Mode::Help {
       let popup = centered_rect_abs(50, 18, f.area());
 
-      fn primary(s: &str) -> Span {
-        Span::styled(s, Style::default().fg(Color::Cyan))
-      }
-
       let help_lines = vec![
         Line::from(""),
         Line::from(Span::styled("Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
@@ -954,6 +961,28 @@ impl Component for Home {
       Some(s) => s,
       None => return,
     };
+
+    // Help line at the bottom
+
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+
+    let help_line_rects =
+      Layout::new(Direction::Horizontal, [Constraint::Fill(1), Constraint::Length(version.len() as u16)])
+        .split(help_line_rect);
+    let help_rect = help_line_rects[0];
+    let version_rect = help_line_rects[1];
+
+    let help_line = match self.mode {
+      Mode::Search => Line::from(span("Show actions: <enter>", Color::Blue)),
+      Mode::ServiceList => Line::from(span("Show actions: <enter> | Open editor: e | Quit: q", Color::Blue)),
+      Mode::Help => Line::from(span("Close menu: <esc>", Color::Blue)),
+      Mode::ActionMenu => Line::from(span("Execute action: <enter> | Close menu: <esc>", Color::Blue)),
+      Mode::Processing => Line::from(span("Cancel task: <esc>", Color::Blue)),
+      Mode::Error => Line::from(span("Close menu: <esc>", Color::Blue)),
+    };
+
+    f.render_widget(help_line, help_rect);
+    f.render_widget(Line::from(version), version_rect);
 
     let min_width = selected_item.name.len() as u16 + 14;
     let desired_width = min_width + 4; // idk, looks alright
