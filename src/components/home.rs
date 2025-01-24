@@ -882,7 +882,9 @@ impl Component for Home {
       .rev()
       .map(|l| {
         if let Some((date, rest)) = l.splitn(2, ' ').collect_tuple() {
-          if date.len() != 24 {
+          // This is not a good way to identify dates; the length can vary by system.
+          // TODO: find a better way to identify dates
+          if date.len() != 25 {
             return Line::from(l.as_str());
           }
           Line::from(vec![Span::styled(date, Style::default().fg(Color::DarkGray)), Span::raw(" "), Span::raw(rest)])
