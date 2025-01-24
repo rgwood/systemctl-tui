@@ -63,11 +63,20 @@ pub struct Home {
 pub struct MenuItem {
   pub name: String,
   pub action: Action,
+  pub key: Option<KeyCode>,
 }
 
 impl MenuItem {
-  pub fn new(name: &str, action: Action) -> Self {
-    Self { name: name.to_owned(), action }
+  pub fn new(name: &str, action: Action, key: Option<KeyCode>) -> Self {
+    Self { name: name.to_owned(), action, key }
+  }
+
+  pub fn key_string(&self) -> String {
+    if let Some(key) = self.key {
+      format!("{}", key)
+    } else {
+      String::new()
+    }
   }
 }
 
@@ -556,7 +565,16 @@ impl Component for Home {
           Some(i) => vec![i.action.clone()],
           None => vec![Action::EnterMode(Mode::ServiceList)],
         },
-        _ => vec![],
+        _ => {
+          for item in self.menu_items.items.iter() {
+            if let Some(key_code) = item.key {
+              if key_code == key.code {
+                return vec![item.action.clone()];
+              }
+            }
+          }
+          vec![]
+        },
       },
       Mode::Processing => match key.code {
         KeyCode::Esc => vec![Action::CancelTask],
@@ -575,20 +593,25 @@ impl Component for Home {
         if mode == Mode::ActionMenu {
           if let Some(selected) = self.filtered_units.selected() {
             let mut menu_items = vec![
-              MenuItem::new("Start", Action::StartService(selected.id())),
-              MenuItem::new("Stop", Action::StopService(selected.id())),
-              MenuItem::new("Restart", Action::RestartService(selected.id())),
-              MenuItem::new("Reload", Action::ReloadService(selected.id())),
+              MenuItem::new("Start", Action::StartService(selected.id()), Some(KeyCode::Char('s'))),
+              MenuItem::new("Stop", Action::StopService(selected.id()), Some(KeyCode::Char('t'))),
+              MenuItem::new("Restart", Action::RestartService(selected.id()), Some(KeyCode::Char('r'))),
+              MenuItem::new("Reload", Action::ReloadService(selected.id()), Some(KeyCode::Char('l'))),
               // TODO add these
               // MenuItem::new("Enable", Action::EnableService(selected.clone())),
               // MenuItem::new("Disable", Action::DisableService(selected.clone())),
             ];
 
             if let Some(Ok(file_path)) = &selected.file_path {
-              menu_items.push(MenuItem::new("Copy unit file path to clipboard", Action::CopyUnitFilePath));
+              menu_items.push(MenuItem::new(
+                "Copy unit file path to clipboard",
+                Action::CopyUnitFilePath,
+                Some(KeyCode::Char('c')),
+              ));
               menu_items.push(MenuItem::new(
                 "Edit unit file",
                 Action::EditUnitFile { unit: selected.id(), path: file_path.clone() },
+                Some(KeyCode::Char('e')),
               ));
             }
 
@@ -982,7 +1005,7 @@ impl Component for Home {
 
     let help_line = match self.mode {
       Mode::Search => Line::from(span("Show actions: <enter>", Color::Blue)),
-      Mode::ServiceList => Line::from(span("Show actions: <enter> | Open editor: e | Quit: q", Color::Blue)),
+      Mode::ServiceList => Line::from(span("Show actions: <enter> | Open unit file: e | Quit: q", Color::Blue)),
       Mode::Help => Line::from(span("Close menu: <esc>", Color::Blue)),
       Mode::ActionMenu => Line::from(span("Execute action: <enter> | Close menu: <esc>", Color::Blue)),
       Mode::Processing => Line::from(span("Cancel task: <esc>", Color::Blue)),
@@ -1000,7 +1023,16 @@ impl Component for Home {
       let height = self.menu_items.items.len() as u16 + 2;
       let popup = centered_rect_abs(popup_width, height, f.area());
 
-      let items: Vec<ListItem> = self.menu_items.items.iter().map(|i| ListItem::new(i.name.as_str())).collect();
+      let items: Vec<ListItem> = self
+        .menu_items
+        .items
+        .iter()
+        .map(|i| {
+          let key_string = Span::styled(format!(" {:1} ", i.key_string()), Style::default().fg(Color::Blue));
+          let line = Line::from(vec![key_string, Span::raw(&i.name)]);
+          ListItem::new(line)
+        })
+        .collect();
       let items = List::new(items)
         .block(
           Block::default()
