@@ -63,11 +63,20 @@ pub struct Home {
 pub struct MenuItem {
   pub name: String,
   pub action: Action,
+  pub key: Option<KeyCode>,
 }
 
 impl MenuItem {
-  pub fn new(name: &str, action: Action) -> Self {
-    Self { name: name.to_owned(), action }
+  pub fn new(name: &str, action: Action, key: Option<KeyCode>) -> Self {
+    Self { name: name.to_owned(), action, key }
+  }
+
+  pub fn key_string(&self) -> String {
+    if let Some(key) = self.key {
+      format!("{}", key)
+    } else {
+      String::new()
+    }
   }
 }
 
@@ -500,6 +509,14 @@ impl Component for Home {
             vec![Action::Render]
           },
           KeyCode::Char('/') => vec![Action::EnterMode(Mode::Search)],
+          KeyCode::Char('e') => {
+            if let Some(selected) = self.filtered_units.selected() {
+              if let Some(Ok(file_path)) = &selected.file_path {
+                return vec![Action::EditUnitFile { unit: selected.id(), path: file_path.clone() }];
+              }
+            }
+            vec![]
+          },
           KeyCode::Enter | KeyCode::Char(' ') => vec![Action::EnterMode(Mode::ActionMenu)],
           _ => vec![],
         }
@@ -548,7 +565,16 @@ impl Component for Home {
           Some(i) => vec![i.action.clone()],
           None => vec![Action::EnterMode(Mode::ServiceList)],
         },
-        _ => vec![],
+        _ => {
+          for item in self.menu_items.items.iter() {
+            if let Some(key_code) = item.key {
+              if key_code == key.code {
+                return vec![item.action.clone()];
+              }
+            }
+          }
+          vec![]
+        },
       },
       Mode::Processing => match key.code {
         KeyCode::Esc => vec![Action::CancelTask],
@@ -567,20 +593,25 @@ impl Component for Home {
         if mode == Mode::ActionMenu {
           if let Some(selected) = self.filtered_units.selected() {
             let mut menu_items = vec![
-              MenuItem::new("Start", Action::StartService(selected.id())),
-              MenuItem::new("Stop", Action::StopService(selected.id())),
-              MenuItem::new("Restart", Action::RestartService(selected.id())),
-              MenuItem::new("Reload", Action::ReloadService(selected.id())),
+              MenuItem::new("Start", Action::StartService(selected.id()), Some(KeyCode::Char('s'))),
+              MenuItem::new("Stop", Action::StopService(selected.id()), Some(KeyCode::Char('t'))),
+              MenuItem::new("Restart", Action::RestartService(selected.id()), Some(KeyCode::Char('r'))),
+              MenuItem::new("Reload", Action::ReloadService(selected.id()), Some(KeyCode::Char('l'))),
               // TODO add these
               // MenuItem::new("Enable", Action::EnableService(selected.clone())),
               // MenuItem::new("Disable", Action::DisableService(selected.clone())),
             ];
 
             if let Some(Ok(file_path)) = &selected.file_path {
-              menu_items.push(MenuItem::new("Copy unit file path to clipboard", Action::CopyUnitFilePath));
+              menu_items.push(MenuItem::new(
+                "Copy unit file path to clipboard",
+                Action::CopyUnitFilePath,
+                Some(KeyCode::Char('c')),
+              ));
               menu_items.push(MenuItem::new(
                 "Edit unit file",
                 Action::EditUnitFile { unit: selected.id(), path: file_path.clone() },
+                Some(KeyCode::Char('e')),
               ));
             }
 
@@ -695,6 +726,18 @@ impl Component for Home {
   }
 
   fn render(&mut self, f: &mut Frame<'_>, rect: Rect) {
+    fn primary(s: &str) -> Span {
+      Span::styled(s, Style::default().fg(Color::Cyan))
+    }
+
+    fn span(s: &str, color: Color) -> Span {
+      Span::styled(s, Style::default().fg(color))
+    }
+
+    fn colored_line(value: &str, color: Color) -> Line {
+      Line::from(vec![Span::styled(value, Style::default().fg(color))])
+    }
+
     let rect = if self.show_logger {
       let chunks = Layout::new(Direction::Vertical, Constraint::from_percentages([50, 50])).split(rect);
 
@@ -704,13 +747,12 @@ impl Component for Home {
       rect
     };
 
-    let rects = Layout::new(Direction::Vertical, [Constraint::Min(3), Constraint::Percentage(100)]).split(rect);
+    let rects =
+      Layout::new(Direction::Vertical, [Constraint::Min(3), Constraint::Percentage(100), Constraint::Length(1)])
+        .split(rect);
     let search_panel = rects[0];
     let main_panel = rects[1];
-
-    fn colored_line(value: &str, color: Color) -> Line {
-      Line::from(vec![Span::styled(value, Style::default().fg(color))])
-    }
+    let help_line_rect = rects[2];
 
     // Helper for colouring based on the same logic as sysz
     // https://github.com/joehillen/sysz/blob/8da8e0dcbfde8d68fbdb22382671e395bd370d69/sysz#L69C1-L72C24
@@ -840,7 +882,9 @@ impl Component for Home {
       .rev()
       .map(|l| {
         if let Some((date, rest)) = l.splitn(2, ' ').collect_tuple() {
-          if date.len() != 24 {
+          // This is not a good way to identify dates; the length can vary by system.
+          // TODO: find a better way to identify dates
+          if date.len() != 25 {
             return Line::from(l.as_str());
           }
           Line::from(vec![Span::styled(date, Style::default().fg(Color::DarkGray)), Span::raw(" "), Span::raw(rest)])
@@ -898,10 +942,6 @@ impl Component for Home {
     if self.mode == Mode::Help {
       let popup = centered_rect_abs(50, 18, f.area());
 
-      fn primary(s: &str) -> Span {
-        Span::styled(s, Style::default().fg(Color::Cyan))
-      }
-
       let help_lines = vec![
         Line::from(""),
         Line::from(Span::styled("Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
@@ -955,6 +995,28 @@ impl Component for Home {
       None => return,
     };
 
+    // Help line at the bottom
+
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+
+    let help_line_rects =
+      Layout::new(Direction::Horizontal, [Constraint::Fill(1), Constraint::Length(version.len() as u16)])
+        .split(help_line_rect);
+    let help_rect = help_line_rects[0];
+    let version_rect = help_line_rects[1];
+
+    let help_line = match self.mode {
+      Mode::Search => Line::from(span("Show actions: <enter>", Color::Blue)),
+      Mode::ServiceList => Line::from(span("Show actions: <enter> | Open unit file: e | Quit: q", Color::Blue)),
+      Mode::Help => Line::from(span("Close menu: <esc>", Color::Blue)),
+      Mode::ActionMenu => Line::from(span("Execute action: <enter> | Close menu: <esc>", Color::Blue)),
+      Mode::Processing => Line::from(span("Cancel task: <esc>", Color::Blue)),
+      Mode::Error => Line::from(span("Close menu: <esc>", Color::Blue)),
+    };
+
+    f.render_widget(help_line, help_rect);
+    f.render_widget(Line::from(version), version_rect);
+
     let min_width = selected_item.name.len() as u16 + 14;
     let desired_width = min_width + 4; // idk, looks alright
     let popup_width = desired_width.min(f.area().width);
@@ -963,7 +1025,16 @@ impl Component for Home {
       let height = self.menu_items.items.len() as u16 + 2;
       let popup = centered_rect_abs(popup_width, height, f.area());
 
-      let items: Vec<ListItem> = self.menu_items.items.iter().map(|i| ListItem::new(i.name.as_str())).collect();
+      let items: Vec<ListItem> = self
+        .menu_items
+        .items
+        .iter()
+        .map(|i| {
+          let key_string = Span::styled(format!(" {:1} ", i.key_string()), Style::default().fg(Color::Blue));
+          let line = Line::from(vec![key_string, Span::raw(&i.name)]);
+          ListItem::new(line)
+        })
+        .collect();
       let items = List::new(items)
         .block(
           Block::default()
