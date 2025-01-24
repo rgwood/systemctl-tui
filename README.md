@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/systemctl-tui.svg)](https://crates.io/crates/systemctl-tui)
 
 A fast, simple TUI for interacting with [systemd](https://en.wikipedia.org/wiki/Systemd) services and their logs.
-![image](https://github.com/rgwood/systemctl-tui/assets/26268125/1ca529c6-2018-46c4-ae42-2c0f5925933d)
+![Screenshot from 2025-01-23 21-44-31](https://github.com/user-attachments/assets/caac6034-d4e3-4c54-8163-24a8a6d39cb4)
 
 `systemctl-tui` can quickly browse service status and logs, start/stop/restart/reload services, and view/edit unit files. It aims to do a small number of things well.
 
