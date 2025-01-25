@@ -603,11 +603,7 @@ impl Component for Home {
             ];
 
             if let Some(Ok(file_path)) = &selected.file_path {
-              menu_items.push(MenuItem::new(
-                "Copy unit file path to clipboard",
-                Action::CopyUnitFilePath,
-                Some(KeyCode::Char('c')),
-              ));
+              menu_items.push(MenuItem::new("Copy unit file path", Action::CopyUnitFilePath, Some(KeyCode::Char('c'))));
               menu_items.push(MenuItem::new(
                 "Edit unit file",
                 Action::EditUnitFile { unit: selected.id(), path: file_path.clone() },
@@ -1017,9 +1013,11 @@ impl Component for Home {
     f.render_widget(help_line, help_rect);
     f.render_widget(Line::from(version), version_rect);
 
-    let min_width = selected_item.name.len() as u16 + 14;
-    let desired_width = min_width + 4; // idk, looks alright
-    let popup_width = desired_width.min(f.area().width);
+    let title = format!("Actions for {}", selected_item.name);
+    let mut min_width = title.len() as u16 + 2; // title plus corners
+    min_width = min_width.max(24); // hack: the width of the longest action name + 2
+
+    let popup_width = min_width.min(f.area().width);
 
     if self.mode == Mode::ActionMenu {
       let height = self.menu_items.items.len() as u16 + 2;
@@ -1041,7 +1039,7 @@ impl Component for Home {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(Color::LightGreen))
-            .title(format!("Actions for {}", self.filtered_units.selected().unwrap().name)),
+            .title(title),
         )
         .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
 
