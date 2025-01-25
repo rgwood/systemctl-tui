@@ -25,6 +25,14 @@ If you'd rather build from scratch you will need [Rust installed](https://rustup
 
 </details>
 
+#### Debian/Ubuntu
+
+Install rust: `curl https://sh.rustup.rs -sSf | sh`
+
+Reload profile: `source .profile` or `source .bash_profile`
+
+Install via cargo: `cargo install systemctl-tui --locked`
+
 #### Arch Linux
 
 `systemctl-tui` can be installed from the [official repositories](https://archlinux.org/packages/extra/x86_64/systemctl-tui/):
