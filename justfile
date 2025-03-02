@@ -33,5 +33,5 @@ build-linux-arm64:
 build-windows-on-linux:
     cross build --target x86_64-pc-windows-gnu --release
 
-publish-potato-pi: build-linux-arm64
-    rsync target/aarch64-unknown-linux-musl/release/systemctl-tui potato-pi:~/bin/
+publish-potato-pi: build-linux-x64
+    rsync target/x86_64-unknown-linux-musl/release/systemctl-tui potato-pi:~/bin/
