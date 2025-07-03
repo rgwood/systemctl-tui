@@ -19,6 +19,9 @@ struct Args {
   /// Limit view to only these unit files
   #[clap(short, long, default_value="*.service", num_args=1..)]
   limit_units: Vec<String>,
+  /// Remote host to connect to (user@hostname format, similar to systemctl --host)
+  #[clap(long)]
+  host: Option<String>,
 }
 
 #[derive(Parser, Debug, ValueEnum, Clone)]
@@ -55,7 +58,7 @@ async fn main() -> Result<()> {
     },
   };
 
-  let mut app = App::new(scope, args.limit_units)?;
+  let mut app = App::new(scope, args.limit_units, args.host)?;
   app.run().await?;
 
   Ok(())

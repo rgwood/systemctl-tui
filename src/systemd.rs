@@ -7,7 +7,9 @@ use anyhow::{bail, Context, Result};
 use log::error;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
-use zbus::{proxy, zvariant, Connection};
+use zbus::{proxy, zvariant, Connection, connection::Builder, address::{Transport, transport::Unixexec}};
+use std::path::PathBuf;
+use std::ffi::OsString;
 
 #[derive(Debug, Clone)]
 pub struct UnitWithStatus {
@@ -116,7 +118,7 @@ pub enum Scope {
 }
 
 // this takes like 5-10 ms on 13th gen Intel i7 (scope=all)
-pub async fn get_all_services(scope: Scope, services: &[String]) -> Result<Vec<UnitWithStatus>> {
+pub async fn get_all_services(scope: Scope, services: &[String], host: Option<String>) -> Result<Vec<UnitWithStatus>> {
   let start = std::time::Instant::now();
 
   let mut units = vec![];
@@ -125,25 +127,33 @@ pub async fn get_all_services(scope: Scope, services: &[String]) -> Result<Vec<U
 
   match scope {
     Scope::Global => {
-      let system_units = get_services(UnitScope::Global, services).await?;
+      let system_units = get_services(UnitScope::Global, services, host.as_deref()).await?;
       units.extend(system_units);
     },
     Scope::User => {
-      let user_units = get_services(UnitScope::User, services).await?;
+      let user_units = get_services(UnitScope::User, services, host.as_deref()).await?;
       units.extend(user_units);
     },
     Scope::All => {
       let (system_units, user_units) =
-        tokio::join!(get_services(UnitScope::Global, services), get_services(UnitScope::User, services));
+        tokio::join!(get_services(UnitScope::Global, services, host.as_deref()), get_services(UnitScope::User, services, host.as_deref()));
       units.extend(system_units?);
 
-      // Should always be able to get user units, but it may fail when running as root
-      if let Ok(user_units) = user_units {
-        units.extend(user_units);
-      } else if is_root {
-        error!("Failed to get user units, ignoring because we're running as root")
-      } else {
-        user_units?;
+      // Should always be able to get user units, but it may fail when running as root or on remote hosts
+      match user_units {
+        Ok(user_units) => {
+          info!("Successfully retrieved {} user units", user_units.len());
+          units.extend(user_units);
+        },
+        Err(e) => {
+          if host.is_some() {
+            error!("Failed to get user units from remote host (this is normal if user systemd is not set up): {}", e);
+          } else if is_root {
+            error!("Failed to get user units, ignoring because we're running as root: {}", e);
+          } else {
+            return Err(e);
+          }
+        }
       }
     },
   }
@@ -151,16 +161,17 @@ pub async fn get_all_services(scope: Scope, services: &[String]) -> Result<Vec<U
   // sort by name case-insensitive
   units.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
-  info!("Loaded systemd services in {:?}", start.elapsed());
+  info!("Loaded {} systemd services in {:?}", units.len(), start.elapsed());
 
   Ok(units)
 }
 
-async fn get_services(scope: UnitScope, services: &[String]) -> Result<Vec<UnitWithStatus>, anyhow::Error> {
-  let connection = get_connection(scope).await?;
+async fn get_services(scope: UnitScope, services: &[String], host: Option<&str>) -> Result<Vec<UnitWithStatus>, anyhow::Error> {
+  let connection = get_connection(scope, host).await.context(format!("Failed to connect to {:?} D-Bus", scope))?;
   let manager_proxy = ManagerProxy::new(&connection).await?;
   let units = manager_proxy.list_units_by_patterns(vec![], services.to_vec()).await?;
   let units: Vec<_> = units.into_iter().map(|u| to_unit_status(u, scope)).collect();
+  info!("Retrieved {} units for {:?} scope{}", units.len(), scope, if host.is_some() { " (remote)" } else { "" });
   Ok(units)
 }
 
@@ -187,9 +198,9 @@ pub fn get_unit_file_location(service: &UnitId) -> Result<String> {
   }
 }
 
-pub async fn start_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
-  async fn start_service(service: UnitId) -> Result<()> {
-    let connection = get_connection(service.scope).await?;
+pub async fn start_service(service: UnitId, cancel_token: CancellationToken, host: Option<String>) -> Result<()> {
+  async fn start_service(service: UnitId, host: Option<String>) -> Result<()> {
+    let connection = get_connection(service.scope, host.as_deref()).await?;
     let manager_proxy = ManagerProxy::new(&connection).await?;
     manager_proxy.start_unit(service.name.clone(), "replace".into()).await?;
     Ok(())
@@ -200,15 +211,15 @@ pub async fn start_service(service: UnitId, cancel_token: CancellationToken) -> 
     _ = cancel_token.cancelled() => {
         anyhow::bail!("cancelled");
     }
-    result = start_service(service) => {
+    result = start_service(service, host) => {
         result
     }
   }
 }
 
-pub async fn stop_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
-  async fn stop_service(service: UnitId) -> Result<()> {
-    let connection = get_connection(service.scope).await?;
+pub async fn stop_service(service: UnitId, cancel_token: CancellationToken, host: Option<String>) -> Result<()> {
+  async fn stop_service(service: UnitId, host: Option<String>) -> Result<()> {
+    let connection = get_connection(service.scope, host.as_deref()).await?;
     let manager_proxy = ManagerProxy::new(&connection).await?;
     manager_proxy.stop_unit(service.name, "replace".into()).await?;
     Ok(())
@@ -219,15 +230,15 @@ pub async fn stop_service(service: UnitId, cancel_token: CancellationToken) -> R
     _ = cancel_token.cancelled() => {
         anyhow::bail!("cancelled");
     }
-    result = stop_service(service) => {
+    result = stop_service(service, host) => {
         result
     }
   }
 }
 
-pub async fn reload(scope: UnitScope, cancel_token: CancellationToken) -> Result<()> {
-  async fn reload_(scope: UnitScope) -> Result<()> {
-    let connection = get_connection(scope).await?;
+pub async fn reload(scope: UnitScope, cancel_token: CancellationToken, host: Option<String>) -> Result<()> {
+  async fn reload_(scope: UnitScope, host: Option<String>) -> Result<()> {
+    let connection = get_connection(scope, host.as_deref()).await?;
     let manager_proxy: ManagerProxy<'_> = ManagerProxy::new(&connection).await?;
     let error_message = match scope {
       UnitScope::Global => "Failed to reload units, probably because superuser permissions are needed. Try running `sudo systemctl daemon-reload`",
@@ -242,22 +253,63 @@ pub async fn reload(scope: UnitScope, cancel_token: CancellationToken) -> Result
     _ = cancel_token.cancelled() => {
         anyhow::bail!("cancelled");
     }
-    result = reload_(scope) => {
+    result = reload_(scope, host) => {
         result
     }
   }
 }
 
-async fn get_connection(scope: UnitScope) -> Result<Connection, anyhow::Error> {
-  match scope {
-    UnitScope::Global => Ok(Connection::system().await?),
-    UnitScope::User => Ok(Connection::session().await?),
+async fn get_connection(scope: UnitScope, host: Option<&str>) -> Result<Connection, anyhow::Error> {
+  match host {
+    Some(host) => {
+      // Remote connection using SSH unixexec transport
+      let ssh_args = match scope {
+        UnitScope::Global => vec![
+          OsString::from("-xT"),
+          OsString::from("--"),
+          OsString::from(host),
+          OsString::from("systemd-stdio-bridge"),
+          OsString::from("--system"),
+        ],
+        UnitScope::User => vec![
+          OsString::from("-xT"),
+          OsString::from("--"),
+          OsString::from(host),
+          OsString::from("systemd-stdio-bridge"),
+          OsString::from("--user"),
+        ],
+      };
+      
+      info!("Connecting to remote host {} with scope {:?}", host, scope);
+      info!("SSH command will be: ssh {}", ssh_args.iter().map(|s| s.to_string_lossy()).collect::<Vec<_>>().join(" "));
+      
+      let unixexec = Unixexec::new(
+        PathBuf::from("ssh"),
+        Some(OsString::from("ssh")),
+        ssh_args,
+      );
+      
+      let transport = Transport::Unixexec(unixexec);
+      let connection = Builder::address(transport)?
+        .build()
+        .await?;
+      
+      info!("Successfully established D-Bus connection for scope {:?}", scope);
+      Ok(connection)
+    },
+    None => {
+      // Local connection
+      match scope {
+        UnitScope::Global => Ok(Connection::system().await?),
+        UnitScope::User => Ok(Connection::session().await?),
+      }
+    }
   }
 }
 
-pub async fn restart_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
-  async fn restart(service: UnitId) -> Result<()> {
-    let connection = get_connection(service.scope).await?;
+pub async fn restart_service(service: UnitId, cancel_token: CancellationToken, host: Option<String>) -> Result<()> {
+  async fn restart(service: UnitId, host: Option<String>) -> Result<()> {
+    let connection = get_connection(service.scope, host.as_deref()).await?;
     let manager_proxy = ManagerProxy::new(&connection).await?;
     manager_proxy.restart_unit(service.name, "replace".into()).await?;
     Ok(())
@@ -269,7 +321,7 @@ pub async fn restart_service(service: UnitId, cancel_token: CancellationToken) -
         // The token was cancelled
         anyhow::bail!("cancelled");
     }
-    result = restart(service) => {
+    result = restart(service, host) => {
         result
     }
   }
@@ -406,6 +458,27 @@ trait Service {
   /// Get property `MainPID`.
   #[zbus(property, name = "MainPID")]
   fn main_pid(&self) -> zbus::Result<u32>;
+}
+
+/// Proxy object for `org.freedesktop.journal1.Manager`.
+#[proxy(
+  interface = "org.freedesktop.journal1.Manager",
+  default_service = "org.freedesktop.journal1",
+  default_path = "/org/freedesktop/journal1",
+  gen_blocking = false
+)]
+trait Journal {
+  /// Get journal entries
+  #[zbus(name = "GetCatalog")]
+  fn get_catalog(&self) -> zbus::Result<Vec<u8>>;
+  
+  /// Add match for journal entries
+  #[zbus(name = "AddMatch")]
+  fn add_match(&self, match_string: String) -> zbus::Result<()>;
+  
+  /// Remove match for journal entries  
+  #[zbus(name = "FlushMatches")]
+  fn flush_matches(&self) -> zbus::Result<()>;
 }
 
 /// Returns the load state of a systemd unit

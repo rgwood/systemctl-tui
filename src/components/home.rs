@@ -43,6 +43,7 @@ pub enum Mode {
 pub struct Home {
   pub scope: Scope,
   pub limit_units: Vec<String>,
+  pub host: Option<String>,
   pub logger: Logger,
   pub show_logger: bool,
   pub all_units: IndexMap<UnitId, UnitWithStatus>,
@@ -157,7 +158,12 @@ impl<T> StatefulList<T> {
 impl Home {
   pub fn new(scope: Scope, limit_units: &[String]) -> Self {
     let limit_units = limit_units.to_vec();
-    Self { scope, limit_units, ..Default::default() }
+    Self { scope, limit_units, host: None, ..Default::default() }
+  }
+
+  pub fn with_host(scope: Scope, limit_units: &[String], host: Option<String>) -> Self {
+    let limit_units = limit_units.to_vec();
+    Self { scope, limit_units, host, ..Default::default() }
   }
 
   pub fn set_units(&mut self, units: Vec<UnitWithStatus>) {
@@ -224,6 +230,12 @@ impl Home {
   }
 
   pub fn get_logs(&mut self) {
+    // Don't fetch logs for remote hosts since they would be misleading (local logs)
+    if self.host.is_some() {
+      self.logs = vec!["Remote host logs not available. Use 'journalctl' directly on the target system.".to_string()];
+      return;
+    }
+
     if let Some(selected) = self.filtered_units.selected() {
       let unit_id = selected.id();
       if let Err(e) = self.journalctl_tx.as_ref().unwrap().send(unit_id) {
@@ -271,25 +283,29 @@ impl Home {
 
   fn start_service(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
-    let future = systemd::start_service(service.clone(), cancel_token.clone());
+    let host = self.host.clone();
+    let future = systemd::start_service(service.clone(), cancel_token.clone(), host);
     self.service_action(service, "Start".into(), cancel_token, future);
   }
 
   fn stop_service(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
-    let future = systemd::stop_service(service.clone(), cancel_token.clone());
+    let host = self.host.clone();
+    let future = systemd::stop_service(service.clone(), cancel_token.clone(), host);
     self.service_action(service, "Stop".into(), cancel_token, future);
   }
 
   fn reload_service(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
-    let future = systemd::reload(service.scope, cancel_token.clone());
+    let host = self.host.clone();
+    let future = systemd::reload(service.scope, cancel_token.clone(), host);
     self.service_action(service, "Reload".into(), cancel_token, future);
   }
 
   fn restart_service(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
-    let future = systemd::restart_service(service.clone(), cancel_token.clone());
+    let host = self.host.clone();
+    let future = systemd::restart_service(service.clone(), cancel_token.clone(), host);
     self.service_action(service, "Restart".into(), cancel_token, future);
   }
 
@@ -694,8 +710,9 @@ impl Component for Home {
         let tx = self.action_tx.clone().unwrap();
         let scope = self.scope;
         let limit_units = self.limit_units.to_vec();
+        let host = self.host.clone();
         tokio::spawn(async move {
-          let units = systemd::get_all_services(scope, &limit_units)
+          let units = systemd::get_all_services(scope, &limit_units, host)
             .await
             .expect("Failed to get services. Check that systemd is running and try running this tool with sudo.");
           tx.send(Action::SetServices(units)).unwrap();

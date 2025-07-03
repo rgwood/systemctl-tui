@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Bash(cargo search:*)",
-      "Bash(cargo:*)"
+      "Bash(cargo:*)",
+      "WebFetch(domain:www.freedesktop.org)",
+      "Bash(find:*)",
+      "Bash(rustc:*)",
+      "Bash(grep:*)",
+      "WebFetch(domain:docs.rs)"
     ],
     "deny": []
   }
