@@ -76,7 +76,9 @@ pub fn initialize_logging(enable_tracing: bool) -> Result<WorkerGuard> {
     .with_ansi(false)
     .with_filter(EnvFilter::builder().with_default_directive(LevelFilter::INFO.into()).from_env_lossy());
 
-  let tui_layer = tui_logger::tracing_subscriber_layer()
+  tui_logger::init_logger(tui_logger::LevelFilter::Debug)?;
+
+  let tui_layer = tui_logger::TuiTracingSubscriberLayer
     .with_filter(EnvFilter::builder().with_default_directive(LevelFilter::INFO.into()).from_env_lossy());
 
   tracing_subscriber::registry().with(file_layer).with(tui_layer).init();
