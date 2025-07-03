@@ -488,3 +488,19 @@ fn encode_as_dbus_object_path(input_string: &str) -> String {
 pub fn get_unit_path(full_service_name: &str) -> String {
   format!("/org/freedesktop/systemd1/unit/{}", encode_as_dbus_object_path(full_service_name))
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_get_unit_path() {
+    assert_eq!(get_unit_path("test.service"), "/org/freedesktop/systemd1/unit/test_2eservice");
+  }
+
+  #[test]
+  fn test_encode_as_dbus_object_path() {
+    assert_eq!(encode_as_dbus_object_path("test.service"), "test_2eservice");
+    assert_eq!(encode_as_dbus_object_path("test-with-hyphen.service"), "test_2dwith_2dhyphen_2eservice");
+  }
+}
