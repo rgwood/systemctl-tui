@@ -51,10 +51,10 @@ async fn main() -> Result<()> {
       let logs_path = get_data_dir()?;
       println!("{}", logs_path.display());
       return Ok(());
-    }
+    },
     None => {
       // Default behavior - run the TUI
-    }
+    },
   }
 
   let _guard = initialize_logging(args.trace)?;
