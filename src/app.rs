@@ -103,7 +103,7 @@ impl App {
             let read_unit_file_contents = || match std::fs::read_to_string(&path) {
               Ok(contents) => contents,
               Err(e) => {
-                error!("Failed to read unit file `{}`: {}", path, e);
+                error!("Failed to read unit file `{path}`: {e}");
                 "".to_string()
               },
             };
@@ -127,7 +127,7 @@ impl App {
                 tui.enter()?;
                 tui.clear()?;
                 event = EventHandler::new(self.home.clone(), action_tx.clone());
-                action_tx.send(Action::EnterError(format!("Failed to open editor `{}`: {}", editor, e)))?;
+                action_tx.send(Action::EnterError(format!("Failed to open editor `{editor}`: {e}")))?;
               },
             }
           },
