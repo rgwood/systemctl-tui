@@ -1,15 +1,17 @@
 use anyhow::Result;
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use systemctl_tui::{
   app::App,
   systemd,
-  utils::{initialize_logging, initialize_panic_handler, version},
+  utils::{get_data_dir, initialize_logging, initialize_panic_handler, version},
 };
 
 // Define the command line arguments structure
 #[derive(Parser, Debug)]
 #[command(version = version(), about = "A simple TUI for systemd services")]
 struct Args {
+  #[command(subcommand)]
+  command: Option<Commands>,
   /// The scope of the services to display. Defaults to "all" normally and "global" on WSL
   #[clap(short, long)]
   scope: Option<Scope>,
@@ -19,6 +21,12 @@ struct Args {
   /// Limit view to only these unit files
   #[clap(short, long, default_value="*.service", num_args=1..)]
   limit_units: Vec<String>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+  /// Show the path to the logs directory
+  ShowLogsPath,
 }
 
 #[derive(Parser, Debug, ValueEnum, Clone)]
@@ -36,6 +44,19 @@ async fn main() -> Result<()> {
   }
 
   let args = Args::parse();
+
+  // Handle subcommands
+  match args.command {
+    Some(Commands::ShowLogsPath) => {
+      let logs_path = get_data_dir()?;
+      println!("{}", logs_path.display());
+      return Ok(());
+    }
+    None => {
+      // Default behavior - run the TUI
+    }
+  }
+
   let _guard = initialize_logging(args.trace)?;
   initialize_panic_handler();
 
