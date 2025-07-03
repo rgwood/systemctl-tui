@@ -17,7 +17,7 @@ lazy_static! {
   static ref TRACE_FILE_NAME: PathBuf = {
     let directory = get_data_dir().expect("Unable to get data directory");
     let timestamp_iso8601 = chrono::Local::now().format("%Y-%m-%d-%H-%M-%S");
-    directory.join(format!("systemctl-tui-trace-{}.log", timestamp_iso8601))
+    directory.join(format!("systemctl-tui-trace-{timestamp_iso8601}.log"))
   };
 }
 

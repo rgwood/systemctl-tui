@@ -73,7 +73,7 @@ impl MenuItem {
 
   pub fn key_string(&self) -> String {
     if let Some(key) = self.key {
-      format!("{}", key)
+      format!("{key}")
     } else {
       String::new()
     }
@@ -640,7 +640,7 @@ impl Component for Home {
           if let Some(Ok(file_path)) = &selected.file_path {
             match clipboard_anywhere::set_clipboard(file_path) {
               Ok(_) => return Some(Action::EnterMode(Mode::ServiceList)),
-              Err(e) => return Some(Action::EnterError(format!("Error copying to clipboard: {}", e))),
+              Err(e) => return Some(Action::EnterError(format!("Error copying to clipboard: {e}"))),
             }
           } else {
             return Some(Action::EnterError("No unit file path available".into()));
@@ -958,7 +958,7 @@ impl Component for Home {
 
       let name = env!("CARGO_PKG_NAME");
       let version = env!("CARGO_PKG_VERSION");
-      let title = format!("─Help for {} v{}", name, version);
+      let title = format!("─Help for {name} v{version}");
 
       let paragraph = Paragraph::new(help_lines)
         .block(Block::default().title(title).borders(Borders::ALL).border_type(BorderType::Rounded))
@@ -1055,7 +1055,7 @@ impl Component for Home {
 
       let spinner_char = SPINNER_CHARS[self.spinner_tick as usize % SPINNER_CHARS.len()];
       // TODO: make this a spinner
-      let paragraph = Paragraph::new(vec![Line::from(format!("{}", spinner_char))])
+      let paragraph = Paragraph::new(vec![Line::from(format!("{spinner_char}"))])
         .block(
           Block::default()
             .title("Processing")
