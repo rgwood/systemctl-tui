@@ -6,8 +6,8 @@ DIR="${DIR:-"$HOME/.local/bin"}"
 # map different architecture variations to the available binaries
 ARCH=$(uname -m)
 case $ARCH in
-    i386|i686) ARCH=x86 ;;
-    aarch64*) ARCH=arm64 ;;
+    i386|i686) ARCH=x86_64 ;;
+    aarch64*) ARCH=aarch64 ;;
 esac
 
 # prepare the download URL
