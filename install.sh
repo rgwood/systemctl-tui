@@ -16,7 +16,13 @@ GITHUB_FILE="systemctl-tui-${ARCH}-unknown-linux-musl.tar.gz"
 GITHUB_URL="https://github.com/rgwood/systemctl-tui/releases/download/${GITHUB_LATEST_VERSION}/${GITHUB_FILE}"
 
 # install/update the local binary
-curl -L -o systemctl-tui.tar.gz $GITHUB_URL
+
+# check curl downloads bin correctly
+if ! curl -L -f -o systemctl-tui.tar.gz "$GITHUB_URL"; then
+    echo "The requested file '$GITHUB_FILE' for version '$GITHUB_LATEST_VERSION' and architecture '$ARCH' may not exist." >&2
+    exit 1
+fi
+
 tar xzvf systemctl-tui.tar.gz systemctl-tui
 install -Dm 755 systemctl-tui -t "$DIR"
 rm systemctl-tui systemctl-tui.tar.gz
