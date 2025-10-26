@@ -722,15 +722,15 @@ impl Component for Home {
   }
 
   fn render(&mut self, f: &mut Frame<'_>, rect: Rect) {
-    fn primary(s: &str) -> Span {
+    fn primary(s: &str) -> Span<'_> {
       Span::styled(s, Style::default().fg(Color::Cyan))
     }
 
-    fn span(s: &str, color: Color) -> Span {
+    fn span(s: &str, color: Color) -> Span<'_> {
       Span::styled(s, Style::default().fg(color))
     }
 
-    fn colored_line(value: &str, color: Color) -> Line {
+    fn colored_line(value: &str, color: Color) -> Line<'_> {
       Line::from(vec![Span::styled(value, Style::default().fg(color))])
     }
 
