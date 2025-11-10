@@ -1,13 +1,13 @@
 // File initially taken from https://github.com/servicer-labs/servicer/blob/master/src/utils/systemd.rs, since modified
 
-use core::str;
-use std::process::Command;
-
 use anyhow::{bail, Context, Result};
+use core::str;
 use log::error;
+use std::process::Command;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
-use zbus::{proxy, zvariant, Connection};
+use zbus::{zvariant, Connection};
+use zbus_systemd::systemd1::{ManagerProxy, ServiceProxy, UnitProxy};
 
 #[derive(Debug, Clone)]
 pub struct UnitWithStatus {
@@ -160,8 +160,8 @@ async fn get_services(scope: UnitScope, services: &[String]) -> Result<Vec<UnitW
   let connection = get_connection(scope).await?;
   let manager_proxy = ManagerProxy::new(&connection).await?;
   let units = manager_proxy.list_units_by_patterns(vec![], services.to_vec()).await?;
-  let units: Vec<_> = units.into_iter().map(|u| to_unit_status(u, scope)).collect();
-  Ok(units)
+
+  Ok(units.into_iter().map(|u| to_unit_status(u, scope)).collect())
 }
 
 pub fn get_unit_file_location(service: &UnitId) -> Result<String> {
@@ -287,125 +287,6 @@ pub async fn sleep_test(_service: String, cancel_token: CancellationToken) -> Re
           Ok(())
       }
   }
-}
-
-/// Proxy object for `org.freedesktop.systemd1.Manager`.
-/// Partially taken from https://github.com/lucab/zbus_systemd/blob/main/src/systemd1/generated.rs
-#[proxy(
-  interface = "org.freedesktop.systemd1.Manager",
-  default_service = "org.freedesktop.systemd1",
-  default_path = "/org/freedesktop/systemd1",
-  gen_blocking = false
-)]
-pub trait Manager {
-  /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#StartUnit()) Call interface method `StartUnit`.
-  #[dbus_proxy(name = "StartUnit")]
-  fn start_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
-
-  /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#StopUnit()) Call interface method `StopUnit`.
-  #[dbus_proxy(name = "StopUnit")]
-  fn stop_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
-
-  /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#ReloadUnit()) Call interface method `ReloadUnit`.
-  #[dbus_proxy(name = "ReloadUnit")]
-  fn reload_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
-
-  /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#RestartUnit()) Call interface method `RestartUnit`.
-  #[dbus_proxy(name = "RestartUnit")]
-  fn restart_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
-
-  /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#EnableUnitFiles()) Call interface method `EnableUnitFiles`.
-  #[dbus_proxy(name = "EnableUnitFiles")]
-  fn enable_unit_files(
-    &self,
-    files: Vec<String>,
-    runtime: bool,
-    force: bool,
-  ) -> zbus::Result<(bool, Vec<(String, String, String)>)>;
-
-  /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#DisableUnitFiles()) Call interface method `DisableUnitFiles`.
-  #[dbus_proxy(name = "DisableUnitFiles")]
-  fn disable_unit_files(&self, files: Vec<String>, runtime: bool) -> zbus::Result<Vec<(String, String, String)>>;
-
-  /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#ListUnits()) Call interface method `ListUnits`.
-  #[dbus_proxy(name = "ListUnits")]
-  fn list_units(
-    &self,
-  ) -> zbus::Result<
-    Vec<(
-      String,
-      String,
-      String,
-      String,
-      String,
-      String,
-      zvariant::OwnedObjectPath,
-      u32,
-      String,
-      zvariant::OwnedObjectPath,
-    )>,
-  >;
-
-  /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#ListUnitsByPatterns()) Call interface method `ListUnitsByPatterns`.
-  #[dbus_proxy(name = "ListUnitsByPatterns")]
-  fn list_units_by_patterns(
-    &self,
-    states: Vec<String>,
-    patterns: Vec<String>,
-  ) -> zbus::Result<
-    Vec<(
-      String,
-      String,
-      String,
-      String,
-      String,
-      String,
-      zvariant::OwnedObjectPath,
-      u32,
-      String,
-      zvariant::OwnedObjectPath,
-    )>,
-  >;
-
-  /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#Reload()) Call interface method `Reload`.
-  #[dbus_proxy(name = "Reload")]
-  fn reload(&self) -> zbus::Result<()>;
-}
-
-/// Proxy object for `org.freedesktop.systemd1.Unit`.
-/// Taken from https://github.com/lucab/zbus_systemd/blob/main/src/systemd1/generated.rs
-#[proxy(
-  interface = "org.freedesktop.systemd1.Unit",
-  default_service = "org.freedesktop.systemd1",
-  assume_defaults = false,
-  gen_blocking = false
-)]
-pub trait Unit {
-  /// Get property `ActiveState`.
-  #[dbus_proxy(property)]
-  fn active_state(&self) -> zbus::Result<String>;
-
-  /// Get property `LoadState`.
-  #[dbus_proxy(property)]
-  fn load_state(&self) -> zbus::Result<String>;
-
-  /// Get property `UnitFileState`.
-  #[dbus_proxy(property)]
-  fn unit_file_state(&self) -> zbus::Result<String>;
-}
-
-/// Proxy object for `org.freedesktop.systemd1.Service`.
-/// Taken from https://github.com/lucab/zbus_systemd/blob/main/src/systemd1/generated.rs
-#[proxy(
-  interface = "org.freedesktop.systemd1.Service",
-  default_service = "org.freedesktop.systemd1",
-  assume_defaults = false,
-  gen_blocking = false
-)]
-trait Service {
-  /// Get property `MainPID`.
-  #[dbus_proxy(property, name = "MainPID")]
-  fn main_pid(&self) -> zbus::Result<u32>;
 }
 
 /// Returns the load state of a systemd unit
