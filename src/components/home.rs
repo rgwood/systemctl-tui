@@ -39,6 +39,17 @@ pub enum Mode {
   Error,
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct ServiceStats {
+  pub total: usize,
+  pub active: usize,
+  pub inactive: usize,
+  pub failed: usize,
+  pub not_found: usize,
+  pub global_count: usize,
+  pub user_count: usize,
+}
+
 #[derive(Default)]
 pub struct Home {
   pub scope: Scope,
@@ -46,6 +57,7 @@ pub struct Home {
   pub logger: Logger,
   pub show_logger: bool,
   pub all_units: IndexMap<UnitId, UnitWithStatus>,
+  pub stats: ServiceStats,
   pub filtered_units: StatefulList<UnitWithStatus>,
   pub logs: Vec<String>,
   pub logs_scroll_offset: u16,
@@ -160,11 +172,39 @@ impl Home {
     Self { scope, limit_units, ..Default::default() }
   }
 
+  fn calculate_stats(&mut self) {
+    let mut stats = ServiceStats::default();
+
+    for unit in self.all_units.values() {
+      stats.total += 1;
+
+      if unit.is_active() {
+        stats.active += 1;
+      } else if unit.is_failed() {
+        stats.failed += 1;
+      } else {
+        stats.inactive += 1;
+      }
+
+      if unit.is_not_found() {
+        stats.not_found += 1;
+      }
+
+      match unit.scope {
+        UnitScope::Global => stats.global_count += 1,
+        UnitScope::User => stats.user_count += 1,
+      }
+    }
+
+    self.stats = stats;
+  }
+
   pub fn set_units(&mut self, units: Vec<UnitWithStatus>) {
     self.all_units.clear();
     for unit_status in units.into_iter() {
       self.all_units.insert(unit_status.id(), unit_status);
     }
+    self.calculate_stats();
     self.refresh_filtered_units();
   }
 
@@ -183,6 +223,10 @@ impl Home {
       }
     }
     info!("Updated units in {:?}", now.elapsed());
+
+    let now = std::time::Instant::now();
+    self.calculate_stats();
+    info!("Calculated stats in {:?}", now.elapsed());
 
     let now = std::time::Instant::now();
     self.refresh_filtered_units();
@@ -743,12 +787,46 @@ impl Component for Home {
       rect
     };
 
-    let rects =
-      Layout::new(Direction::Vertical, [Constraint::Min(3), Constraint::Percentage(100), Constraint::Length(1)])
-        .split(rect);
-    let search_panel = rects[0];
-    let main_panel = rects[1];
-    let help_line_rect = rects[2];
+    let rects = Layout::new(
+      Direction::Vertical,
+      [Constraint::Length(3), Constraint::Min(3), Constraint::Percentage(100), Constraint::Length(1)],
+    )
+    .split(rect);
+    let stats_panel = rects[0];
+    let search_panel = rects[1];
+    let main_panel = rects[2];
+    let help_line_rect = rects[3];
+
+    // Render stats panel
+    let stats_text = Line::from(vec![
+      Span::raw(" Total: "),
+      Span::styled(format!("{}", self.stats.total), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+      Span::raw(" │ Active: "),
+      Span::styled(format!("{}", self.stats.active), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+      Span::raw(" │ Inactive: "),
+      Span::styled(format!("{}", self.stats.inactive), Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD)),
+      Span::raw(" │ Failed: "),
+      Span::styled(format!("{}", self.stats.failed), Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+      Span::raw(" │ Not Found: "),
+      Span::styled(
+        format!("{}", self.stats.not_found),
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+      ),
+      Span::raw(" │ Global: "),
+      Span::styled(
+        format!("{}", self.stats.global_count),
+        Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+      ),
+      Span::raw(" │ User: "),
+      Span::styled(
+        format!("{}", self.stats.user_count),
+        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+      ),
+    ]);
+
+    let stats_widget = Paragraph::new(stats_text)
+      .block(Block::default().title("─Stats").borders(Borders::ALL).border_type(BorderType::Rounded));
+    f.render_widget(stats_widget, stats_panel);
 
     // Helper for colouring based on the same logic as sysz
     // https://github.com/joehillen/sysz/blob/8da8e0dcbfde8d68fbdb22382671e395bd370d69/sysz#L69C1-L72C24
