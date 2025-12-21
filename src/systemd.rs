@@ -299,23 +299,23 @@ pub async fn sleep_test(_service: String, cancel_token: CancellationToken) -> Re
 )]
 pub trait Manager {
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#StartUnit()) Call interface method `StartUnit`.
-  #[dbus_proxy(name = "StartUnit")]
+  #[zbus(name = "StartUnit")]
   fn start_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#StopUnit()) Call interface method `StopUnit`.
-  #[dbus_proxy(name = "StopUnit")]
+  #[zbus(name = "StopUnit")]
   fn stop_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#ReloadUnit()) Call interface method `ReloadUnit`.
-  #[dbus_proxy(name = "ReloadUnit")]
+  #[zbus(name = "ReloadUnit")]
   fn reload_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#RestartUnit()) Call interface method `RestartUnit`.
-  #[dbus_proxy(name = "RestartUnit")]
+  #[zbus(name = "RestartUnit")]
   fn restart_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#EnableUnitFiles()) Call interface method `EnableUnitFiles`.
-  #[dbus_proxy(name = "EnableUnitFiles")]
+  #[zbus(name = "EnableUnitFiles")]
   fn enable_unit_files(
     &self,
     files: Vec<String>,
@@ -324,11 +324,11 @@ pub trait Manager {
   ) -> zbus::Result<(bool, Vec<(String, String, String)>)>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#DisableUnitFiles()) Call interface method `DisableUnitFiles`.
-  #[dbus_proxy(name = "DisableUnitFiles")]
+  #[zbus(name = "DisableUnitFiles")]
   fn disable_unit_files(&self, files: Vec<String>, runtime: bool) -> zbus::Result<Vec<(String, String, String)>>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#ListUnits()) Call interface method `ListUnits`.
-  #[dbus_proxy(name = "ListUnits")]
+  #[zbus(name = "ListUnits")]
   fn list_units(
     &self,
   ) -> zbus::Result<
@@ -347,7 +347,7 @@ pub trait Manager {
   >;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#ListUnitsByPatterns()) Call interface method `ListUnitsByPatterns`.
-  #[dbus_proxy(name = "ListUnitsByPatterns")]
+  #[zbus(name = "ListUnitsByPatterns")]
   fn list_units_by_patterns(
     &self,
     states: Vec<String>,
@@ -368,7 +368,7 @@ pub trait Manager {
   >;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#Reload()) Call interface method `Reload`.
-  #[dbus_proxy(name = "Reload")]
+  #[zbus(name = "Reload")]
   fn reload(&self) -> zbus::Result<()>;
 }
 
@@ -382,15 +382,15 @@ pub trait Manager {
 )]
 pub trait Unit {
   /// Get property `ActiveState`.
-  #[dbus_proxy(property)]
+  #[zbus(property)]
   fn active_state(&self) -> zbus::Result<String>;
 
   /// Get property `LoadState`.
-  #[dbus_proxy(property)]
+  #[zbus(property)]
   fn load_state(&self) -> zbus::Result<String>;
 
   /// Get property `UnitFileState`.
-  #[dbus_proxy(property)]
+  #[zbus(property)]
   fn unit_file_state(&self) -> zbus::Result<String>;
 }
 
@@ -404,7 +404,7 @@ pub trait Unit {
 )]
 trait Service {
   /// Get property `MainPID`.
-  #[dbus_proxy(property, name = "MainPID")]
+  #[zbus(property, name = "MainPID")]
   fn main_pid(&self) -> zbus::Result<u32>;
 }
 
