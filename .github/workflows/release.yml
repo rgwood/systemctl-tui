@@ -18,5 +18,10 @@ jobs:
         with:
           bin: systemctl-tui
           target: ${{ matrix.target }}
-          archive: $bin-$tag-$target, deb
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: systemctl-tui
+          target: ${{ matrix.target }}
+          archive: deb
           token: ${{ secrets.GITHUB_TOKEN }}
