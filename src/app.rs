@@ -126,6 +126,36 @@ impl App {
               },
             }
           },
+          Action::OpenLogsInPager { logs } => {
+            event.stop();
+            let mut tui = terminal.tui.lock().await;
+            tui.exit()?;
+
+            let temp_path = std::env::temp_dir().join("systemctl-tui-logs.txt");
+            if let Err(e) = std::fs::write(&temp_path, logs.join("\n")) {
+              tui.enter()?;
+              tui.clear()?;
+              event = EventHandler::new(self.home.clone(), action_tx.clone());
+              action_tx.send(Action::EnterError(format!("Failed to write temp file: {e}")))?;
+            } else {
+              let pager = std::env::var("PAGER").unwrap_or_else(|_| "less".to_string());
+              match Command::new(&pager).arg(&temp_path).status() {
+                Ok(_) => {
+                  tui.enter()?;
+                  tui.clear()?;
+                  event = EventHandler::new(self.home.clone(), action_tx.clone());
+                  action_tx.send(Action::EnterMode(Mode::ServiceList))?;
+                },
+                Err(e) => {
+                  tui.enter()?;
+                  tui.clear()?;
+                  event = EventHandler::new(self.home.clone(), action_tx.clone());
+                  action_tx.send(Action::EnterError(format!("Failed to open pager `{pager}`: {e}")))?;
+                },
+              }
+              let _ = std::fs::remove_file(&temp_path);
+            }
+          },
           _ => {
             if let Some(_action) = self.home.lock().await.dispatch(action) {
               action_tx.send(_action)?

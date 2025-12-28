@@ -565,6 +565,9 @@ impl Component for Home {
             }
             vec![]
           },
+          KeyCode::Char('o') => {
+            vec![Action::OpenLogsInPager { logs: self.logs.clone() }]
+          },
           KeyCode::Enter | KeyCode::Char(' ') => vec![Action::EnterMode(Mode::ActionMenu)],
           _ => vec![],
         }
@@ -671,6 +674,11 @@ impl Component for Home {
               MenuItem::new("Restart", Action::RestartService(selected.id()), Some(KeyCode::Char('r'))),
               MenuItem::new("Reload", Action::ReloadService(selected.id()), Some(KeyCode::Char('l'))),
               MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('k'))),
+              MenuItem::new(
+                "Open logs in pager",
+                Action::OpenLogsInPager { logs: self.logs.clone() },
+                Some(KeyCode::Char('o')),
+              ),
               // TODO add these
               // MenuItem::new("Enable", Action::EnableService(selected.clone())),
               // MenuItem::new("Disable", Action::DisableService(selected.clone())),
@@ -1103,7 +1111,9 @@ impl Component for Home {
 
     let help_line = match self.mode {
       Mode::Search => Line::from(span("Show actions: <enter>", theme.primary)),
-      Mode::ServiceList => Line::from(span("Show actions: <enter> | Open unit file: e | Quit: q", theme.primary)),
+      Mode::ServiceList => {
+        Line::from(span("Show actions: <enter> | Open logs in pager: o | Edit unit file: e | Quit: q", theme.primary))
+      },
       Mode::Help => Line::from(span("Close menu: <esc>", theme.primary)),
       Mode::ActionMenu => Line::from(span("Execute action: <enter> | Close menu: <esc>", theme.primary)),
       Mode::Processing => Line::from(span("Cancel task: <esc>", theme.primary)),
