@@ -1,6 +1,7 @@
 use chrono::DateTime;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use futures::Future;
+use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use indexmap::IndexMap;
 use itertools::Itertools;
 use ratatui::{
@@ -80,6 +81,13 @@ impl Theme {
   }
 }
 
+/// A unit with fuzzy match indices for highlighting
+#[derive(Clone)]
+pub struct MatchedUnit {
+  pub unit: UnitWithStatus,
+  pub match_indices: Vec<usize>,
+}
+
 #[derive(Default)]
 pub struct Home {
   pub scope: Scope,
@@ -88,7 +96,7 @@ pub struct Home {
   pub logger: Logger,
   pub show_logger: bool,
   pub all_units: IndexMap<UnitId, UnitWithStatus>,
-  pub filtered_units: StatefulList<UnitWithStatus>,
+  pub filtered_units: StatefulList<MatchedUnit>,
   pub logs: Vec<String>,
   pub logs_scroll_offset: u16,
   pub mode: Mode,
@@ -100,6 +108,7 @@ pub struct Home {
   pub error_message: String,
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
   pub journalctl_tx: Option<std::sync::mpsc::Sender<UnitId>>,
+  pub fuzzy_matcher: SkimMatcherV2,
 }
 
 pub struct MenuItem {
@@ -262,12 +271,12 @@ impl Home {
   }
 
   pub fn selected_service(&self) -> Option<UnitId> {
-    self.filtered_units.selected().map(|u| u.id())
+    self.filtered_units.selected().map(|m| m.unit.id())
   }
 
   pub fn get_logs(&mut self) {
     if let Some(selected) = self.filtered_units.selected() {
-      let unit_id = selected.id();
+      let unit_id = selected.unit.id();
       if let Err(e) = self.journalctl_tx.as_ref().unwrap().send(unit_id) {
         warn!("Error sending unit name to journalctl thread: {}", e);
       }
@@ -278,24 +287,38 @@ impl Home {
 
   fn refresh_filtered_units(&mut self) {
     let previously_selected = self.selected_service();
-    let search_value_lower = self.input.value().to_lowercase();
-    // TODO: use fuzzy find
-    let matching = self
-      .all_units
-      .values()
-      .filter(|u| u.short_name().to_lowercase().contains(&search_value_lower))
-      .cloned()
-      .collect_vec();
+    let search_value = self.input.value();
+
+    let matching: Vec<MatchedUnit> = if search_value.is_empty() {
+      // No search - return all units without highlighting
+      self.all_units.values().map(|u| MatchedUnit { unit: u.clone(), match_indices: vec![] }).collect()
+    } else {
+      // Fuzzy match with indices for highlighting
+      let mut scored: Vec<(i64, MatchedUnit)> = self
+        .all_units
+        .values()
+        .filter_map(|u| {
+          self
+            .fuzzy_matcher
+            .fuzzy_indices(u.short_name(), search_value)
+            .map(|(score, indices)| (score, MatchedUnit { unit: u.clone(), match_indices: indices }))
+        })
+        .collect();
+
+      // Sort by score descending (best matches first)
+      scored.sort_by(|a, b| b.0.cmp(&a.0));
+      scored.into_iter().map(|(_, m)| m).collect()
+    };
+
     self.filtered_units.items = matching;
 
     // try to select the same item we had selected before
-    // TODO: this is horrible, clean it up
     if let Some(previously_selected) = previously_selected {
       if let Some(index) = self
         .filtered_units
         .items
         .iter()
-        .position(|u| u.name == previously_selected.name && u.scope == previously_selected.scope)
+        .position(|m| m.unit.name == previously_selected.name && m.unit.scope == previously_selected.scope)
       {
         self.select(Some(index), false);
       } else {
@@ -559,8 +582,8 @@ impl Component for Home {
           KeyCode::Char('/') => vec![Action::EnterMode(Mode::Search)],
           KeyCode::Char('e') => {
             if let Some(selected) = self.filtered_units.selected() {
-              if let Some(Ok(file_path)) = &selected.file_path {
-                return vec![Action::EditUnitFile { unit: selected.id(), path: file_path.clone() }];
+              if let Some(Ok(file_path)) = &selected.unit.file_path {
+                return vec![Action::EditUnitFile { unit: selected.unit.id(), path: file_path.clone() }];
               }
             }
             vec![]
@@ -669,10 +692,10 @@ impl Component for Home {
         if mode == Mode::ActionMenu {
           if let Some(selected) = self.filtered_units.selected() {
             let mut menu_items = vec![
-              MenuItem::new("Start", Action::StartService(selected.id()), Some(KeyCode::Char('s'))),
-              MenuItem::new("Stop", Action::StopService(selected.id()), Some(KeyCode::Char('t'))),
-              MenuItem::new("Restart", Action::RestartService(selected.id()), Some(KeyCode::Char('r'))),
-              MenuItem::new("Reload", Action::ReloadService(selected.id()), Some(KeyCode::Char('l'))),
+              MenuItem::new("Start", Action::StartService(selected.unit.id()), Some(KeyCode::Char('s'))),
+              MenuItem::new("Stop", Action::StopService(selected.unit.id()), Some(KeyCode::Char('t'))),
+              MenuItem::new("Restart", Action::RestartService(selected.unit.id()), Some(KeyCode::Char('r'))),
+              MenuItem::new("Reload", Action::ReloadService(selected.unit.id()), Some(KeyCode::Char('l'))),
               MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('k'))),
               MenuItem::new(
                 "Open logs in pager",
@@ -684,11 +707,11 @@ impl Component for Home {
               // MenuItem::new("Disable", Action::DisableService(selected.clone())),
             ];
 
-            if let Some(Ok(file_path)) = &selected.file_path {
+            if let Some(Ok(file_path)) = &selected.unit.file_path {
               menu_items.push(MenuItem::new("Copy unit file path", Action::CopyUnitFilePath, Some(KeyCode::Char('c'))));
               menu_items.push(MenuItem::new(
                 "Edit unit file",
-                Action::EditUnitFile { unit: selected.id(), path: file_path.clone() },
+                Action::EditUnitFile { unit: selected.unit.id(), path: file_path.clone() },
                 Some(KeyCode::Char('e')),
               ));
             }
@@ -713,7 +736,7 @@ impl Component for Home {
             let menu_items: Vec<MenuItem> = signals
               .into_iter()
               .map(|(name, key_code)| {
-                MenuItem::new(name, Action::KillService(selected.id(), name.to_string()), Some(key_code))
+                MenuItem::new(name, Action::KillService(selected.unit.id(), name.to_string()), Some(key_code))
               })
               .collect();
 
@@ -743,7 +766,7 @@ impl Component for Home {
       },
       Action::CopyUnitFilePath => {
         if let Some(selected) = self.filtered_units.selected() {
-          if let Some(Ok(file_path)) = &selected.file_path {
+          if let Some(Ok(file_path)) = &selected.unit.file_path {
             match clipboard_anywhere::set_clipboard(file_path) {
               Ok(_) => return Some(Action::EnterMode(Mode::ServiceList)),
               Err(e) => return Some(Action::EnterError(format!("Error copying to clipboard: {e}"))),
@@ -761,14 +784,14 @@ impl Component for Home {
       },
       Action::SetLogs { unit, logs } => {
         if let Some(selected) = self.filtered_units.selected() {
-          if selected.id() == unit {
+          if selected.unit.id() == unit {
             self.logs = logs;
           }
         }
       },
       Action::AppendLogLine { unit, line } => {
         if let Some(selected) = self.filtered_units.selected() {
-          if selected.id() == unit {
+          if selected.unit.id() == unit {
             self.logs.push(line);
           }
         }
@@ -878,10 +901,39 @@ impl Component for Home {
       .filtered_units
       .items
       .iter()
-      .map(|i| {
-        let color = unit_color(i);
-        let line = colored_line(i.short_name(), color);
-        ListItem::new(line)
+      .map(|m| {
+        let color = unit_color(&m.unit);
+        let name = m.unit.short_name();
+
+        if m.match_indices.is_empty() {
+          ListItem::new(colored_line(name, color))
+        } else {
+          // Build spans with highlighted matched characters
+          let mut spans = Vec::new();
+          let mut last_end = 0;
+
+          for &idx in &m.match_indices {
+            if idx > last_end && idx <= name.len() {
+              // Non-matched portion
+              spans.push(Span::styled(&name[last_end..idx], Style::default().fg(color)));
+            }
+            // Matched character - bold + underlined
+            if idx < name.len() {
+              let char_end = name[idx..].chars().next().map(|c| idx + c.len_utf8()).unwrap_or(idx + 1);
+              spans.push(Span::styled(
+                &name[idx..char_end],
+                Style::default().fg(color).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+              ));
+              last_end = char_end;
+            }
+          }
+
+          if last_end < name.len() {
+            spans.push(Span::styled(&name[last_end..], Style::default().fg(color)));
+          }
+
+          ListItem::new(Line::from(spans))
+        }
       })
       .collect();
 
@@ -927,38 +979,38 @@ impl Component for Home {
       Line::from("Unit file: "),
     ];
 
-    let details_text = if let Some(i) = selected_item {
+    let details_text = if let Some(m) = selected_item {
       fn line_color_string<'a>(value: String, color: Color) -> Line<'a> {
         Line::from(vec![Span::styled(value, Style::default().fg(color))])
       }
 
-      let load_color = match i.load_state.as_str() {
+      let load_color = match m.unit.load_state.as_str() {
         "loaded" => Color::Green,
         "not-found" => Color::Yellow,
         "error" => Color::Red,
         _ => Color::Reset,
       };
 
-      let active_color = match i.activation_state.as_str() {
+      let active_color = match m.unit.activation_state.as_str() {
         "active" => Color::Green,
         "inactive" => Color::Reset,
         "failed" => Color::Red,
         _ => Color::Reset,
       };
 
-      let active_state_value = format!("{} ({})", i.activation_state, i.sub_state);
+      let active_state_value = format!("{} ({})", m.unit.activation_state, m.unit.sub_state);
 
-      let scope = match i.scope {
+      let scope = match m.unit.scope {
         UnitScope::Global => "Global",
         UnitScope::User => "User",
       };
 
       let lines = vec![
-        colored_line(&i.description, Color::Reset),
+        colored_line(&m.unit.description, Color::Reset),
         colored_line(scope, Color::Reset),
-        colored_line(&i.load_state, load_color),
+        colored_line(&m.unit.load_state, load_color),
         line_color_string(active_state_value, active_color),
-        match &i.file_path {
+        match &m.unit.file_path {
           Some(Ok(file_path)) => Line::from(file_path.as_str()),
           Some(Err(e)) => colored_line(e, Color::Red),
           None => Line::from(""),
@@ -1124,7 +1176,7 @@ impl Component for Home {
     f.render_widget(help_line, help_rect);
     f.render_widget(Line::from(version), version_rect);
 
-    let title = format!("Actions for {}", selected_item.name);
+    let title = format!("Actions for {}", selected_item.unit.name);
     let mut min_width = title.len() as u16 + 2; // title plus corners
     min_width = min_width.max(24); // hack: the width of the longest action name + 2
 
@@ -1132,7 +1184,7 @@ impl Component for Home {
 
     if self.mode == Mode::ActionMenu || self.mode == Mode::SignalMenu {
       let title_prefix = if self.mode == Mode::ActionMenu { "Actions" } else { "Signals" };
-      let title = format!("{} for {}", title_prefix, selected_item.name);
+      let title = format!("{} for {}", title_prefix, selected_item.unit.name);
       let height = self.menu_items.items.len() as u16 + 2;
       let popup = centered_rect_abs(popup_width, height, f.area());
 
