@@ -52,6 +52,14 @@ pacman -S systemctl-tui
 nix-shell -p systemctl-tui
 ```
 
+#### Debian/Ubuntu
+
+Download the latest `.deb` package from [GitHub Releases](https://github.com/rgwood/systemctl-tui/releases) and install:
+
+```sh
+sudo dpkg -i systemctl-tui_*_amd64.deb
+```
+
 #### Optional:
 
 1. Alias `systemctl-tui` to `st` for quick access

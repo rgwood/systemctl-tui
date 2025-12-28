@@ -69,3 +69,14 @@ panic = 'abort' # Abort on panic
 [[bin]]
 name = "systemctl-tui"
 path = "src/main.rs"
+
+[package.metadata.deb]
+maintainer = "Reilly Wood"
+copyright = "2025, Reilly Wood"
+license-file = ["LICENSE", "0"]
+extended-description = "A terminal UI for interacting with systemd services and journals"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/systemctl-tui", "usr/bin/", "755"],
+]
