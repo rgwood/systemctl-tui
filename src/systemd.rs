@@ -3,7 +3,7 @@
 use core::str;
 use std::process::Command;
 
-use anyhow::{bail, Context, Ok, Result};
+use anyhow::{bail, Context, Result};
 use libc::sigset_t;
 use log::error;
 use tokio_util::sync::CancellationToken;
@@ -301,7 +301,7 @@ pub async fn kill_service(service: UnitId, signal: String, cancel_token: Cancell
     let output = Command::new("systemctl").args(&args).output()?;
 
     if output.status.success() {
-      info!("Successfully sent signal {} to srvice {}", signal, service);
+      info!("Successfully sent signal {} to srvice {}", signal, service.name);
       Ok(())
     } else {
       let stderr = String::from_utf8(output.stderr)?;
