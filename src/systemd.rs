@@ -4,7 +4,6 @@ use core::str;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
-use libc::sigset_t;
 use log::error;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
