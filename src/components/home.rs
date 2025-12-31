@@ -37,6 +37,7 @@ pub enum Mode {
   ActionMenu,
   Processing,
   Error,
+  SignalMenu,
 }
 
 #[derive(Default)]
@@ -344,6 +345,12 @@ impl Home {
       }
     });
   }
+
+  fn kill_service(&mut self, service: UnitId, signal: String) {
+    let cancel_token = CancellationToken::new();
+    let future = systemd::kill_service(service.clone(), signal.clone(), cancel_token.clone());
+    self.service_action(service, format!("Kill with {}", signal), cancel_token, future);
+  }
 }
 
 impl Component for Home {
@@ -580,6 +587,31 @@ impl Component for Home {
         KeyCode::Esc => vec![Action::CancelTask],
         _ => vec![],
       },
+      Mode::SignalMenu => match key.code {
+        KeyCode::Esc => vec![Action::EnterMode(Mode::ServiceList)],
+        KeyCode::Down | KeyCode::Char('j') => {
+          self.menu_items.next();
+          vec![Action::Render]
+        },
+        KeyCode::Up | KeyCode::Char('k') => {
+          self.menu_items.previous();
+          vec![Action::Render]
+        },
+        KeyCode::Enter | KeyCode::Char(' ') => match self.menu_items.selected() {
+          Some(i) => vec![i.action.clone()],
+          None => vec![Action::EnterMode(Mode::ServiceList)],
+        },
+        _ => {
+          for item in self.menu_items.items.iter() {
+            if let Some(key_code) = item.key {
+              if key_code == key.code {
+                return vec![item.action.clone()];
+              }
+            }
+          }
+          vec![]
+        },
+      },
     }
   }
 
@@ -597,6 +629,7 @@ impl Component for Home {
               MenuItem::new("Stop", Action::StopService(selected.id()), Some(KeyCode::Char('t'))),
               MenuItem::new("Restart", Action::RestartService(selected.id()), Some(KeyCode::Char('r'))),
               MenuItem::new("Reload", Action::ReloadService(selected.id()), Some(KeyCode::Char('l'))),
+              MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('k'))),
               // TODO add these
               // MenuItem::new("Enable", Action::EnableService(selected.clone())),
               // MenuItem::new("Disable", Action::DisableService(selected.clone())),
@@ -610,6 +643,30 @@ impl Component for Home {
                 Some(KeyCode::Char('e')),
               ));
             }
+
+            self.menu_items = StatefulList::with_items(menu_items);
+            self.menu_items.state.select(Some(0));
+          } else {
+            return None;
+          }
+        } else if mode == Mode::SignalMenu {
+          if let Some(selected) = self.filtered_units.selected() {
+            let signals = vec![
+              ("SIGTERM", KeyCode::Char('t')),
+              ("SIGHUP", KeyCode::Char('h')),
+              ("SIGINT", KeyCode::Char('i')),
+              ("SIGQUIT", KeyCode::Char('q')),
+              ("SIGKILL", KeyCode::Char('k')),
+              ("SIGUSR1", KeyCode::Char('1')),
+              ("SIGUSR2", KeyCode::Char('2')),
+            ];
+
+            let menu_items: Vec<MenuItem> = signals
+              .into_iter()
+              .map(|(name, key_code)| {
+                MenuItem::new(name, Action::KillService(selected.id(), name.to_string()), Some(key_code))
+              })
+              .collect();
 
             self.menu_items = StatefulList::with_items(menu_items);
             self.menu_items.state.select(Some(0));
@@ -705,6 +762,7 @@ impl Component for Home {
         self.update_units(units);
         return Some(Action::Render);
       },
+      Action::KillService(service_name, signal) => self.kill_service(service_name, signal),
       Action::SpinnerTick => {
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
         return Some(Action::Render);
@@ -1008,6 +1066,7 @@ impl Component for Home {
       Mode::ActionMenu => Line::from(span("Execute action: <enter> | Close menu: <esc>", Color::Blue)),
       Mode::Processing => Line::from(span("Cancel task: <esc>", Color::Blue)),
       Mode::Error => Line::from(span("Close menu: <esc>", Color::Blue)),
+      Mode::SignalMenu => Line::from(span("Send signal: <enter> | Close menu: <esc>", Color::Blue)),
     };
 
     f.render_widget(help_line, help_rect);
@@ -1019,7 +1078,9 @@ impl Component for Home {
 
     let popup_width = min_width.min(f.area().width);
 
-    if self.mode == Mode::ActionMenu {
+    if self.mode == Mode::ActionMenu || self.mode == Mode::SignalMenu {
+      let title_prefix = if self.mode == Mode::ActionMenu { "Actions" } else { "Signals" };
+      let title = format!("{} for {}", title_prefix, selected_item.name);
       let height = self.menu_items.items.len() as u16 + 2;
       let popup = centered_rect_abs(popup_width, height, f.area());
 
