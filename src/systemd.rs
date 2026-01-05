@@ -533,7 +533,3 @@ mod tests {
     assert_eq!(encode_as_dbus_object_path("test-with-hyphen.service"), "test_2dwith_2dhyphen_2eservice");
   }
 }
-
-// pub(crate) fn kill_service(clone_1: UnitId, clone_2: String, clone_3: CancellationToken) -> _ {
-//   todo!()
-// }
