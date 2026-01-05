@@ -1,3 +1,4 @@
+use chrono::DateTime;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use futures::Future;
 use indexmap::IndexMap;
@@ -935,16 +936,24 @@ impl Component for Home {
       .iter()
       .rev()
       .map(|l| {
-        if let Some((date, rest)) = l.splitn(2, ' ').collect_tuple() {
-          // This is not a good way to identify dates; the length can vary by system.
-          // TODO: find a better way to identify dates
-          if date.len() != 25 {
-            return Line::from(l.as_str());
+        let parts: Vec<&str> = l.splitn(2, ' ').collect();
+
+        if parts.len() == 2 {
+          let maybe_date = parts[0];
+          let rest = parts[1];
+
+          if let Ok(datetime) = DateTime::parse_from_str(maybe_date, "%Y-%m-%dT%H:%M:%S%z") {
+            let formatted_date = datetime.format("%Y-%m-%d %H:%M").to_string();
+
+            return Line::from(vec![
+              Span::styled(formatted_date, Style::default().fg(Color::DarkGray)),
+              Span::raw(" "),
+              Span::raw(rest),
+            ]);
           }
-          Line::from(vec![Span::styled(date, Style::default().fg(Color::DarkGray)), Span::raw(" "), Span::raw(rest)])
-        } else {
-          Line::from(l.as_str())
         }
+
+        Line::from(l.as_str())
       })
       .collect_vec();
 
