@@ -289,6 +289,35 @@ pub async fn sleep_test(_service: String, cancel_token: CancellationToken) -> Re
   }
 }
 
+pub async fn kill_service(service: UnitId, signal: String, cancel_token: CancellationToken) -> Result<()> {
+  async fn kill(service: UnitId, signal: String) -> Result<()> {
+    let mut args = vec!["kill", "--signal", &signal];
+    if service.scope == UnitScope::User {
+      args.push("--user");
+    }
+    args.push(&service.name);
+
+    let output = Command::new("systemctl").args(&args).output()?;
+
+    if output.status.success() {
+      info!("Successfully sent signal {} to srvice {}", signal, service.name);
+      Ok(())
+    } else {
+      let stderr = String::from_utf8(output.stderr)?;
+      bail!("Failed to send signal {} to service {}: {}", signal, service.name, stderr);
+    }
+  }
+
+  tokio::select! {
+      _ = cancel_token.cancelled() => {
+          bail!("cancelled");
+      }
+      result = kill(service, signal) => {
+          result
+      }
+  }
+}
+
 /// Proxy object for `org.freedesktop.systemd1.Manager`.
 /// Partially taken from https://github.com/lucab/zbus_systemd/blob/main/src/systemd1/generated.rs
 #[proxy(

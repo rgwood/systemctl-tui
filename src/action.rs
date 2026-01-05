@@ -29,6 +29,7 @@ pub enum Action {
   ReloadService(UnitId),
   EnableService(UnitId),
   DisableService(UnitId),
+  KillService(UnitId, String),
   ScrollUp(u16),
   ScrollDown(u16),
   ScrollToTop,
