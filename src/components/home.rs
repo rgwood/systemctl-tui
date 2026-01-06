@@ -936,12 +936,7 @@ impl Component for Home {
       .iter()
       .rev()
       .map(|l| {
-        let parts: Vec<&str> = l.splitn(2, ' ').collect();
-
-        if parts.len() == 2 {
-          let maybe_date = parts[0];
-          let rest = parts[1];
-
+        if let Some((maybe_date, rest)) = l.split_once(' ') {
           if let Ok(datetime) = DateTime::parse_from_str(maybe_date, "%Y-%m-%dT%H:%M:%S%z") {
             let formatted_date = datetime.format("%Y-%m-%d %H:%M").to_string();
 
