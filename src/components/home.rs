@@ -936,8 +936,8 @@ impl Component for Home {
       .iter()
       .rev()
       .map(|l| {
-        if let Some((maybe_date, rest)) = l.split_once(' ') {
-          if let Ok(datetime) = DateTime::parse_from_str(maybe_date, "%Y-%m-%dT%H:%M:%S%z") {
+        if let Some((timestamp, rest)) = l.split_once(' ') {
+          if let Ok(datetime) = DateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S%z") {
             let formatted_date = datetime.format("%Y-%m-%d %H:%M").to_string();
 
             return Line::from(vec![
