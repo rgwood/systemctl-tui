@@ -1,4 +1,5 @@
 use chrono::DateTime;
+use chrono::FixedOffset;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use futures::Future;
 use indexmap::IndexMap;
@@ -937,7 +938,7 @@ impl Component for Home {
       .rev()
       .map(|l| {
         if let Some((timestamp, rest)) = l.split_once(' ') {
-          if let Ok(datetime) = DateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S%z") {
+          if let Ok(datetime) = DateTime::<FixedOffset>::parse_from_rfc3339(timestamp) {
             let formatted_date = datetime.format("%Y-%m-%d %H:%M").to_string();
 
             return Line::from(vec![
