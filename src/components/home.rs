@@ -1,5 +1,4 @@
 use chrono::DateTime;
-use chrono::FixedOffset;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use futures::Future;
 use indexmap::IndexMap;
@@ -938,8 +937,7 @@ impl Component for Home {
       .rev()
       .map(|l| {
         if let Some((timestamp, rest)) = l.split_once(' ') {
-          if let Ok(datetime) = DateTime::<FixedOffset>::parse_from_rfc3339(timestamp) {
-            let formatted_date = datetime.format("%Y-%m-%d %H:%M").to_string();
+          if let Some(formatted_date) = parse_journalctl_timestamp(timestamp) {
 
             return Line::from(vec![
               Span::styled(formatted_date, Style::default().fg(Color::DarkGray)),
@@ -1168,4 +1166,37 @@ fn centered_rect_abs(width: u16, height: u16, r: Rect) -> Rect {
   let height = height.min(r.height);
 
   Rect::new(offset_x, offset_y, width, height)
+}
+
+/// Parse a journalctl timestamp and return a formatted date string.
+///
+/// systemd v255 changed the timestamp format from `-0700` to `-07:00` (RFC 3339).
+/// See: https://github.com/systemd/systemd/pull/29134
+fn parse_journalctl_timestamp(timestamp: &str) -> Option<String> {
+  // %z accepts both "-0700" (systemd <v255) and "-07:00" (systemd >=v255)
+  DateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S%z")
+    .ok()
+    .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_parse_timestamp_systemd_v255_and_later() {
+    // systemd >=v255 uses RFC 3339 format with colon in timezone offset
+    // https://github.com/systemd/systemd/pull/29134
+    let timestamp = "2025-04-26T06:04:45-07:00";
+    let result = parse_journalctl_timestamp(timestamp);
+    assert_eq!(result, Some("2025-04-26 06:04".to_string()));
+  }
+
+  #[test]
+  fn test_parse_timestamp_systemd_before_v255() {
+    // systemd <v255 uses ISO 8601 format without colon in timezone offset
+    let timestamp = "2025-10-06T11:07:44-0700";
+    let result = parse_journalctl_timestamp(timestamp);
+    assert_eq!(result, Some("2025-10-06 11:07".to_string()));
+  }
 }
