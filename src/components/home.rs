@@ -938,7 +938,6 @@ impl Component for Home {
       .map(|l| {
         if let Some((timestamp, rest)) = l.split_once(' ') {
           if let Some(formatted_date) = parse_journalctl_timestamp(timestamp) {
-
             return Line::from(vec![
               Span::styled(formatted_date, Style::default().fg(Color::DarkGray)),
               Span::raw(" "),
@@ -1174,9 +1173,7 @@ fn centered_rect_abs(width: u16, height: u16, r: Rect) -> Rect {
 /// See: https://github.com/systemd/systemd/pull/29134
 fn parse_journalctl_timestamp(timestamp: &str) -> Option<String> {
   // %z accepts both "-0700" (systemd <v255) and "-07:00" (systemd >=v255)
-  DateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S%z")
-    .ok()
-    .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+  DateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S%z").ok().map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
 }
 
 #[cfg(test)]
