@@ -20,12 +20,12 @@ struct Args {
   trace: bool,
   /// Disable file logging (logs are enabled by default)
   #[arg(
-    long, 
-      env = "SYSTEMCTL_TUI_NO_LOG", 
-      default_value_t = false, 
+    long,
+      env = "SYSTEMCTL_TUI_NO_LOG",
+      default_value_t = false,
       action = clap::ArgAction::SetTrue
     )]
-    no_log: bool,
+  no_log: bool,
   /// Limit view to only these unit files
   #[clap(short, long, default_value="*.service", num_args=1..)]
   limit_units: Vec<String>,
