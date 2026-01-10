@@ -56,25 +56,39 @@ pub fn get_config_dir() -> Result<PathBuf> {
   Ok(directory)
 }
 
-pub fn initialize_logging(enable_tracing: bool) -> Result<WorkerGuard> {
-  let directory = get_data_dir()?;
-  std::fs::create_dir_all(directory.clone()).context(format!("{directory:?} could not be created"))?;
-  // let log_path = directory.join("systemctl-tui.log");
+pub fn initialize_logging(enable_logging: bool, enable_tracing: bool) -> Result<Option<WorkerGuard>> {
+  let mut guard = None;
 
-  // create a file appender that rolls daily
-  let file_appender = RollingFileAppender::new(Rotation::DAILY, &directory, "systemctl-tui.log");
+  let file_layer = if enable_logging {
+    let directory = get_data_dir()?;
+    std::fs::create_dir_all(directory.clone()).context(format!("{directory:?} could not be created"))?;
+    // let log_path = directory.join("systemctl-tui.log");
 
-  // create a non-blocking writer
-  let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+    // create a file appender that rolls daily
+    let file_appender = RollingFileAppender::new(Rotation::DAILY, &directory, "systemctl-tui.log");
 
-  // create a layer for the file logger
-  let file_layer = tracing_subscriber::fmt::layer()
-    .with_writer(non_blocking)
-    .with_file(true)
-    .with_line_number(true)
-    .with_target(false)
-    .with_ansi(false)
-    .with_filter(EnvFilter::builder().with_default_directive(LevelFilter::INFO.into()).from_env_lossy());
+    // create a non-blocking writer
+    let (non_blocking, g) = tracing_appender::non_blocking(file_appender);
+
+    // We must return this guard to main.rs and keep it alive
+    guard = Some(g);
+
+    // Log initialization info only if we are actually logging
+    tracing::info!(directory = %directory.display(), "Logging initialized");
+
+    // create a layer for the file logger
+    Some(
+      tracing_subscriber::fmt::layer()
+        .with_writer(non_blocking)
+        .with_file(true)
+        .with_line_number(true)
+        .with_target(false)
+        .with_ansi(false)
+        .with_filter(EnvFilter::builder().with_default_directive(LevelFilter::INFO.into()).from_env_lossy()),
+    )
+  } else {
+    None
+  };
 
   tui_logger::init_logger(tui_logger::LevelFilter::Debug)?;
 
@@ -83,14 +97,11 @@ pub fn initialize_logging(enable_tracing: bool) -> Result<WorkerGuard> {
 
   tracing_subscriber::registry().with(file_layer).with(tui_layer).init();
 
-  if enable_tracing {
+  if enable_tracing && enable_logging {
     TRACING_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
     let mut trace_file = std::fs::File::create(&*TRACE_FILE_NAME).unwrap();
     trace_file.write_all(b"[\n").unwrap(); // start of chrome://tracing file
   }
-
-  let directory = directory.to_string_lossy().into_owned();
-  tracing::info!(directory, "Logging initialized");
 
   Ok(guard)
 }
