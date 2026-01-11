@@ -41,10 +41,50 @@ pub enum Mode {
   SignalMenu,
 }
 
+#[derive(Clone, Copy)]
+pub struct Theme {
+  pub primary: Color,   // Cyan (dark) / Blue (light) - used in help popup
+  pub accent: Color,    // LightGreen (dark) / Green (light) - borders
+  pub kbd: Color,       // Gray (dark, appears white-ish) / Blue (light) - keyboard shortcuts
+  pub muted: Color,     // Gray (dark) / DarkGray (light)
+  pub muted_alt: Color, // DarkGray (dark) / Reset (light)
+}
+
+impl Default for Theme {
+  fn default() -> Self {
+    Self::detect()
+  }
+}
+
+impl Theme {
+  pub fn detect() -> Self {
+    let is_light = terminal_light::luma().is_ok_and(|luma| luma > 0.5);
+
+    if is_light {
+      Self {
+        primary: Color::Blue,
+        accent: Color::Green,
+        kbd: Color::Blue,
+        muted: Color::DarkGray,
+        muted_alt: Color::Reset,
+      }
+    } else {
+      Self {
+        primary: Color::Cyan,
+        accent: Color::LightGreen,
+        kbd: Color::Gray, // appears white-ish when bold on dark terminals
+        muted: Color::Gray,
+        muted_alt: Color::DarkGray,
+      }
+    }
+  }
+}
+
 #[derive(Default)]
 pub struct Home {
   pub scope: Scope,
   pub limit_units: Vec<String>,
+  pub theme: Theme,
   pub logger: Logger,
   pub show_logger: bool,
   pub all_units: IndexMap<UnitId, UnitWithStatus>,
@@ -781,9 +821,8 @@ impl Component for Home {
   }
 
   fn render(&mut self, f: &mut Frame<'_>, rect: Rect) {
-    fn primary(s: &str) -> Span<'_> {
-      Span::styled(s, Style::default().fg(Color::Cyan))
-    }
+    // Theme colors for adaptive light/dark support
+    let theme = self.theme;
 
     fn span(s: &str, color: Color) -> Span<'_> {
       Span::styled(s, Style::default().fg(color))
@@ -845,7 +884,7 @@ impl Component for Home {
           .borders(Borders::ALL)
           .border_type(BorderType::Rounded)
           .border_style(if self.mode == Mode::ServiceList {
-            Style::default().fg(Color::LightGreen)
+            Style::default().fg(theme.accent)
           } else {
             Style::default()
           })
@@ -894,7 +933,7 @@ impl Component for Home {
 
       let active_color = match i.activation_state.as_str() {
         "active" => Color::Green,
-        "inactive" => Color::Gray,
+        "inactive" => Color::Reset,
         "failed" => Color::Red,
         _ => Color::Reset,
       };
@@ -939,7 +978,7 @@ impl Component for Home {
         if let Some((timestamp, rest)) = l.split_once(' ') {
           if let Some(formatted_date) = parse_journalctl_timestamp(timestamp) {
             return Line::from(vec![
-              Span::styled(formatted_date, Style::default().fg(Color::DarkGray)),
+              Span::styled(formatted_date, Style::default().add_modifier(Modifier::DIM)),
               Span::raw(" "),
               Span::raw(rest),
             ]);
@@ -961,17 +1000,17 @@ impl Component for Home {
     let scroll = self.input.visual_scroll(width as usize);
     let input = Paragraph::new(self.input.value())
       .style(match self.mode {
-        Mode::Search => Style::default().fg(Color::LightGreen),
+        Mode::Search => Style::default().fg(theme.accent),
         _ => Style::default(),
       })
       .scroll((0, scroll as u16))
       .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(Line::from(vec![
         Span::raw("─Search "),
-        Span::styled("(", Style::default().fg(Color::DarkGray)),
-        Span::styled("ctrl+f", Style::default().add_modifier(Modifier::BOLD).fg(Color::Gray)),
-        Span::styled(" or ", Style::default().fg(Color::DarkGray)),
-        Span::styled("/", Style::default().add_modifier(Modifier::BOLD).fg(Color::Gray)),
-        Span::styled(")", Style::default().fg(Color::DarkGray)),
+        Span::styled("(", Style::default().fg(theme.muted_alt)),
+        Span::styled("ctrl+f", Style::default().add_modifier(Modifier::BOLD).fg(theme.kbd)),
+        Span::styled(" or ", Style::default().fg(theme.muted_alt)),
+        Span::styled("/", Style::default().add_modifier(Modifier::BOLD).fg(theme.kbd)),
+        Span::styled(")", Style::default().fg(theme.muted_alt)),
       ])));
     f.render_widget(input, search_panel);
     // clear top right of search panel so we can put help instructions there
@@ -980,12 +1019,12 @@ impl Component for Home {
     f.render_widget(Clear, help_area);
     let help_text = Paragraph::new(Line::from(vec![
       Span::raw(" Press "),
-      Span::styled("?", Style::default().add_modifier(Modifier::BOLD).fg(Color::Gray)),
+      Span::styled("?", Style::default().add_modifier(Modifier::BOLD).fg(theme.kbd)),
       Span::raw(" or "),
-      Span::styled("F1", Style::default().add_modifier(Modifier::BOLD).fg(Color::Gray)),
+      Span::styled("F1", Style::default().add_modifier(Modifier::BOLD).fg(theme.kbd)),
       Span::raw(" for help "),
     ]))
-    .style(Style::default().fg(Color::DarkGray));
+    .style(Style::default().fg(theme.muted_alt));
     f.render_widget(help_text, help_area);
 
     if self.mode == Mode::Search {
@@ -998,6 +1037,7 @@ impl Component for Home {
     if self.mode == Mode::Help {
       let popup = centered_rect_abs(50, 18, f.area());
 
+      let primary = |s| Span::styled(s, Style::default().fg(theme.primary));
       let help_lines = vec![
         Line::from(""),
         Line::from(Span::styled("Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
@@ -1062,13 +1102,13 @@ impl Component for Home {
     let version_rect = help_line_rects[1];
 
     let help_line = match self.mode {
-      Mode::Search => Line::from(span("Show actions: <enter>", Color::Blue)),
-      Mode::ServiceList => Line::from(span("Show actions: <enter> | Open unit file: e | Quit: q", Color::Blue)),
-      Mode::Help => Line::from(span("Close menu: <esc>", Color::Blue)),
-      Mode::ActionMenu => Line::from(span("Execute action: <enter> | Close menu: <esc>", Color::Blue)),
-      Mode::Processing => Line::from(span("Cancel task: <esc>", Color::Blue)),
-      Mode::Error => Line::from(span("Close menu: <esc>", Color::Blue)),
-      Mode::SignalMenu => Line::from(span("Send signal: <enter> | Close menu: <esc>", Color::Blue)),
+      Mode::Search => Line::from(span("Show actions: <enter>", theme.primary)),
+      Mode::ServiceList => Line::from(span("Show actions: <enter> | Open unit file: e | Quit: q", theme.primary)),
+      Mode::Help => Line::from(span("Close menu: <esc>", theme.primary)),
+      Mode::ActionMenu => Line::from(span("Execute action: <enter> | Close menu: <esc>", theme.primary)),
+      Mode::Processing => Line::from(span("Cancel task: <esc>", theme.primary)),
+      Mode::Error => Line::from(span("Close menu: <esc>", theme.primary)),
+      Mode::SignalMenu => Line::from(span("Send signal: <enter> | Close menu: <esc>", theme.primary)),
     };
 
     f.render_widget(help_line, help_rect);
@@ -1091,7 +1131,7 @@ impl Component for Home {
         .items
         .iter()
         .map(|i| {
-          let key_string = Span::styled(format!(" {:1} ", i.key_string()), Style::default().fg(Color::Blue));
+          let key_string = Span::styled(format!(" {:1} ", i.key_string()), Style::default().fg(theme.primary));
           let line = Line::from(vec![key_string, Span::raw(&i.name)]);
           ListItem::new(line)
         })
@@ -1101,7 +1141,7 @@ impl Component for Home {
           Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Color::LightGreen))
+            .border_style(Style::default().fg(theme.accent))
             .title(title),
         )
         .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
@@ -1124,7 +1164,7 @@ impl Component for Home {
             .title("Processing")
             .border_type(BorderType::Rounded)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::LightGreen)),
+            .border_style(Style::default().fg(theme.accent)),
         )
         .style(Style::default())
         .wrap(Wrap { trim: true });
