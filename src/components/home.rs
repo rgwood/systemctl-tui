@@ -219,6 +219,10 @@ impl Home {
     self.refresh_filtered_units();
   }
 
+  pub fn sort_units(&mut self) {
+    self.all_units.sort_by(|_, a, _, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+  }
+
   // Update units in-place, then filter the list
   // This is inefficient but it's fast enough
   // (on gen 13 i7: ~100 microseconds to update, ~100 microseconds to filter)
@@ -285,7 +289,7 @@ impl Home {
     }
   }
 
-  fn refresh_filtered_units(&mut self) {
+  pub fn refresh_filtered_units(&mut self) {
     let previously_selected = self.selected_service();
     let search_value = self.input.value();
 
@@ -356,6 +360,18 @@ impl Home {
     let cancel_token = CancellationToken::new();
     let future = systemd::restart_service(service.clone(), cancel_token.clone());
     self.service_action(service, "Restart".into(), cancel_token, future);
+  }
+
+  fn enable_service(&mut self, service: UnitId) {
+    let cancel_token = CancellationToken::new();
+    let future = systemd::enable_service(service.clone(), cancel_token.clone());
+    self.service_action(service, "Enable".into(), cancel_token, future);
+  }
+
+  fn disable_service(&mut self, service: UnitId) {
+    let cancel_token = CancellationToken::new();
+    let future = systemd::disable_service(service.clone(), cancel_token.clone());
+    self.service_action(service, "Disable".into(), cancel_token, future);
   }
 
   fn service_action<Fut>(&mut self, service: UnitId, action_name: String, cancel_token: CancellationToken, action: Fut)
@@ -696,15 +712,14 @@ impl Component for Home {
               MenuItem::new("Stop", Action::StopService(selected.unit.id()), Some(KeyCode::Char('t'))),
               MenuItem::new("Restart", Action::RestartService(selected.unit.id()), Some(KeyCode::Char('r'))),
               MenuItem::new("Reload", Action::ReloadService(selected.unit.id()), Some(KeyCode::Char('l'))),
+              MenuItem::new("Enable", Action::EnableService(selected.unit.id()), Some(KeyCode::Char('n'))),
+              MenuItem::new("Disable", Action::DisableService(selected.unit.id()), Some(KeyCode::Char('d'))),
               MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('k'))),
               MenuItem::new(
                 "Open logs in pager",
                 Action::OpenLogsInPager { logs: self.logs.clone() },
                 Some(KeyCode::Char('o')),
               ),
-              // TODO add these
-              // MenuItem::new("Enable", Action::EnableService(selected.clone())),
-              // MenuItem::new("Disable", Action::DisableService(selected.clone())),
             ];
 
             if let Some(Ok(file_path)) = &selected.unit.file_path {
@@ -819,6 +834,8 @@ impl Component for Home {
       Action::StopService(service_name) => self.stop_service(service_name),
       Action::ReloadService(service_name) => self.reload_service(service_name),
       Action::RestartService(service_name) => self.restart_service(service_name),
+      Action::EnableService(service_name) => self.enable_service(service_name),
+      Action::DisableService(service_name) => self.disable_service(service_name),
       Action::RefreshServices => {
         let tx = self.action_tx.clone().unwrap();
         let scope = self.scope;
@@ -961,7 +978,7 @@ impl Component for Home {
     let selected_item = self.filtered_units.selected();
 
     let right_panel =
-      Layout::new(Direction::Vertical, [Constraint::Min(7), Constraint::Percentage(100)]).split(right_panel);
+      Layout::new(Direction::Vertical, [Constraint::Min(8), Constraint::Percentage(100)]).split(right_panel);
     let details_panel = right_panel[0];
     let logs_panel = right_panel[1];
 
@@ -973,6 +990,7 @@ impl Component for Home {
 
     let props_lines = vec![
       Line::from("Description: "),
+      Line::from("Enablement: "),
       Line::from("Scope: "),
       Line::from("Loaded: "),
       Line::from("Active: "),
@@ -1005,8 +1023,17 @@ impl Component for Home {
         UnitScope::User => "User",
       };
 
+      let enablement_state = m.unit.enablement_state.as_deref().unwrap_or("");
+      let enablement_color = match enablement_state {
+        "enabled" => Color::Green,
+        "disabled" => Color::Yellow,
+        "masked" => Color::Red,
+        _ => Color::Reset,
+      };
+
       let lines = vec![
         colored_line(&m.unit.description, Color::Reset),
+        colored_line(enablement_state, enablement_color),
         colored_line(scope, Color::Reset),
         colored_line(&m.unit.load_state, load_color),
         line_color_string(active_state_value, active_color),
