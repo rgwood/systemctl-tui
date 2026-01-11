@@ -1,9 +1,8 @@
-use std::{io::Write, path::PathBuf, sync::atomic::AtomicBool};
+use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
 use better_panic::Settings;
 use directories::ProjectDirs;
-use lazy_static::lazy_static;
 use tracing::{error, level_filters::LevelFilter};
 use tracing_appender::{
   non_blocking::WorkerGuard,
@@ -12,16 +11,6 @@ use tracing_appender::{
 use tracing_subscriber::{
   self, filter::EnvFilter, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt, Layer,
 };
-
-lazy_static! {
-  static ref TRACE_FILE_NAME: PathBuf = {
-    let directory = get_data_dir().expect("Unable to get data directory");
-    let timestamp_iso8601 = chrono::Local::now().format("%Y-%m-%d-%H-%M-%S");
-    directory.join(format!("systemctl-tui-trace-{timestamp_iso8601}.log"))
-  };
-}
-
-static TRACING_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn initialize_panic_handler() {
   std::panic::set_hook(Box::new(|panic_info| {
@@ -56,13 +45,12 @@ pub fn get_config_dir() -> Result<PathBuf> {
   Ok(directory)
 }
 
-pub fn initialize_logging(enable_logging: bool, enable_tracing: bool) -> Result<Option<WorkerGuard>> {
+pub fn initialize_logging(enable_file_logging: bool) -> Result<Option<WorkerGuard>> {
   let mut guard = None;
 
-  let file_layer = if enable_logging {
+  let file_layer = if enable_file_logging {
     let directory = get_data_dir()?;
     std::fs::create_dir_all(directory.clone()).context(format!("{directory:?} could not be created"))?;
-    // let log_path = directory.join("systemctl-tui.log");
 
     // create a file appender that rolls daily
     let file_appender = RollingFileAppender::new(Rotation::DAILY, &directory, "systemctl-tui.log");
@@ -97,41 +85,7 @@ pub fn initialize_logging(enable_logging: bool, enable_tracing: bool) -> Result<
 
   tracing_subscriber::registry().with(file_layer).with(tui_layer).init();
 
-  if enable_tracing && enable_logging {
-    TRACING_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
-    let mut trace_file = std::fs::File::create(&*TRACE_FILE_NAME).unwrap();
-    trace_file.write_all(b"[\n").unwrap(); // start of chrome://tracing file
-  }
-
   Ok(guard)
-}
-
-// Write an event in chrome://tracing format
-// This is currently very basic+hacky, I'm mostly doing it to experiment with Perfetto
-// Reference: https://thume.ca/2023/12/02/tracing-methods/
-pub fn log_perf_event(event: &str, duration: std::time::Duration) {
-  if !TRACING_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
-    return;
-  }
-  let log_path = &*TRACE_FILE_NAME;
-  let system_time = std::time::SystemTime::now();
-
-  let event = format!(
-    r#"{{
-  "name": "{}",
-  "cat": "PERF",
-  "ph": "X",
-  "ts": {},
-  "dur": {}
-}}"#,
-    event,
-    system_time.duration_since(std::time::UNIX_EPOCH).unwrap().as_micros(),
-    duration.as_micros()
-  );
-
-  let mut file = std::fs::OpenOptions::new().append(true).create(true).open(log_path).unwrap();
-  file.write_all(event.as_bytes()).unwrap();
-  file.write_all(b",\n").unwrap();
 }
 
 /// Similar to the `std::dbg!` macro, but generates `tracing` events rather
