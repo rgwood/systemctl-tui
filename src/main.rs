@@ -15,9 +15,6 @@ struct Args {
   /// The scope of the services to display. Defaults to "all" normally and "global" on WSL
   #[clap(short, long)]
   scope: Option<Scope>,
-  /// Enable performance tracing (in Chromium Event JSON format)
-  #[clap(short, long)]
-  trace: bool,
   /// Disable file logging (logs are enabled by default)
   #[arg(
     long,
@@ -65,7 +62,7 @@ async fn main() -> Result<()> {
     },
   }
 
-  let _guard = initialize_logging(!args.no_log, args.trace)?;
+  let _guard = initialize_logging(!args.no_log)?;
   initialize_panic_handler();
 
   // There's probably a nicer way to do this than defining the scope enum twice, but this is fine for now
