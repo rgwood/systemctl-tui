@@ -52,6 +52,7 @@ lazy_static = "1.4.0"
 nix = { version = "0.30.1", features = ["user"] }
 is-wsl = "0.4.0"
 tracing-appender = "0.2.3"
+terminal-light = "1"
 
 # build with `cargo build --profile profiling`
 # to analyze performance with tooling like perf / samply / superluminal
