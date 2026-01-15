@@ -27,7 +27,7 @@ use std::{
 use super::{logger::Logger, Component, Frame};
 use crate::{
   action::Action,
-  systemd::{self, Scope, UnitFile, UnitId, UnitScope, UnitWithStatus},
+  systemd::{self, diagnose_missing_logs, parse_journalctl_error, Scope, UnitFile, UnitId, UnitScope, UnitWithStatus},
 };
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
@@ -539,7 +539,8 @@ impl Component for Home {
                 let mut logs = stdout.trim().split('\n').map(String::from).collect_vec();
 
                 if logs.is_empty() || logs[0].is_empty() {
-                  logs.push(String::from("No logs found/available. Maybe try relaunching with `sudo systemctl-tui`"));
+                  let diagnostic = diagnose_missing_logs(&unit);
+                  logs = vec![diagnostic.message()];
                 }
                 let _ = tx.send(Action::SetLogs { unit: unit.clone(), logs });
                 let _ = tx.send(Action::Render);
@@ -547,10 +548,19 @@ impl Component for Home {
                 warn!("Error parsing stdout for {}", unit.name);
               }
             } else {
-              warn!("Error getting logs for {}: {}", unit.name, String::from_utf8_lossy(&output.stderr));
+              let stderr = String::from_utf8_lossy(&output.stderr);
+              warn!("Error getting logs for {}: {}", unit.name, stderr);
+              let diagnostic = parse_journalctl_error(&stderr);
+              let _ = tx.send(Action::SetLogs { unit: unit.clone(), logs: vec![diagnostic.message()] });
+              let _ = tx.send(Action::Render);
             }
           },
-          Err(e) => warn!("Error getting logs for {}: {}", unit.name, e),
+          Err(e) => {
+            warn!("Error getting logs for {}: {}", unit.name, e);
+            let _ =
+              tx.send(Action::SetLogs { unit: unit.clone(), logs: vec![format!("Failed to run journalctl: {}", e)] });
+            let _ = tx.send(Action::Render);
+          },
         }
 
         // Then follow the logs
