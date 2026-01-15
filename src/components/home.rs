@@ -27,7 +27,7 @@ use std::{
 use super::{logger::Logger, Component, Frame};
 use crate::{
   action::Action,
-  systemd::{self, Scope, UnitId, UnitScope, UnitWithStatus},
+  systemd::{self, Scope, UnitFile, UnitId, UnitScope, UnitWithStatus},
 };
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
@@ -223,6 +223,36 @@ impl Home {
     self.all_units.sort_by(|_, a, _, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
   }
 
+  /// Merge unit file info (enablement state, file path) into existing units.
+  /// Also adds units that aren't returned by ListUnits (e.g. disabled, static, masked).
+  pub fn merge_unit_files(&mut self, unit_files: Vec<UnitFile>) {
+    for unit_file in unit_files {
+      let id = unit_file.id();
+      if let Some(unit) = self.all_units.get_mut(&id) {
+        // Update existing unit with enablement state and file path
+        unit.enablement_state = Some(unit_file.enablement_state);
+        unit.file_path = Some(Ok(unit_file.path));
+      } else if unit_file.enablement_state != "generated" && unit_file.enablement_state != "alias" {
+        // Add units not returned by ListUnits (disabled, static, masked, etc.)
+        // Skip generated units - they're created dynamically by systemd generators and aren't user-manageable
+        // Skip alias units - they're just symlinks to other units already in the list
+        let new_unit = UnitWithStatus {
+          name: unit_file.name,
+          scope: unit_file.scope,
+          description: String::new(),
+          file_path: Some(Ok(unit_file.path)),
+          load_state: "not-loaded".into(),
+          activation_state: "inactive".into(),
+          sub_state: "dead".into(),
+          enablement_state: Some(unit_file.enablement_state),
+        };
+        self.all_units.insert(id, new_unit);
+      }
+    }
+    self.sort_units();
+    self.refresh_filtered_units();
+  }
+
   // Update units in-place, then filter the list
   // This is inefficient but it's fast enough
   // (on gen 13 i7: ~100 microseconds to update, ~100 microseconds to filter)
@@ -341,41 +371,47 @@ impl Home {
   fn start_service(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
     let future = systemd::start_service(service.clone(), cancel_token.clone());
-    self.service_action(service, "Start".into(), cancel_token, future);
+    self.service_action(service, "Start".into(), cancel_token, future, false);
   }
 
   fn stop_service(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
     let future = systemd::stop_service(service.clone(), cancel_token.clone());
-    self.service_action(service, "Stop".into(), cancel_token, future);
+    self.service_action(service, "Stop".into(), cancel_token, future, false);
   }
 
   fn reload_service(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
     let future = systemd::reload(service.scope, cancel_token.clone());
-    self.service_action(service, "Reload".into(), cancel_token, future);
+    self.service_action(service, "Reload".into(), cancel_token, future, false);
   }
 
   fn restart_service(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
     let future = systemd::restart_service(service.clone(), cancel_token.clone());
-    self.service_action(service, "Restart".into(), cancel_token, future);
+    self.service_action(service, "Restart".into(), cancel_token, future, false);
   }
 
   fn enable_service(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
     let future = systemd::enable_service(service.clone(), cancel_token.clone());
-    self.service_action(service, "Enable".into(), cancel_token, future);
+    self.service_action(service, "Enable".into(), cancel_token, future, true);
   }
 
   fn disable_service(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
     let future = systemd::disable_service(service.clone(), cancel_token.clone());
-    self.service_action(service, "Disable".into(), cancel_token, future);
+    self.service_action(service, "Disable".into(), cancel_token, future, true);
   }
 
-  fn service_action<Fut>(&mut self, service: UnitId, action_name: String, cancel_token: CancellationToken, action: Fut)
-  where
+  fn service_action<Fut>(
+    &mut self,
+    service: UnitId,
+    action_name: String,
+    cancel_token: CancellationToken,
+    action: Fut,
+    refresh_unit_files: bool,
+  ) where
     Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
   {
     let tx = self.action_tx.clone().unwrap();
@@ -417,6 +453,9 @@ impl Home {
       }
       spinner_task.abort();
       tx.send(Action::RefreshServices).unwrap();
+      if refresh_unit_files {
+        tx.send(Action::RefreshUnitFiles).unwrap();
+      }
 
       // Refresh a bit more frequently after a service action
       for _ in 0..3 {
@@ -429,7 +468,7 @@ impl Home {
   fn kill_service(&mut self, service: UnitId, signal: String) {
     let cancel_token = CancellationToken::new();
     let future = systemd::kill_service(service.clone(), signal.clone(), cancel_token.clone());
-    self.service_action(service, format!("Kill with {}", signal), cancel_token, future);
+    self.service_action(service, format!("Kill with {}", signal), cancel_token, future, false);
   }
 }
 
@@ -849,6 +888,24 @@ impl Component for Home {
       },
       Action::SetServices(units) => {
         self.update_units(units);
+        return Some(Action::Render);
+      },
+      Action::RefreshUnitFiles => {
+        let tx = self.action_tx.clone().unwrap();
+        let scope = self.scope;
+        tokio::spawn(async move {
+          match systemd::get_unit_files(scope).await {
+            Ok(unit_files) => {
+              let _ = tx.send(Action::SetUnitFiles(unit_files));
+            },
+            Err(e) => {
+              error!("Failed to get unit files: {:?}", e);
+            },
+          }
+        });
+      },
+      Action::SetUnitFiles(unit_files) => {
+        self.merge_unit_files(unit_files);
         return Some(Action::Render);
       },
       Action::KillService(service_name, signal) => self.kill_service(service_name, signal),

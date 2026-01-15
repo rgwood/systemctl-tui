@@ -1,4 +1,4 @@
-use std::{process::Command, sync::Arc, time::Duration};
+use std::{process::Command, sync::Arc};
 
 use anyhow::{Context, Result};
 use log::error;
@@ -12,7 +12,7 @@ use crate::{
     Component,
   },
   event::EventHandler,
-  systemd::{self, get_all_services, Scope, UnitWithStatus},
+  systemd::{get_all_services, Scope},
   terminal::TerminalHandler,
 };
 
@@ -67,47 +67,8 @@ impl App {
       .context("Unable to get services. Check that systemd is running and try running this tool with sudo.")?;
     self.home.lock().await.set_units(units);
 
-    // Background task to fetch unit files (includes disabled units not returned by ListUnits)
-    let home_for_unit_files = self.home.clone();
-    let scope_for_unit_files = self.scope;
-    let action_tx_for_unit_files = action_tx.clone();
-    tokio::spawn(async move {
-      loop {
-        match systemd::get_unit_files(scope_for_unit_files).await {
-          Ok(unit_files) => {
-            let mut home = home_for_unit_files.lock().await;
-            for unit_file in unit_files {
-              let id = unit_file.id();
-              if let Some(unit) = home.all_units.get_mut(&id) {
-                // Update existing unit with enablement state and file path
-                unit.enablement_state = Some(unit_file.enablement_state);
-                unit.file_path = Some(Ok(unit_file.path));
-              } else if unit_file.enablement_state == "disabled" {
-                // Only add disabled services (not static/generated/masked - those are less interesting)
-                let new_unit = UnitWithStatus {
-                  name: unit_file.name,
-                  scope: unit_file.scope,
-                  description: String::new(),
-                  file_path: Some(Ok(unit_file.path)),
-                  load_state: "not-loaded".into(),
-                  activation_state: "inactive".into(),
-                  sub_state: "dead".into(),
-                  enablement_state: Some(unit_file.enablement_state),
-                };
-                home.all_units.insert(id, new_unit);
-              }
-            }
-            home.sort_units();
-            home.refresh_filtered_units();
-            let _ = action_tx_for_unit_files.send(Action::Render);
-          },
-          Err(e) => {
-            error!("Failed to get unit files: {:?}", e);
-          },
-        }
-        tokio::time::sleep(Duration::from_secs(5)).await;
-      }
-    });
+    // Fetch unit files (includes enablement state and disabled units not returned by ListUnits)
+    action_tx.send(Action::RefreshUnitFiles)?;
 
     let mut terminal = TerminalHandler::new(self.home.clone());
     let mut event = EventHandler::new(self.home.clone(), action_tx.clone());
