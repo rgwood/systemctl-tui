@@ -1,0 +1,1 @@
+When testing systemctl-tui, run it in debug mode (i.e. do not specific `--release`).

@@ -115,6 +115,69 @@ pub enum Scope {
   All,
 }
 
+/// Represents a unit file from ListUnitFiles (includes disabled units not returned by ListUnits)
+#[derive(Debug, Clone)]
+pub struct UnitFile {
+  pub name: String,
+  pub scope: UnitScope,
+  pub enablement_state: String,
+  pub path: String,
+}
+
+impl UnitFile {
+  pub fn id(&self) -> UnitId {
+    UnitId { name: self.name.clone(), scope: self.scope }
+  }
+}
+
+/// Get unit files for all services, INCLUDING DISABLED ONES (ListUnits doesn't include those)
+/// This is slower than get_all_services. Takes about 100ms (user) and 300ms (global) on 13th gen Intel i7
+pub async fn get_unit_files(scope: Scope) -> Result<Vec<UnitFile>> {
+  let start = std::time::Instant::now();
+
+  let mut unit_scopes = vec![];
+  match scope {
+    Scope::Global => unit_scopes.push(UnitScope::Global),
+    Scope::User => unit_scopes.push(UnitScope::User),
+    Scope::All => {
+      unit_scopes.push(UnitScope::Global);
+      unit_scopes.push(UnitScope::User);
+    },
+  }
+
+  let mut ret = vec![];
+  let is_root = nix::unistd::geteuid().is_root();
+
+  for unit_scope in unit_scopes {
+    let connection = get_connection(unit_scope).await?;
+    let manager_proxy = ManagerProxy::new(&connection).await?;
+    let unit_files = match manager_proxy.list_unit_files_by_patterns(vec![], vec!["*.service".into()]).await {
+      Ok(files) => files,
+      Err(e) => {
+        if is_root && unit_scope == UnitScope::User {
+          error!("Failed to get user unit files, ignoring because we're running as root");
+          vec![]
+        } else {
+          return Err(e.into());
+        }
+      },
+    };
+
+    let services = unit_files
+      .into_iter()
+      .filter_map(|(path, state)| {
+        let rust_path = std::path::Path::new(&path);
+        let file_name = rust_path.file_name()?.to_str()?;
+        Some(UnitFile { name: file_name.to_string(), scope: unit_scope, enablement_state: state, path })
+      })
+      .collect::<Vec<_>>();
+    ret.extend(services);
+  }
+
+  info!("Loaded {} unit files in {:?}", ret.len(), start.elapsed());
+  Ok(ret)
+}
+
 // this takes like 5-10 ms on 13th gen Intel i7 (scope=all)
 pub async fn get_all_services(scope: Scope, services: &[String]) -> Result<Vec<UnitWithStatus>> {
   let start = std::time::Instant::now();
@@ -275,6 +338,55 @@ pub async fn restart_service(service: UnitId, cancel_token: CancellationToken) -
   }
 }
 
+pub async fn enable_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
+  async fn enable(service: UnitId) -> Result<()> {
+    let connection = get_connection(service.scope).await?;
+    let manager_proxy = ManagerProxy::new(&connection).await?;
+    let files = vec![service.name];
+    let (_, changes) = manager_proxy.enable_unit_files(files, false, false).await?;
+
+    for (change_type, name, destination) in changes {
+      info!("{}: {} -> {}", change_type, name, destination);
+    }
+    // Enabling without reloading puts things in a weird state where `systemctl status foo` tells you to run daemon-reload
+    manager_proxy.reload().await?;
+    Ok(())
+  }
+
+  tokio::select! {
+    _ = cancel_token.cancelled() => {
+        anyhow::bail!("cancelled");
+    }
+    result = enable(service) => {
+        result
+    }
+  }
+}
+
+pub async fn disable_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
+  async fn disable(service: UnitId) -> Result<()> {
+    let connection = get_connection(service.scope).await?;
+    let manager_proxy = ManagerProxy::new(&connection).await?;
+    let files = vec![service.name];
+    let changes = manager_proxy.disable_unit_files(files, false).await?;
+
+    for (change_type, name, destination) in changes {
+      info!("{}: {} -> {}", change_type, name, destination);
+    }
+    manager_proxy.reload().await?;
+    Ok(())
+  }
+
+  tokio::select! {
+    _ = cancel_token.cancelled() => {
+        anyhow::bail!("cancelled");
+    }
+    result = disable(service) => {
+        result
+    }
+  }
+}
+
 // useless function only added to test that cancellation works
 pub async fn sleep_test(_service: String, cancel_token: CancellationToken) -> Result<()> {
   // god these select macros are ugly, is there really no better way to select?
@@ -399,6 +511,14 @@ pub trait Manager {
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#Reload()) Call interface method `Reload`.
   #[zbus(name = "Reload")]
   fn reload(&self) -> zbus::Result<()>;
+
+  /// [📖](https://www.freedesktop.org/software/systemd/man/latest/systemd.directives.html#ListUnitFilesByPatterns()) Call interface method `ListUnitFilesByPatterns`.
+  #[zbus(name = "ListUnitFilesByPatterns")]
+  fn list_unit_files_by_patterns(
+    &self,
+    states: Vec<String>,
+    patterns: Vec<String>,
+  ) -> zbus::Result<Vec<(String, String)>>;
 }
 
 /// Proxy object for `org.freedesktop.systemd1.Unit`.
