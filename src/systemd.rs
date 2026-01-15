@@ -147,15 +147,31 @@ pub async fn get_unit_files(scope: Scope) -> Result<Vec<UnitFile>> {
 
   let mut ret = vec![];
   let is_root = nix::unistd::geteuid().is_root();
+  info!("get_unit_files: is_root={}, scope={:?}", is_root, scope);
 
   for unit_scope in unit_scopes {
-    let connection = get_connection(unit_scope).await?;
+    info!("get_unit_files: fetching {:?} unit files", unit_scope);
+    let connection = match get_connection(unit_scope).await {
+      Ok(conn) => conn,
+      Err(e) => {
+        error!("get_unit_files: failed to get {:?} connection: {:?}", unit_scope, e);
+        if is_root && unit_scope == UnitScope::User {
+          info!("get_unit_files: skipping user scope because we're root");
+          continue;
+        }
+        return Err(e);
+      },
+    };
     let manager_proxy = ManagerProxy::new(&connection).await?;
     let unit_files = match manager_proxy.list_unit_files_by_patterns(vec![], vec!["*.service".into()]).await {
-      Ok(files) => files,
+      Ok(files) => {
+        info!("get_unit_files: got {} {:?} unit files", files.len(), unit_scope);
+        files
+      },
       Err(e) => {
+        error!("get_unit_files: list_unit_files_by_patterns failed for {:?}: {:?}", unit_scope, e);
         if is_root && unit_scope == UnitScope::User {
-          error!("Failed to get user unit files, ignoring because we're running as root");
+          info!("get_unit_files: ignoring user scope error because we're root");
           vec![]
         } else {
           return Err(e.into());
@@ -638,6 +654,105 @@ pub fn get_unit_path(full_service_name: &str) -> String {
   format!("/org/freedesktop/systemd1/unit/{}", encode_as_dbus_object_path(full_service_name))
 }
 
+/// Diagnostic result explaining why logs might be missing
+#[derive(Debug, Clone)]
+pub enum LogDiagnostic {
+  /// Unit has never been activated (ActiveEnterTimestamp is 0)
+  NeverRun { unit_name: String },
+  /// Journal is not accessible (likely permissions)
+  JournalInaccessible { error: String },
+  /// Unit-specific permission issue
+  PermissionDenied { error: String },
+  /// Journal is available but no logs exist for this unit
+  NoLogsRecorded { unit_name: String },
+  /// journalctl command failed with an error
+  JournalctlError { stderr: String },
+}
+
+impl LogDiagnostic {
+  /// Returns a human-readable message for display
+  pub fn message(&self) -> String {
+    match self {
+      Self::NeverRun { unit_name } => format!("No logs: {} has never been started", unit_name),
+      Self::JournalInaccessible { error } => {
+        format!("Cannot access journal: {}\n\nCheck that systemd-journald is running", error)
+      },
+      Self::PermissionDenied { error } => format!("Permission denied: {}\n\nTry: sudo systemctl-tui", error),
+      Self::NoLogsRecorded { unit_name } => {
+        format!("No logs recorded for {} (unit has run but produced no journal output)", unit_name)
+      },
+      Self::JournalctlError { stderr } => format!("journalctl error: {}", stderr),
+    }
+  }
+}
+
+/// Check if a unit has ever been activated using systemctl show
+pub fn check_unit_has_run(unit: &UnitId) -> bool {
+  let mut args = vec!["show", "-P", "ActiveEnterTimestampMonotonic"];
+  if unit.scope == UnitScope::User {
+    args.insert(0, "--user");
+  }
+  args.push(&unit.name);
+
+  Command::new("systemctl")
+    .args(&args)
+    .output()
+    .ok()
+    .and_then(
+      |output| if output.status.success() { std::str::from_utf8(&output.stdout).ok().map(String::from) } else { None },
+    )
+    .map(|s| s.trim().parse::<u64>().unwrap_or(0) > 0)
+    .unwrap_or(false)
+}
+
+/// Check if the journal is accessible at all (tests general read access)
+fn can_access_journal(scope: UnitScope) -> Result<(), String> {
+  let mut args = vec!["--lines=1", "--quiet"];
+  if scope == UnitScope::User {
+    args.push("--user");
+  }
+
+  match Command::new("journalctl").args(&args).output() {
+    Ok(output) => {
+      if output.status.success() {
+        Ok(())
+      } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+      }
+    },
+    Err(e) => Err(e.to_string()),
+  }
+}
+
+/// Parse journalctl stderr to determine the specific error type
+pub fn parse_journalctl_error(stderr: &str) -> LogDiagnostic {
+  let stderr_lower = stderr.to_lowercase();
+
+  if stderr_lower.contains("permission denied") || stderr_lower.contains("access denied") {
+    LogDiagnostic::PermissionDenied { error: stderr.trim().to_string() }
+  } else if stderr_lower.contains("no such file") || stderr_lower.contains("failed to open") {
+    LogDiagnostic::JournalInaccessible { error: stderr.trim().to_string() }
+  } else {
+    LogDiagnostic::JournalctlError { stderr: stderr.trim().to_string() }
+  }
+}
+
+/// Diagnose why logs are missing for a unit
+pub fn diagnose_missing_logs(unit: &UnitId) -> LogDiagnostic {
+  // Check 1: Has unit ever run?
+  if !check_unit_has_run(unit) {
+    return LogDiagnostic::NeverRun { unit_name: unit.name.clone() };
+  }
+
+  // Check 2: Can we access the journal at all?
+  if let Err(error) = can_access_journal(unit.scope) {
+    return parse_journalctl_error(&error);
+  }
+
+  // If we get here, journal is accessible but no logs for this specific unit
+  LogDiagnostic::NoLogsRecorded { unit_name: unit.name.clone() }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -651,5 +766,23 @@ mod tests {
   fn test_encode_as_dbus_object_path() {
     assert_eq!(encode_as_dbus_object_path("test.service"), "test_2eservice");
     assert_eq!(encode_as_dbus_object_path("test-with-hyphen.service"), "test_2dwith_2dhyphen_2eservice");
+  }
+
+  #[test]
+  fn test_parse_journalctl_error_permission() {
+    let diagnostic = parse_journalctl_error("Failed to get journal access: Permission denied");
+    assert!(matches!(diagnostic, LogDiagnostic::PermissionDenied { .. }));
+  }
+
+  #[test]
+  fn test_parse_journalctl_error_no_file() {
+    let diagnostic = parse_journalctl_error("No such file or directory");
+    assert!(matches!(diagnostic, LogDiagnostic::JournalInaccessible { .. }));
+  }
+
+  #[test]
+  fn test_parse_journalctl_error_generic() {
+    let diagnostic = parse_journalctl_error("Something unexpected happened");
+    assert!(matches!(diagnostic, LogDiagnostic::JournalctlError { .. }));
   }
 }
