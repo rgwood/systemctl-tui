@@ -67,6 +67,9 @@ impl App {
       .context("Unable to get services. Check that systemd is running and try running this tool with sudo.")?;
     self.home.lock().await.set_units(units);
 
+    // Fetch unit files (includes enablement state and disabled units not returned by ListUnits)
+    action_tx.send(Action::RefreshUnitFiles)?;
+
     let mut terminal = TerminalHandler::new(self.home.clone());
     let mut event = EventHandler::new(self.home.clone(), action_tx.clone());
 
