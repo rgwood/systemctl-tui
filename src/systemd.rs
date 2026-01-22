@@ -5,11 +5,12 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use log::error;
+use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use zbus::{proxy, zvariant, Connection};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnitWithStatus {
   pub name: String,                              // The primary unit name as string
   pub scope: UnitScope,                          // System or user?
@@ -35,14 +36,14 @@ pub struct UnitWithStatus {
   // pub job_path: String, // The job object path
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UnitScope {
   Global,
   User,
 }
 
 /// Just enough info to fully identify a unit
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UnitId {
   pub name: String,
   pub scope: UnitScope,

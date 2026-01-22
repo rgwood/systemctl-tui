@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
 use better_panic::Settings;
-use directories::ProjectDirs;
+use directories::{BaseDirs, ProjectDirs};
+use serde::{Deserialize, Serialize};
 use tracing::{error, level_filters::LevelFilter};
 use tracing_appender::{
   non_blocking::WorkerGuard,
@@ -11,6 +12,41 @@ use tracing_appender::{
 use tracing_subscriber::{
   self, filter::EnvFilter, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt, Layer,
 };
+
+use crate::systemd::UnitId;
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct SystemctlTuiConfig {
+  #[serde(default)]
+  pub favorites: Vec<UnitId>,
+}
+
+pub fn get_config_file_path() -> Result<PathBuf> {
+  let base_dirs = BaseDirs::new().ok_or_else(|| anyhow!("Unable to find home directory for systemctl-tui config"))?;
+  Ok(base_dirs.home_dir().join(".config/systemctl-tui.yaml"))
+}
+
+pub fn load_config() -> Result<SystemctlTuiConfig> {
+  let path = get_config_file_path()?;
+  if !path.exists() {
+    return Ok(SystemctlTuiConfig::default());
+  }
+
+  let contents = std::fs::read_to_string(&path).context(format!("Failed reading config file at {}", path.display()))?;
+  let config =
+    serde_yaml::from_str(&contents).context(format!("Failed parsing config file at {}", path.display()))?;
+  Ok(config)
+}
+
+pub fn save_config(config: &SystemctlTuiConfig) -> Result<()> {
+  let path = get_config_file_path()?;
+  if let Some(parent) = path.parent() {
+    std::fs::create_dir_all(parent).context(format!("Failed creating config dir {}", parent.display()))?;
+  }
+  let contents = serde_yaml::to_string(config).context("Failed serializing config")?;
+  std::fs::write(&path, contents).context(format!("Failed writing config file at {}", path.display()))?;
+  Ok(())
+}
 
 pub fn initialize_panic_handler() {
   std::panic::set_hook(Box::new(|panic_info| {

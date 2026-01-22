@@ -20,6 +20,7 @@ use tracing::{error, info, warn};
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use std::{
+  collections::HashSet,
   process::{Command, Stdio},
   time::Duration,
 };
@@ -28,6 +29,7 @@ use super::{logger::Logger, Component, Frame};
 use crate::{
   action::Action,
   systemd::{self, diagnose_missing_logs, parse_journalctl_error, Scope, UnitFile, UnitId, UnitScope, UnitWithStatus},
+  utils::{get_config_file_path, load_config, save_config, SystemctlTuiConfig},
 };
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
@@ -40,6 +42,13 @@ pub enum Mode {
   Processing,
   Error,
   SignalMenu,
+}
+
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
+pub enum ListFocus {
+  Favorites,
+  #[default]
+  Services,
 }
 
 #[derive(Clone, Copy)]
@@ -95,6 +104,8 @@ pub struct Home {
   pub theme: Theme,
   pub logger: Logger,
   pub show_logger: bool,
+  pub favorites: HashSet<UnitId>,
+  pub list_focus: ListFocus,
   pub all_units: IndexMap<UnitId, UnitWithStatus>,
   pub filtered_units: StatefulList<MatchedUnit>,
   pub logs: Vec<String>,
@@ -208,7 +219,23 @@ impl<T> StatefulList<T> {
 impl Home {
   pub fn new(scope: Scope, limit_units: &[String]) -> Self {
     let limit_units = limit_units.to_vec();
-    Self { scope, limit_units, ..Default::default() }
+    let favorites = Self::load_favorites();
+    Self { scope, limit_units, favorites, ..Default::default() }
+  }
+
+  fn load_favorites() -> HashSet<UnitId> {
+    match load_config() {
+      Ok(config) => config.favorites.into_iter().collect(),
+      Err(e) => {
+        error!("Failed to load favorites config: {:?}", e);
+        HashSet::new()
+      },
+    }
+  }
+
+  fn save_favorites(&self) -> anyhow::Result<()> {
+    let config = SystemctlTuiConfig { favorites: self.favorites.iter().cloned().collect() };
+    save_config(&config)
   }
 
   pub fn set_units(&mut self, units: Vec<UnitWithStatus>) {
@@ -276,14 +303,14 @@ impl Home {
 
   pub fn next(&mut self) {
     self.logs = vec![];
-    self.filtered_units.next();
+    self.move_selection(1);
     self.get_logs();
     self.logs_scroll_offset = 0;
   }
 
   pub fn previous(&mut self) {
     self.logs = vec![];
-    self.filtered_units.previous();
+    self.move_selection(-1);
     self.get_logs();
     self.logs_scroll_offset = 0;
   }
@@ -323,7 +350,7 @@ impl Home {
     let previously_selected = self.selected_service();
     let search_value = self.input.value();
 
-    let matching: Vec<MatchedUnit> = if search_value.is_empty() {
+    let mut matching: Vec<MatchedUnit> = if search_value.is_empty() {
       // No search - return all units without highlighting
       self.all_units.values().map(|u| MatchedUnit { unit: u.clone(), match_indices: vec![] }).collect()
     } else {
@@ -344,7 +371,29 @@ impl Home {
       scored.into_iter().map(|(_, m)| m).collect()
     };
 
+    if !self.favorites.is_empty() {
+      let mut favorites = Vec::new();
+      let mut non_favorites = Vec::new();
+      for unit in matching {
+        if self.favorites.contains(&unit.unit.id()) {
+          favorites.push(unit);
+        } else {
+          non_favorites.push(unit);
+        }
+      }
+      favorites.extend(non_favorites);
+      matching = favorites;
+    }
+
     self.filtered_units.items = matching;
+
+    let favorites_count = self.favorites_count_in_filtered();
+    let services_count = self.filtered_units.items.len().saturating_sub(favorites_count);
+    if favorites_count == 0 {
+      self.list_focus = ListFocus::Services;
+    } else if services_count == 0 {
+      self.list_focus = ListFocus::Favorites;
+    }
 
     // try to select the same item we had selected before
     if let Some(previously_selected) = previously_selected {
@@ -366,6 +415,51 @@ impl Home {
         self.unselect();
       }
     }
+  }
+
+  fn favorites_count_in_filtered(&self) -> usize {
+    self
+      .filtered_units
+      .items
+      .iter()
+      .take_while(|m| self.favorites.contains(&m.unit.id()))
+      .count()
+  }
+
+  fn move_selection(&mut self, direction: i32) {
+    let len = self.filtered_units.items.len();
+    if len == 0 {
+      self.filtered_units.unselect();
+      return;
+    }
+
+    let favorites_count = self.favorites_count_in_filtered();
+    let services_count = len.saturating_sub(favorites_count);
+
+    let (start, end) = match self.list_focus {
+      ListFocus::Favorites if favorites_count > 0 => (0, favorites_count.saturating_sub(1)),
+      ListFocus::Services if services_count > 0 => (favorites_count, len.saturating_sub(1)),
+      _ => (0, len.saturating_sub(1)),
+    };
+
+    let mut current = self.filtered_units.state.selected().unwrap_or(start);
+    if current < start || current > end {
+      current = start;
+    }
+
+    let next = if direction >= 0 {
+      if current >= end {
+        start
+      } else {
+        current + 1
+      }
+    } else if current <= start {
+      end
+    } else {
+      current - 1
+    };
+
+    self.filtered_units.select(Some(next));
   }
 
   fn start_service(&mut self, service: UnitId) {
@@ -631,9 +725,67 @@ impl Component for Home {
       Mode::ServiceList => {
         match key.code {
           KeyCode::Char('q') => vec![Action::Quit],
+          KeyCode::Char('f') => {
+            if let Some(selected) = self.filtered_units.selected() {
+              vec![Action::ToggleFavorite(selected.unit.id())]
+            } else {
+              vec![]
+            }
+          },
+          KeyCode::Tab | KeyCode::BackTab => {
+            let favorites_count = self.favorites_count_in_filtered();
+            let services_count = self.filtered_units.items.len().saturating_sub(favorites_count);
+            if favorites_count == 0 || services_count == 0 {
+              return vec![];
+            }
+
+            self.list_focus = match self.list_focus {
+              ListFocus::Favorites => ListFocus::Services,
+              ListFocus::Services => ListFocus::Favorites,
+            };
+
+            let index = if self.list_focus == ListFocus::Favorites { 0 } else { favorites_count };
+            self.select(Some(index), true);
+            vec![Action::Render]
+          },
+          KeyCode::Char('1') => {
+            let favorites_count = self.favorites_count_in_filtered();
+            if favorites_count == 0 {
+              return vec![];
+            }
+            self.list_focus = ListFocus::Favorites;
+            self.select(Some(0), true);
+            vec![Action::Render]
+          },
+          KeyCode::Char('2') => {
+            let favorites_count = self.favorites_count_in_filtered();
+            let services_count = self.filtered_units.items.len().saturating_sub(favorites_count);
+            if services_count == 0 {
+              return vec![];
+            }
+            self.list_focus = ListFocus::Services;
+            self.select(Some(favorites_count), true);
+            vec![Action::Render]
+          },
           KeyCode::Up | KeyCode::Char('k') => {
-            // if we're filtering the list, and we're at the top, and there's text in the search box, go to search mode
-            if self.filtered_units.state.selected() == Some(0) {
+            let favorites_count = self.favorites_count_in_filtered();
+            let services_start_index = favorites_count;
+
+            if self.list_focus == ListFocus::Services
+              && favorites_count > 0
+              && self.filtered_units.state.selected() == Some(services_start_index)
+            {
+              self.list_focus = ListFocus::Favorites;
+              let index = favorites_count.saturating_sub(1);
+              self.select(Some(index), true);
+              return vec![Action::Render];
+            }
+
+            if self.list_focus == ListFocus::Favorites && self.filtered_units.state.selected() == Some(0) {
+              return vec![Action::EnterMode(Mode::Search)];
+            }
+
+            if favorites_count == 0 && self.filtered_units.state.selected() == Some(0) {
               return vec![Action::EnterMode(Mode::Search)];
             }
 
@@ -641,6 +793,21 @@ impl Component for Home {
             vec![Action::Render]
           },
           KeyCode::Down | KeyCode::Char('j') => {
+            let favorites_count = self.favorites_count_in_filtered();
+            let services_start_index = favorites_count;
+            let services_end_index = self.filtered_units.items.len().saturating_sub(1);
+
+            if self.list_focus == ListFocus::Favorites
+              && favorites_count > 0
+              && self.filtered_units.state.selected() == Some(favorites_count.saturating_sub(1))
+            {
+              self.list_focus = ListFocus::Services;
+              if services_start_index <= services_end_index {
+                self.select(Some(services_start_index), true);
+                return vec![Action::Render];
+              }
+            }
+
             self.next();
             vec![Action::Render]
           },
@@ -923,6 +1090,20 @@ impl Component for Home {
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
         return Some(Action::Render);
       },
+      Action::ToggleFavorite(unit) => {
+        if self.favorites.contains(&unit) {
+          self.favorites.remove(&unit);
+        } else {
+          self.favorites.insert(unit);
+        }
+
+        self.refresh_filtered_units();
+
+        if let Err(e) = self.save_favorites() {
+          return Some(Action::EnterError(format!("Failed to save favorites: {e}")));
+        }
+        return Some(Action::Render);
+      },
       Action::CancelTask => {
         if let Some(cancel_token) = self.cancel_token.take() {
           cancel_token.cancel();
@@ -981,66 +1162,127 @@ impl Component for Home {
       }
     }
 
-    let items: Vec<ListItem> = self
-      .filtered_units
-      .items
-      .iter()
-      .map(|m| {
-        let color = unit_color(&m.unit);
-        let name = m.unit.short_name();
+    let build_items = |items: Vec<&MatchedUnit>| -> Vec<ListItem<'static>> {
+      items
+        .into_iter()
+        .map(|m| {
+          let color = unit_color(&m.unit);
+          let name = m.unit.short_name();
 
-        if m.match_indices.is_empty() {
-          ListItem::new(colored_line(name, color))
-        } else {
-          // Build spans with highlighted matched characters
-          let mut spans = Vec::new();
-          let mut last_end = 0;
+          if m.match_indices.is_empty() {
+            ListItem::new(Line::from(Span::styled(name.to_string(), Style::default().fg(color))))
+          } else {
+            // Build spans with highlighted matched characters
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            let mut last_end = 0;
 
-          for &idx in &m.match_indices {
-            if idx > last_end && idx <= name.len() {
-              // Non-matched portion
-              spans.push(Span::styled(&name[last_end..idx], Style::default().fg(color)));
+            for &idx in &m.match_indices {
+              if idx > last_end && idx <= name.len() {
+                // Non-matched portion
+                spans.push(Span::styled(name[last_end..idx].to_string(), Style::default().fg(color)));
+              }
+              // Matched character - bold + underlined
+              if idx < name.len() {
+                let char_end = name[idx..].chars().next().map(|c| idx + c.len_utf8()).unwrap_or(idx + 1);
+                spans.push(Span::styled(
+                  name[idx..char_end].to_string(),
+                  Style::default().fg(color).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                ));
+                last_end = char_end;
+              }
             }
-            // Matched character - bold + underlined
-            if idx < name.len() {
-              let char_end = name[idx..].chars().next().map(|c| idx + c.len_utf8()).unwrap_or(idx + 1);
-              spans.push(Span::styled(
-                &name[idx..char_end],
-                Style::default().fg(color).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-              ));
-              last_end = char_end;
+
+            if last_end < name.len() {
+              spans.push(Span::styled(name[last_end..].to_string(), Style::default().fg(color)));
             }
+
+            ListItem::new(Line::from(spans))
           }
+        })
+        .collect::<Vec<ListItem>>()
+    };
 
-          if last_end < name.len() {
-            spans.push(Span::styled(&name[last_end..], Style::default().fg(color)));
-          }
+    let selected_unit = self.filtered_units.selected().map(|m| m.unit.id());
+    let mut favorites_units = Vec::new();
+    let mut service_units = Vec::new();
+    for unit in &self.filtered_units.items {
+      if self.favorites.contains(&unit.unit.id()) {
+        favorites_units.push(unit);
+      } else {
+        service_units.push(unit);
+      }
+    }
 
-          ListItem::new(Line::from(spans))
-        }
-      })
-      .collect();
+    let favorites_items = build_items(favorites_units.clone());
+    let service_items = build_items(service_units.clone());
 
-    // Create a List from all list items and highlight the currently selected one
-    let items = List::new(items)
+    let highlight_style = Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD);
+
+    let favorites_border_style = if self.mode == Mode::ServiceList && self.list_focus == ListFocus::Favorites {
+      Style::default().fg(theme.accent)
+    } else {
+      Style::default()
+    };
+
+    let services_border_style = if self.mode == Mode::ServiceList && self.list_focus == ListFocus::Services {
+      Style::default().fg(theme.accent)
+    } else {
+      Style::default()
+    };
+
+    let favorites_list = List::new(favorites_items)
       .block(
         Block::default()
           .borders(Borders::ALL)
           .border_type(BorderType::Rounded)
-          .border_style(if self.mode == Mode::ServiceList {
-            Style::default().fg(theme.accent)
-          } else {
-            Style::default()
-          })
-          .title("─Services"),
+          .border_style(favorites_border_style)
+          .title("─Favorites (1)"),
       )
-      .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
+      .highlight_style(highlight_style);
+
+    let services_list = List::new(service_items)
+      .block(
+        Block::default()
+          .borders(Borders::ALL)
+          .border_type(BorderType::Rounded)
+          .border_style(services_border_style)
+          .title("─Services (2)"),
+      )
+      .highlight_style(highlight_style);
 
     let chunks =
       Layout::new(Direction::Horizontal, [Constraint::Min(30), Constraint::Percentage(100)]).split(main_panel);
     let right_panel = chunks[1];
 
-    f.render_stateful_widget(items, chunks[0], &mut self.filtered_units.state);
+    let left_panel = chunks[0];
+
+    if favorites_units.is_empty() {
+      f.render_stateful_widget(services_list, left_panel, &mut self.filtered_units.state);
+    } else {
+      let services_min_height = 7; // 5 items + 2 for borders
+      let favorites_height =
+        (favorites_units.len() as u16 + 2).min(left_panel.height.saturating_sub(services_min_height));
+      let left_chunks =
+        Layout::new(Direction::Vertical, [Constraint::Length(favorites_height), Constraint::Min(services_min_height)])
+          .split(left_panel);
+
+      let mut favorites_state = ListState::default();
+      if let Some(selected) = selected_unit.as_ref() {
+        if let Some(index) = favorites_units.iter().position(|m| m.unit.id() == *selected) {
+          favorites_state.select(Some(index));
+        }
+      }
+
+      let mut services_state = ListState::default();
+      if let Some(selected) = selected_unit.as_ref() {
+        if let Some(index) = service_units.iter().position(|m| m.unit.id() == *selected) {
+          services_state.select(Some(index));
+        }
+      }
+
+      f.render_stateful_widget(favorites_list, left_chunks[0], &mut favorites_state);
+      f.render_stateful_widget(services_list, left_chunks[1], &mut services_state);
+    }
 
     let selected_item = self.filtered_units.selected();
 
@@ -1192,16 +1434,24 @@ impl Component for Home {
       let popup = centered_rect_abs(50, 18, f.area());
 
       let primary = |s| Span::styled(s, Style::default().fg(theme.primary));
+      let config_path = get_config_file_path()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| "unavailable".to_string());
       let help_lines = vec![
         Line::from(""),
         Line::from(Span::styled("Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
         Line::from(""),
         Line::from(vec![primary("ctrl+C"), Span::raw(" or "), primary("ctrl+Q"), Span::raw(" to quit")]),
         Line::from(vec![primary("ctrl+L"), Span::raw(" toggles the logger pane")]),
+        Line::from(vec![primary("f"), Span::raw(" toggle favorite")]),
+        Line::from(vec![primary("tab"), Span::raw(" toggle favorites/services")]),
+        Line::from(vec![primary("1"), Span::raw(" focus favorites")]),
+        Line::from(vec![primary("2"), Span::raw(" focus services")]),
         Line::from(vec![primary("PageUp"), Span::raw(" / "), primary("PageDown"), Span::raw(" scroll the logs")]),
         Line::from(vec![primary("Home"), Span::raw(" / "), primary("End"), Span::raw(" scroll to top/bottom")]),
         Line::from(vec![primary("Enter"), Span::raw(" or "), primary("Space"), Span::raw(" open the action menu")]),
         Line::from(vec![primary("?"), Span::raw(" / "), primary("F1"), Span::raw(" open this help pane")]),
+        Line::from(vec![primary("Config file:"), Span::raw(format!(" {config_path}"))]),
         Line::from(""),
         Line::from(Span::styled("Vim Style Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
         Line::from(""),
@@ -1255,12 +1505,21 @@ impl Component for Home {
     let help_rect = help_line_rects[0];
     let version_rect = help_line_rects[1];
 
+    let config_path = get_config_file_path()
+      .map(|path| path.display().to_string())
+      .unwrap_or_else(|_| "unavailable".to_string());
     let help_line = match self.mode {
       Mode::Search => Line::from(span("Show actions: <enter>", theme.primary)),
-      Mode::ServiceList => {
-        Line::from(span("Show actions: <enter> | Open logs in pager: o | Edit unit file: e | Quit: q", theme.primary))
+      Mode::ServiceList => Line::from(span(
+        "Show actions: <enter> | Favorite: f | Open logs in pager: o | Edit unit file: e | Quit: q",
+        theme.primary,
+      )),
+      Mode::Help => {
+        Line::from(Span::styled(
+          format!("Close menu: <esc> | Config file: {config_path}"),
+          Style::default().fg(theme.primary),
+        ))
       },
-      Mode::Help => Line::from(span("Close menu: <esc>", theme.primary)),
       Mode::ActionMenu => Line::from(span("Execute action: <enter> | Close menu: <esc>", theme.primary)),
       Mode::Processing => Line::from(span("Cancel task: <esc>", theme.primary)),
       Mode::Error => Line::from(span("Close menu: <esc>", theme.primary)),
