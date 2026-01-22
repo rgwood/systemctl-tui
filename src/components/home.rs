@@ -656,6 +656,13 @@ impl Component for Home {
           KeyCode::Char('o') => {
             vec![Action::OpenLogsInPager { logs: self.logs.clone() }]
           },
+          KeyCode::Char('l') => {
+            if let Some(selected) = self.filtered_units.selected() {
+              vec![Action::FollowLogs(selected.unit.id())]
+            } else {
+              vec![]
+            }
+          },
           KeyCode::Enter | KeyCode::Char(' ') => vec![Action::EnterMode(Mode::ActionMenu)],
           _ => vec![],
         }
@@ -1198,6 +1205,7 @@ impl Component for Home {
         Line::from(""),
         Line::from(vec![primary("ctrl+C"), Span::raw(" or "), primary("ctrl+Q"), Span::raw(" to quit")]),
         Line::from(vec![primary("ctrl+L"), Span::raw(" toggles the logger pane")]),
+        Line::from(vec![primary("l"), Span::raw(" follow logs via journalctl")]),
         Line::from(vec![primary("PageUp"), Span::raw(" / "), primary("PageDown"), Span::raw(" scroll the logs")]),
         Line::from(vec![primary("Home"), Span::raw(" / "), primary("End"), Span::raw(" scroll to top/bottom")]),
         Line::from(vec![primary("Enter"), Span::raw(" or "), primary("Space"), Span::raw(" open the action menu")]),
@@ -1258,7 +1266,10 @@ impl Component for Home {
     let help_line = match self.mode {
       Mode::Search => Line::from(span("Show actions: <enter>", theme.primary)),
       Mode::ServiceList => {
-        Line::from(span("Show actions: <enter> | Open logs in pager: o | Edit unit file: e | Quit: q", theme.primary))
+        Line::from(span(
+          "Show actions: <enter> | Follow logs: l | Open logs in pager: o | Edit unit file: e | Quit: q",
+          theme.primary,
+        ))
       },
       Mode::Help => Line::from(span("Close menu: <esc>", theme.primary)),
       Mode::ActionMenu => Line::from(span("Execute action: <enter> | Close menu: <esc>", theme.primary)),

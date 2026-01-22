@@ -12,7 +12,7 @@ use crate::{
     Component,
   },
   event::EventHandler,
-  systemd::{get_all_services, Scope},
+  systemd::{get_all_services, Scope, UnitScope},
   terminal::TerminalHandler,
 };
 
@@ -158,6 +158,30 @@ impl App {
               }
               let _ = std::fs::remove_file(&temp_path);
             }
+          },
+          Action::FollowLogs(unit) => {
+            event.stop();
+            let mut tui = terminal.tui.lock().await;
+            tui.exit()?;
+
+            let mut command = if unit.scope == UnitScope::User {
+              let mut cmd = Command::new("journalctl");
+              cmd.arg("--user");
+              cmd
+            } else {
+              let mut cmd = Command::new("sudo");
+              cmd.arg("journalctl");
+              cmd
+            };
+
+            command.arg("-u").arg(unit.name).arg("-f");
+
+            let _ = command.status();
+
+            tui.enter()?;
+            tui.clear()?;
+            event = EventHandler::new(self.home.clone(), action_tx.clone());
+            action_tx.send(Action::EnterMode(Mode::ServiceList))?;
           },
           _ => {
             if let Some(_action) = self.home.lock().await.dispatch(action) {
