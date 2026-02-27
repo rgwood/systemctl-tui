@@ -609,6 +609,8 @@ impl Component for Home {
         // vim keybindings, apparently
         KeyCode::Char('d') => return vec![Action::ScrollDown(7), Action::Render],
         KeyCode::Char('u') => return vec![Action::ScrollUp(7), Action::Render],
+        KeyCode::Char('t') => return vec![Action::ScrollToTop, Action::Render],
+        KeyCode::Char('b') => return vec![Action::ScrollToBottom, Action::Render],
         _ => (),
       }
     }
