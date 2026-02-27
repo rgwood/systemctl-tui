@@ -607,8 +607,8 @@ impl Component for Home {
         KeyCode::Char('f') => return vec![Action::EnterMode(Mode::Search)],
         KeyCode::Char('l') => return vec![Action::ToggleShowLogger],
         // vim keybindings, apparently
-        KeyCode::Char('d') => return vec![Action::ScrollDown(1), Action::Render],
-        KeyCode::Char('u') => return vec![Action::ScrollUp(1), Action::Render],
+        KeyCode::Char('d') => return vec![Action::ScrollDown(7), Action::Render],
+        KeyCode::Char('u') => return vec![Action::ScrollUp(7), Action::Render],
         _ => (),
       }
     }
