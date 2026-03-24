@@ -132,7 +132,7 @@ impl UnitFile {
 
 /// Get unit files for all services, INCLUDING DISABLED ONES (ListUnits doesn't include those)
 /// This is slower than get_all_services. Takes about 100ms (user) and 300ms (global) on 13th gen Intel i7
-pub async fn get_unit_files(scope: Scope) -> Result<Vec<UnitFile>> {
+pub async fn get_unit_files(scope: Scope, services: &[String]) -> Result<Vec<UnitFile>> {
   let start = std::time::Instant::now();
 
   let mut unit_scopes = vec![];
@@ -163,7 +163,7 @@ pub async fn get_unit_files(scope: Scope) -> Result<Vec<UnitFile>> {
       },
     };
     let manager_proxy = ManagerProxy::new(&connection).await?;
-    let unit_files = match manager_proxy.list_unit_files_by_patterns(vec![], vec!["*.service".into()]).await {
+    let unit_files = match manager_proxy.list_unit_files_by_patterns(vec![], services.iter().map(|s| s.to_string()).collect()).await {
       Ok(files) => {
         info!("get_unit_files: got {} {:?} unit files", files.len(), unit_scope);
         files
