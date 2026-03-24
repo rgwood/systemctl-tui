@@ -1190,7 +1190,7 @@ impl Component for Home {
     }
 
     if self.mode == Mode::Help {
-      let popup = centered_rect_abs(50, 18, f.area());
+      let popup = f.area().centered(Constraint::Length(50), Constraint::Length(18));
 
       let primary = |s| Span::styled(s, Style::default().fg(theme.primary));
       let help_lines = vec![
@@ -1225,7 +1225,7 @@ impl Component for Home {
     }
 
     if self.mode == Mode::Error {
-      let popup = centered_rect_abs(50, 12, f.area());
+      let popup = f.area().centered(Constraint::Length(50), Constraint::Length(12));
       let error_lines = self.error_message.split('\n').map(Line::from).collect_vec();
       let paragraph = Paragraph::new(error_lines)
         .block(
@@ -1281,7 +1281,7 @@ impl Component for Home {
       let title_prefix = if self.mode == Mode::ActionMenu { "Actions" } else { "Signals" };
       let title = format!("{} for {}", title_prefix, selected_item.unit.name);
       let height = self.menu_items.items.len() as u16 + 2;
-      let popup = centered_rect_abs(popup_width, height, f.area());
+      let popup = f.area().centered(Constraint::Length(popup_width), Constraint::Length(height));
 
       let items: Vec<ListItem> = self
         .menu_items
@@ -1309,7 +1309,7 @@ impl Component for Home {
 
     if self.mode == Mode::Processing {
       let height = self.menu_items.items.len() as u16 + 2;
-      let popup = centered_rect_abs(popup_width, height, f.area());
+      let popup = f.area().centered(Constraint::Length(popup_width), Constraint::Length(height));
 
       static SPINNER_CHARS: &[char] = &['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '⣾'];
 
@@ -1330,38 +1330,6 @@ impl Component for Home {
       f.render_widget(paragraph, popup);
     }
   }
-}
-
-/// helper function to create a centered rect using up certain percentage of the available rect `r`
-fn _centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-  let popup_layout = Layout::new(
-    Direction::Vertical,
-    [
-      Constraint::Percentage((100 - percent_y) / 2),
-      Constraint::Percentage(percent_y),
-      Constraint::Percentage((100 - percent_y) / 2),
-    ],
-  )
-  .split(r);
-
-  Layout::new(
-    Direction::Horizontal,
-    [
-      Constraint::Percentage((100 - percent_x) / 2),
-      Constraint::Percentage(percent_x),
-      Constraint::Percentage((100 - percent_x) / 2),
-    ],
-  )
-  .split(popup_layout[1])[1]
-}
-
-fn centered_rect_abs(width: u16, height: u16, r: Rect) -> Rect {
-  let offset_x = (r.width.saturating_sub(width)) / 2;
-  let offset_y = (r.height.saturating_sub(height)) / 2;
-  let width = width.min(r.width);
-  let height = height.min(r.height);
-
-  Rect::new(offset_x, offset_y, width, height)
 }
 
 /// Parse a journalctl timestamp and return a formatted date string.
