@@ -11,7 +11,7 @@ license = "MIT"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ratatui = "0.29.0"
+ratatui = "0.30.0"
 crossterm = { version = "0.29.0", default-features = false, features = ["event-stream"] }
 tokio = { version = "1.28.2", features = ["full"] }
 unicode-segmentation = "1.10.1"
@@ -22,13 +22,13 @@ futures = "0.3.28"
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 directories = "6.0.0"
-tui-logger = { version = "0.17.3", default-features = false, features = [
+tui-logger = { version = "0.18.1", default-features = false, features = [
   "tracing-support",
 ] }
 log = "0.4.19"
 libc = "0.2.146"
-tui-input = "0.12.1"
-signal-hook = "0.3.15"
+tui-input = "0.15.0"
+signal-hook = "0.4.3"
 tokio-util = "0.7.8"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 fuzzy-matcher = "0.3"
@@ -37,7 +37,7 @@ indexmap = "2.0.0"
 clipboard-anywhere = "0.2.2"
 chrono = { version = "0.4.31", default-features = false }
 lazy_static = "1.4.0"
-nix = { version = "0.30.1", features = ["user"] }
+nix = { version = "0.31.0", features = ["user"] }
 is-wsl = "0.4.0"
 tracing-appender = "0.2.3"
 terminal-light = "1"
