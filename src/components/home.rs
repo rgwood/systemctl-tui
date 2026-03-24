@@ -606,9 +606,9 @@ impl Component for Home {
         KeyCode::Char('z') => return vec![Action::Suspend],
         KeyCode::Char('f') => return vec![Action::EnterMode(Mode::Search)],
         KeyCode::Char('l') => return vec![Action::ToggleShowLogger],
-        // vim keybindings, apparently
-        KeyCode::Char('d') => return vec![Action::ScrollDown(1), Action::Render],
-        KeyCode::Char('u') => return vec![Action::ScrollUp(1), Action::Render],
+        // vim-style half-page scrolling
+        KeyCode::Char('d') => return vec![Action::ScrollDown(10), Action::Render],
+        KeyCode::Char('u') => return vec![Action::ScrollUp(10), Action::Render],
         _ => (),
       }
     }
@@ -617,8 +617,6 @@ impl Component for Home {
       return vec![Action::ToggleHelp, Action::Render];
     }
 
-    // TODO: seems like terminals can't recognize shift or ctrl at the same time as page up/down
-    // Is there another way we could scroll in large increments?
     match key.code {
       KeyCode::PageDown => return vec![Action::ScrollDown(1), Action::Render],
       KeyCode::PageUp => return vec![Action::ScrollUp(1), Action::Render],
@@ -655,6 +653,15 @@ impl Component for Home {
           },
           KeyCode::Char('o') => {
             vec![Action::OpenLogsInPager { logs: self.logs.clone() }]
+          },
+          KeyCode::Char('G') => {
+            let last = self.filtered_units.items.len().saturating_sub(1);
+            self.select(Some(last), true);
+            vec![Action::Render]
+          },
+          KeyCode::Char('g') => {
+            self.select(Some(0), true);
+            vec![Action::Render]
           },
           KeyCode::Enter | KeyCode::Char(' ') => vec![Action::EnterMode(Mode::ActionMenu)],
           _ => vec![],
@@ -1206,8 +1213,8 @@ impl Component for Home {
         Line::from(""),
         Line::from(Span::styled("Vim Style Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
         Line::from(""),
-        Line::from(vec![primary("j"), Span::raw(" navigate down")]),
-        Line::from(vec![primary("k"), Span::raw(" navigate up")]),
+        Line::from(vec![primary("j"), Span::raw(" / "), primary("k"), Span::raw(" navigate down/up")]),
+        Line::from(vec![primary("g"), Span::raw(" / "), primary("G"), Span::raw(" jump to first/last service")]),
         Line::from(vec![primary("ctrl+U"), Span::raw(" / "), primary("ctrl+D"), Span::raw(" scroll the logs")]),
       ];
 
