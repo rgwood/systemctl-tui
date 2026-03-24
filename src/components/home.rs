@@ -903,8 +903,9 @@ impl Component for Home {
       Action::RefreshUnitFiles => {
         let tx = self.action_tx.clone().unwrap();
         let scope = self.scope;
+        let limit_units = self.limit_units.clone();
         tokio::spawn(async move {
-          match systemd::get_unit_files(scope).await {
+          match systemd::get_unit_files(scope, &limit_units).await {
             Ok(unit_files) => {
               let _ = tx.send(Action::SetUnitFiles(unit_files));
             },
