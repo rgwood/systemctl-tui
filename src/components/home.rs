@@ -20,6 +20,7 @@ use tracing::{error, info, warn};
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use std::{
+  collections::HashSet,
   process::{Command, Stdio},
   time::Duration,
 };
@@ -40,6 +41,34 @@ pub enum Mode {
   Processing,
   Error,
   SignalMenu,
+  StatusFilter,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum UnitStatus {
+  Active,
+  Inactive,
+  Failed,
+  Enabled,
+  Disabled,
+  Masked,
+  Loaded,
+  Unloaded,
+}
+
+impl UnitStatus {
+  const ALL: [UnitStatus; 8] = [
+    UnitStatus::Active,
+    UnitStatus::Inactive,
+    UnitStatus::Failed,
+    UnitStatus::Enabled,
+    UnitStatus::Disabled,
+    UnitStatus::Masked,
+    UnitStatus::Loaded,
+    UnitStatus::Unloaded,
+  ];
+
+  const NONE: [UnitStatus; 0] = [];
 }
 
 #[derive(Clone, Copy)]
@@ -109,6 +138,7 @@ pub struct Home {
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
   pub journalctl_tx: Option<std::sync::mpsc::Sender<UnitId>>,
   pub fuzzy_matcher: SkimMatcherV2,
+  pub filtered_statuses: HashSet<UnitStatus>,
 }
 
 pub struct MenuItem {
@@ -208,7 +238,8 @@ impl<T> StatefulList<T> {
 impl Home {
   pub fn new(scope: Scope, limit_units: &[String]) -> Self {
     let limit_units = limit_units.to_vec();
-    Self { scope, limit_units, ..Default::default() }
+    let filtered_statuses = UnitStatus::ALL.into_iter().collect();
+    Self { scope, limit_units, filtered_statuses, ..Default::default() }
   }
 
   pub fn set_units(&mut self, units: Vec<UnitWithStatus>) {
@@ -323,14 +354,37 @@ impl Home {
     let previously_selected = self.selected_service();
     let search_value = self.input.value();
 
+    let status_filtered_units: Vec<UnitWithStatus> = self
+      .all_units
+      .values()
+      .filter_map(|u| -> Option<UnitWithStatus> {
+        if (self.filtered_statuses.contains(&UnitStatus::Active) && u.activation_state == "active")
+          || (self.filtered_statuses.contains(&UnitStatus::Inactive) && u.activation_state == "inactive")
+          || (self.filtered_statuses.contains(&UnitStatus::Failed) && u.activation_state == "failed")
+          || (self.filtered_statuses.contains(&UnitStatus::Enabled)
+            && u.enablement_state.as_deref().unwrap_or("") != "disabled"
+            && u.enablement_state.as_deref().unwrap_or("") != "masked")
+          || (self.filtered_statuses.contains(&UnitStatus::Disabled)
+            && u.enablement_state.as_deref().unwrap_or("") == "disabled")
+          || (self.filtered_statuses.contains(&UnitStatus::Masked)
+            && u.enablement_state.as_deref().unwrap_or("") == "masked")
+          || (self.filtered_statuses.contains(&UnitStatus::Loaded) && u.load_state == "loaded")
+          || (self.filtered_statuses.contains(&UnitStatus::Unloaded) && u.load_state != "loaded")
+        {
+          Some(u.clone())
+        } else {
+          None
+        }
+      })
+      .collect();
+
     let matching: Vec<MatchedUnit> = if search_value.is_empty() {
       // No search - return all units without highlighting
-      self.all_units.values().map(|u| MatchedUnit { unit: u.clone(), match_indices: vec![] }).collect()
+      status_filtered_units.into_iter().map(|u| MatchedUnit { unit: u.clone(), match_indices: vec![] }).collect()
     } else {
       // Fuzzy match with indices for highlighting
-      let mut scored: Vec<(i64, MatchedUnit)> = self
-        .all_units
-        .values()
+      let mut scored: Vec<(i64, MatchedUnit)> = status_filtered_units
+        .into_iter()
         .filter_map(|u| {
           self
             .fuzzy_matcher
@@ -402,6 +456,35 @@ impl Home {
     let cancel_token = CancellationToken::new();
     let future = systemd::disable_service(service.clone(), cancel_token.clone());
     self.service_action(service, "Disable".into(), cancel_token, future, true);
+  }
+
+  fn build_status_filter_menu(&mut self) {
+    let statuses = vec![
+      (UnitStatus::Active, "active", KeyCode::Char('c')),
+      (UnitStatus::Inactive, "inactive", KeyCode::Char('i')),
+      (UnitStatus::Failed, "failed", KeyCode::Char('f')),
+      (UnitStatus::Enabled, "enabled", KeyCode::Char('e')),
+      (UnitStatus::Disabled, "disabled", KeyCode::Char('d')),
+      (UnitStatus::Masked, "masked", KeyCode::Char('m')),
+      (UnitStatus::Loaded, "loaded", KeyCode::Char('l')),
+      (UnitStatus::Unloaded, "unloaded", KeyCode::Char('u')),
+    ];
+
+    let menu_items: Vec<MenuItem> = statuses
+      .into_iter()
+      .map(|(status, name, keycode)| {
+        let toggled = self.filtered_statuses.contains(&status);
+        let checkbox = if toggled { "[x]" } else { "[ ]" };
+        MenuItem::new(&format!("{} {}", checkbox, name), Action::Noop, Some(keycode))
+      })
+      .collect();
+    self.menu_items = StatefulList::with_items(menu_items);
+  }
+
+  fn toggle_filtered_status(&mut self, status: UnitStatus) {
+    if !self.filtered_statuses.remove(&status) {
+      self.filtered_statuses.insert(status);
+    }
   }
 
   fn service_action<Fut>(
@@ -663,6 +746,7 @@ impl Component for Home {
             self.select(Some(0), true);
             vec![Action::Render]
           },
+          KeyCode::Char('s') => vec![Action::EnterMode(Mode::StatusFilter)],
           KeyCode::Enter | KeyCode::Char(' ') => vec![Action::EnterMode(Mode::ActionMenu)],
           _ => vec![],
         }
@@ -751,6 +835,52 @@ impl Component for Home {
           vec![]
         },
       },
+      Mode::StatusFilter => match key.code {
+        KeyCode::Esc | KeyCode::Enter => {
+          vec![Action::EnterMode(Mode::ServiceList)]
+        },
+        KeyCode::Char('a') => {
+          self.filtered_statuses = UnitStatus::ALL.into_iter().collect();
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        KeyCode::Char('n') => {
+          self.filtered_statuses = UnitStatus::NONE.into_iter().collect();
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        KeyCode::Char('c') => {
+          self.toggle_filtered_status(UnitStatus::Active);
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        KeyCode::Char('i') => {
+          self.toggle_filtered_status(UnitStatus::Inactive);
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        KeyCode::Char('f') => {
+          self.toggle_filtered_status(UnitStatus::Failed);
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        KeyCode::Char('e') => {
+          self.toggle_filtered_status(UnitStatus::Enabled);
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        KeyCode::Char('d') => {
+          self.toggle_filtered_status(UnitStatus::Disabled);
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        KeyCode::Char('m') => {
+          self.toggle_filtered_status(UnitStatus::Masked);
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        KeyCode::Char('l') => {
+          self.toggle_filtered_status(UnitStatus::Loaded);
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        KeyCode::Char('u') => {
+          self.toggle_filtered_status(UnitStatus::Unloaded);
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        _ => vec![],
+      },
     }
   }
 
@@ -816,6 +946,8 @@ impl Component for Home {
           } else {
             return None;
           }
+        } else if mode == Mode::StatusFilter {
+          self.build_status_filter_menu();
         }
 
         self.mode = mode;
@@ -921,6 +1053,11 @@ impl Component for Home {
             },
           }
         });
+      },
+      Action::RefreshStatusFilterMenu => {
+        self.build_status_filter_menu();
+        self.refresh_filtered_units();
+        return Some(Action::Render);
       },
       Action::SetUnitFiles(unit_files) => {
         self.merge_unit_files(unit_files);
@@ -1248,9 +1385,9 @@ impl Component for Home {
       f.render_widget(paragraph, popup);
     }
 
-    let selected_item = match self.filtered_units.selected() {
-      Some(s) => s,
-      None => return,
+    let selected_unit_name = match self.filtered_units.selected() {
+      Some(s) => &s.unit.name,
+      None => "",
     };
 
     // Help line at the bottom
@@ -1265,28 +1402,34 @@ impl Component for Home {
 
     let help_line = match self.mode {
       Mode::Search => Line::from(span("Show actions: <enter>", theme.primary)),
-      Mode::ServiceList => {
-        Line::from(span("Show actions: <enter> | Open logs in pager: o | Edit unit file: e | Quit: q", theme.primary))
-      },
+      Mode::ServiceList => Line::from(span(
+        "Show actions: <enter> | Open logs in pager: o | Edit unit file: e | Filter by status: s | Quit: q",
+        theme.primary,
+      )),
       Mode::Help => Line::from(span("Close menu: <esc>", theme.primary)),
       Mode::ActionMenu => Line::from(span("Execute action: <enter> | Close menu: <esc>", theme.primary)),
       Mode::Processing => Line::from(span("Cancel task: <esc>", theme.primary)),
       Mode::Error => Line::from(span("Close menu: <esc>", theme.primary)),
       Mode::SignalMenu => Line::from(span("Send signal: <enter> | Close menu: <esc>", theme.primary)),
+      Mode::StatusFilter => Line::from(span("Close menu: <esc> | Select all: a | Select none: n", theme.primary)),
     };
 
     f.render_widget(help_line, help_rect);
     f.render_widget(Line::from(version), version_rect);
 
-    let title = format!("Actions for {}", selected_item.unit.name);
+    let title = format!("Actions for {}", selected_unit_name);
     let mut min_width = title.len() as u16 + 2; // title plus corners
     min_width = min_width.max(24); // hack: the width of the longest action name + 2
 
     let popup_width = min_width.min(f.area().width);
 
-    if self.mode == Mode::ActionMenu || self.mode == Mode::SignalMenu {
-      let title_prefix = if self.mode == Mode::ActionMenu { "Actions" } else { "Signals" };
-      let title = format!("{} for {}", title_prefix, selected_item.unit.name);
+    if self.mode == Mode::ActionMenu || self.mode == Mode::SignalMenu || self.mode == Mode::StatusFilter {
+      let title = match self.mode {
+        Mode::ActionMenu => format!("Actions for {}", selected_unit_name),
+        Mode::SignalMenu => format!("Signals for {}", selected_unit_name),
+        Mode::StatusFilter => "Status filter".to_string(),
+        _ => unreachable!(),
+      };
       let height = self.menu_items.items.len() as u16 + 2;
       let popup = f.area().centered(Constraint::Length(popup_width), Constraint::Length(height));
 
