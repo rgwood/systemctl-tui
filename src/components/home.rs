@@ -358,19 +358,38 @@ impl Home {
       .all_units
       .values()
       .filter_map(|u| -> Option<UnitWithStatus> {
-        if (self.filtered_statuses.contains(&UnitStatus::Active) && u.activation_state == "active")
-          || (self.filtered_statuses.contains(&UnitStatus::Inactive) && u.activation_state == "inactive")
-          || (self.filtered_statuses.contains(&UnitStatus::Failed) && u.activation_state == "failed")
-          || (self.filtered_statuses.contains(&UnitStatus::Enabled)
-            && u.enablement_state.as_deref().unwrap_or("") != "disabled"
-            && u.enablement_state.as_deref().unwrap_or("") != "masked")
-          || (self.filtered_statuses.contains(&UnitStatus::Disabled)
-            && u.enablement_state.as_deref().unwrap_or("") == "disabled")
-          || (self.filtered_statuses.contains(&UnitStatus::Masked)
-            && u.enablement_state.as_deref().unwrap_or("") == "masked")
-          || (self.filtered_statuses.contains(&UnitStatus::Loaded) && u.load_state == "loaded")
-          || (self.filtered_statuses.contains(&UnitStatus::Unloaded) && u.load_state != "loaded")
-        {
+        let active_filters = [UnitStatus::Active, UnitStatus::Inactive, UnitStatus::Failed];
+        let enablement_filters = [UnitStatus::Enabled, UnitStatus::Disabled, UnitStatus::Masked];
+        let load_filters = [UnitStatus::Loaded, UnitStatus::Unloaded];
+
+        let active_gate_active = active_filters.iter().any(|s| self.filtered_statuses.contains(s));
+        let enablement_gate_active = enablement_filters.iter().any(|s| self.filtered_statuses.contains(s));
+        let load_gate_active = load_filters.iter().any(|s| self.filtered_statuses.contains(s));
+
+        let passes_activation = !active_gate_active
+          || match u.activation_state.as_str() {
+            "active" => self.filtered_statuses.contains(&UnitStatus::Active),
+            "failed" => self.filtered_statuses.contains(&UnitStatus::Failed),
+            // Inactive is the "catch-all" activation state; anything not active or failed (activating, deactivating, etc) is considered inactive
+            _ => self.filtered_statuses.contains(&UnitStatus::Inactive),
+          };
+
+        let passes_enablement = !enablement_gate_active
+          || match u.enablement_state.as_deref().unwrap_or("") {
+            "disabled" => self.filtered_statuses.contains(&UnitStatus::Disabled),
+            "masked" => self.filtered_statuses.contains(&UnitStatus::Masked),
+            // Enabled is the "catch-all" enablement state; anything not disabled or masked (static, generated, etc) is considered enabled
+            _ => self.filtered_statuses.contains(&UnitStatus::Enabled),
+          };
+
+        let passes_load = !load_gate_active
+          || match u.load_state.as_str() {
+            "loaded" => self.filtered_statuses.contains(&UnitStatus::Loaded),
+            // Unloaded is the "catch-all" load state; anything not loaded (not found, error, etc) is considered unloaded
+            _ => self.filtered_statuses.contains(&UnitStatus::Unloaded),
+          };
+
+        if passes_activation && passes_enablement && passes_load {
           Some(u.clone())
         } else {
           None
