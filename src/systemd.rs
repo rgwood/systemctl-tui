@@ -671,17 +671,21 @@ pub enum LogDiagnostic {
 }
 
 impl LogDiagnostic {
-  /// Returns a human-readable message for display
+  /// Returns a human-readable message for display.
+  ///
+  /// The message is always a single line: the log pane treats each entry as
+  /// one log line and does not honor embedded newlines, so multi-line text
+  /// would render as collapsed whitespace.
   pub fn message(&self) -> String {
     match self {
       Self::NeverRun { unit_name } => format!("No logs: {} has never been started", unit_name),
       Self::JournalInaccessible { error } => {
-        format!("Cannot access journal: {}\n\nCheck that systemd-journald is running", error)
+        format!("Cannot access journal: {} (check that systemd-journald is running)", error)
       },
       Self::PermissionDenied { error } => format!(
-        "Permission denied accessing journal:\n{}\n\nTry one of:\n  \
-         - Add your user to the 'systemd-journal' group: sudo usermod -aG systemd-journal $USER (then re-login)\n  \
-         - Run with sudo: sudo systemctl-tui",
+        "Permission denied accessing journal. Add your user to the 'systemd-journal' group \
+         (sudo usermod -aG systemd-journal $USER, then re-login) or run with sudo systemctl-tui. \
+         (journalctl: {})",
         error
       ),
       Self::NoLogsRecorded { unit_name } => {
@@ -757,18 +761,23 @@ fn can_access_journal(scope: UnitScope) -> Result<(), String> {
   }
 }
 
-/// Parse journalctl stderr to determine the specific error type
+/// Parse journalctl stderr to determine the specific error type.
+///
+/// The input may span multiple lines (e.g. the `Hint:` notice journalctl
+/// emits when the user is missing from the journal-reading groups), but the
+/// log pane that renders this message does not honor newlines. Collapse all
+/// whitespace runs to single spaces so the message renders cleanly.
 pub fn parse_journalctl_error(stderr: &str) -> LogDiagnostic {
-  let trimmed = stderr.trim().to_string();
+  let flattened = stderr.split_whitespace().collect::<Vec<_>>().join(" ");
 
-  if is_permission_error(stderr) {
-    LogDiagnostic::PermissionDenied { error: trimmed }
+  if is_permission_error(&flattened) {
+    LogDiagnostic::PermissionDenied { error: flattened }
   } else {
-    let lower = stderr.to_lowercase();
+    let lower = flattened.to_lowercase();
     if lower.contains("no such file") || lower.contains("failed to open") {
-      LogDiagnostic::JournalInaccessible { error: trimmed }
+      LogDiagnostic::JournalInaccessible { error: flattened }
     } else {
-      LogDiagnostic::JournalctlError { stderr: trimmed }
+      LogDiagnostic::JournalctlError { stderr: flattened }
     }
   }
 }
