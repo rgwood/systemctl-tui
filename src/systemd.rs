@@ -678,7 +678,12 @@ impl LogDiagnostic {
       Self::JournalInaccessible { error } => {
         format!("Cannot access journal: {}\n\nCheck that systemd-journald is running", error)
       },
-      Self::PermissionDenied { error } => format!("Permission denied: {}\n\nTry: sudo systemctl-tui", error),
+      Self::PermissionDenied { error } => format!(
+        "Permission denied accessing journal:\n{}\n\nTry one of:\n  \
+         - Add your user to the 'systemd-journal' group: sudo usermod -aG systemd-journal $USER (then re-login)\n  \
+         - Run with sudo: sudo systemctl-tui",
+        error
+      ),
       Self::NoLogsRecorded { unit_name } => {
         format!("No logs recorded for {} (unit has run but produced no journal output)", unit_name)
       },
@@ -706,19 +711,46 @@ pub fn check_unit_has_run(unit: &UnitId) -> bool {
     .unwrap_or(false)
 }
 
-/// Check if the journal is accessible at all (tests general read access)
+/// Returns true if a `journalctl` error/warning message indicates a
+/// permission-related issue.
+///
+/// Covers both:
+/// - Hard failures (exit ≠ 0): `Permission denied`, `Access denied`,
+///   `No journal files were opened due to insufficient permissions.`
+/// - Soft failures (exit 0 with stderr): `Warning: some journal files were
+///   not opened due to insufficient permissions.`, and the `Hint:` notice
+///   shown when the user is missing from the adm/systemd-journal/wheel
+///   groups (`Users in groups '...' can see all messages.`).
+fn is_permission_error(message: &str) -> bool {
+  let s = message.to_lowercase();
+  s.contains("insufficient permissions")
+    || s.contains("not opened")
+    || s.contains("permission denied")
+    || s.contains("access denied")
+    || s.contains("can see all messages")
+}
+
+/// Check if the journal is accessible at all (tests general read access).
+///
+/// Note: deliberately does NOT pass `--quiet`. Per `man journalctl`, `--quiet`
+/// suppresses "warning messages regarding inaccessible system journal files",
+/// which is exactly the signal we need to surface to the user. Even when
+/// `journalctl` exits 0 (because at least one journal file is readable), a
+/// permission warning on stderr means the view is incomplete and we should
+/// treat it as a failure so callers can route through `parse_journalctl_error`.
 fn can_access_journal(scope: UnitScope) -> Result<(), String> {
-  let mut args = vec!["--lines=1", "--quiet"];
+  let mut args = vec!["--lines=1"];
   if scope == UnitScope::User {
     args.push("--user");
   }
 
   match Command::new("journalctl").args(&args).output() {
     Ok(output) => {
-      if output.status.success() {
-        Ok(())
+      let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+      if !output.status.success() || is_permission_error(&stderr) {
+        Err(stderr)
       } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        Ok(())
       }
     },
     Err(e) => Err(e.to_string()),
@@ -727,14 +759,17 @@ fn can_access_journal(scope: UnitScope) -> Result<(), String> {
 
 /// Parse journalctl stderr to determine the specific error type
 pub fn parse_journalctl_error(stderr: &str) -> LogDiagnostic {
-  let stderr_lower = stderr.to_lowercase();
+  let trimmed = stderr.trim().to_string();
 
-  if stderr_lower.contains("permission denied") || stderr_lower.contains("access denied") {
-    LogDiagnostic::PermissionDenied { error: stderr.trim().to_string() }
-  } else if stderr_lower.contains("no such file") || stderr_lower.contains("failed to open") {
-    LogDiagnostic::JournalInaccessible { error: stderr.trim().to_string() }
+  if is_permission_error(stderr) {
+    LogDiagnostic::PermissionDenied { error: trimmed }
   } else {
-    LogDiagnostic::JournalctlError { stderr: stderr.trim().to_string() }
+    let lower = stderr.to_lowercase();
+    if lower.contains("no such file") || lower.contains("failed to open") {
+      LogDiagnostic::JournalInaccessible { error: trimmed }
+    } else {
+      LogDiagnostic::JournalctlError { stderr: trimmed }
+    }
   }
 }
 
@@ -785,5 +820,57 @@ mod tests {
   fn test_parse_journalctl_error_generic() {
     let diagnostic = parse_journalctl_error("Something unexpected happened");
     assert!(matches!(diagnostic, LogDiagnostic::JournalctlError { .. }));
+  }
+
+  #[test]
+  fn test_parse_journalctl_error_some_files_not_opened() {
+    // The exact warning that prompted this fix: journalctl exits 0 but emits
+    // this on stderr when only a subset of journal files are readable.
+    let diagnostic =
+      parse_journalctl_error("Warning: some journal files were not opened due to insufficient permissions.");
+    assert!(matches!(diagnostic, LogDiagnostic::PermissionDenied { .. }));
+  }
+
+  #[test]
+  fn test_parse_journalctl_error_no_files_opened() {
+    let diagnostic = parse_journalctl_error("No journal files were opened due to insufficient permissions.");
+    assert!(matches!(diagnostic, LogDiagnostic::PermissionDenied { .. }));
+  }
+
+  #[test]
+  fn test_parse_journalctl_error_rotated_warning() {
+    // The "journal has been rotated since unit was started" variant.
+    let diagnostic = parse_journalctl_error(
+      "Warning: journal has been rotated since unit was started and some journal files were not \
+       opened due to insufficient permissions, output may be incomplete.",
+    );
+    assert!(matches!(diagnostic, LogDiagnostic::PermissionDenied { .. }));
+  }
+
+  #[test]
+  fn test_parse_journalctl_error_hint_group() {
+    let diagnostic = parse_journalctl_error(
+      "Hint: You are currently not seeing messages from other users and the system. Users in the \
+       'systemd-journal' group can see all messages. Pass -q to turn off this notice.",
+    );
+    assert!(matches!(diagnostic, LogDiagnostic::PermissionDenied { .. }));
+  }
+
+  #[test]
+  fn test_is_permission_error() {
+    assert!(is_permission_error("Warning: some journal files were not opened due to insufficient permissions."));
+    assert!(is_permission_error("No journal files were opened due to insufficient permissions."));
+    assert!(is_permission_error("Permission denied"));
+    assert!(is_permission_error("Hint: ... Users in groups 'systemd-journal' can see all messages."));
+    assert!(!is_permission_error(""));
+    assert!(!is_permission_error("-- No entries --"));
+    assert!(!is_permission_error("some unrelated diagnostic"));
+  }
+
+  #[test]
+  fn test_permission_denied_message_mentions_group_and_sudo() {
+    let msg = LogDiagnostic::PermissionDenied { error: "any stderr".to_string() }.message();
+    assert!(msg.contains("systemd-journal"));
+    assert!(msg.contains("sudo"));
   }
 }
