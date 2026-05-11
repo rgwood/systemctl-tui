@@ -683,9 +683,12 @@ impl LogDiagnostic {
         format!("Cannot access journal: {} (check that systemd-journald is running)", error)
       },
       Self::PermissionDenied { error } => format!(
-        "Permission denied accessing journal. Add your user to the 'systemd-journal' group \
-         (sudo usermod -aG systemd-journal $USER, then re-login) or run with sudo systemctl-tui. \
-         (journalctl: {})",
+        concat!(
+          "Permission denied accessing journal. ",
+          "Add your user to the 'systemd-journal' group ",
+          "(sudo usermod -aG systemd-journal $USER, then re-login) ",
+          "or run with sudo systemctl-tui. (journalctl: {})"
+        ),
         error
       ),
       Self::NoLogsRecorded { unit_name } => {
