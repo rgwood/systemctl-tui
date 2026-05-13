@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use systemctl_tui::{
   app::App,
+  components::home::LogOrder,
   systemd,
   utils::{get_data_dir, initialize_logging, initialize_panic_handler, version},
 };
@@ -26,6 +27,15 @@ struct Args {
   /// Limit view to only these unit files
   #[clap(short, long, default_value="*.service", num_args=1..)]
   limit_units: Vec<String>,
+  /// Default log display order
+  #[clap(long, default_value = "newest-at-top")]
+  log_order: CliLogOrder,
+}
+
+#[derive(Parser, Debug, ValueEnum, Clone)]
+pub enum CliLogOrder {
+  NewestAtTop,
+  NewestAtBottom,
 }
 
 #[derive(Subcommand, Debug)]
@@ -81,7 +91,12 @@ async fn main() -> Result<()> {
     },
   };
 
-  let mut app = App::new(scope, args.limit_units)?;
+  let log_order = match args.log_order {
+    CliLogOrder::NewestAtTop => LogOrder::NewestAtTop,
+    CliLogOrder::NewestAtBottom => LogOrder::NewestAtBottom,
+  };
+
+  let mut app = App::new(scope, args.limit_units, log_order)?;
   app.run().await?;
 
   Ok(())

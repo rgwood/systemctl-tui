@@ -42,6 +42,13 @@ pub enum Mode {
   SignalMenu,
 }
 
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
+pub enum LogOrder {
+  #[default]
+  NewestAtTop,
+  NewestAtBottom,
+}
+
 #[derive(Clone, Copy)]
 pub struct Theme {
   pub primary: Color,   // Cyan (dark) / Blue (light) - used in help popup
@@ -99,6 +106,8 @@ pub struct Home {
   pub filtered_units: StatefulList<MatchedUnit>,
   pub logs: Vec<String>,
   pub logs_scroll_offset: u16,
+  pub logs_order: LogOrder,
+  pub logs_panel_height: u16,
   pub mode: Mode,
   pub previous_mode: Option<Mode>,
   pub input: Input,
@@ -206,9 +215,9 @@ impl<T> StatefulList<T> {
 }
 
 impl Home {
-  pub fn new(scope: Scope, limit_units: &[String]) -> Self {
+  pub fn new(scope: Scope, limit_units: &[String], log_order: LogOrder) -> Self {
     let limit_units = limit_units.to_vec();
-    Self { scope, limit_units, ..Default::default() }
+    Self { scope, limit_units, logs_order: log_order, ..Default::default() }
   }
 
   pub fn set_units(&mut self, units: Vec<UnitWithStatus>) {
@@ -470,6 +479,12 @@ impl Home {
     let future = systemd::kill_service(service.clone(), signal.clone(), cancel_token.clone());
     self.service_action(service, format!("Kill with {}", signal), cancel_token, future, false);
   }
+
+  // inner height of the panel (excluding borders) is logs_panel_height - 2
+  fn scroll_to_bottom_offset(&self) -> u16 {
+    let inner_height = self.logs_panel_height.saturating_sub(2);
+    (self.logs.len() as u16).saturating_sub(inner_height)
+  }
 }
 
 impl Component for Home {
@@ -651,8 +666,8 @@ impl Component for Home {
             }
             vec![]
           },
-          KeyCode::Char('o') => {
-            vec![Action::OpenLogsInPager { logs: self.logs.clone() }]
+          KeyCode::Char('r') => {
+            vec![Action::ToggleLogOrder, Action::Render]
           },
           KeyCode::Char('G') => {
             let last = self.filtered_units.items.len().saturating_sub(1);
@@ -857,6 +872,10 @@ impl Component for Home {
         if let Some(selected) = self.filtered_units.selected() {
           if selected.unit.id() == unit {
             self.logs = logs;
+            self.logs_scroll_offset = match self.logs_order {
+              LogOrder::NewestAtTop => 0,
+              LogOrder::NewestAtBottom => self.scroll_to_bottom_offset(),
+            };
           }
         }
       },
@@ -864,6 +883,9 @@ impl Component for Home {
         if let Some(selected) = self.filtered_units.selected() {
           if selected.unit.id() == unit {
             self.logs.push(line);
+            if self.logs_order == LogOrder::NewestAtBottom {
+              self.logs_scroll_offset = self.scroll_to_bottom_offset();
+            }
           }
         }
       },
@@ -872,18 +894,25 @@ impl Component for Home {
         info!("scroll offset: {}", self.logs_scroll_offset);
       },
       Action::ScrollDown(offset) => {
-        self.logs_scroll_offset = self.logs_scroll_offset.saturating_add(offset);
+        self.logs_scroll_offset = self.logs_scroll_offset.saturating_add(offset).min(self.scroll_to_bottom_offset());
         info!("scroll offset: {}", self.logs_scroll_offset);
       },
       Action::ScrollToTop => {
         self.logs_scroll_offset = 0;
       },
+      Action::ToggleLogOrder => {
+        self.logs_order = match self.logs_order {
+          LogOrder::NewestAtTop => LogOrder::NewestAtBottom,
+          LogOrder::NewestAtBottom => LogOrder::NewestAtTop,
+        };
+        self.logs_scroll_offset = match self.logs_order {
+          LogOrder::NewestAtTop => 0,
+          LogOrder::NewestAtBottom => self.scroll_to_bottom_offset(),
+        };
+        return Some(Action::Render);
+      },
       Action::ScrollToBottom => {
-        // TODO: this is partially broken, figure out a better way to scroll to end
-        // problem: we don't actually know the height of the paragraph before it's rendered
-        // because it's wrapped based on the width of the widget
-        // A proper fix might need to wait until ratatui improves scrolling: https://github.com/ratatui-org/ratatui/issues/174
-        self.logs_scroll_offset = self.logs.len() as u16;
+        self.logs_scroll_offset = self.scroll_to_bottom_offset();
       },
 
       Action::StartService(service_name) => self.start_service(service_name),
@@ -1056,6 +1085,7 @@ impl Component for Home {
       Layout::new(Direction::Vertical, [Constraint::Min(8), Constraint::Percentage(100)]).split(right_panel);
     let details_panel = right_panel[0];
     let logs_panel = right_panel[1];
+    self.logs_panel_height = logs_panel.height;
 
     let details_block = Block::default().title("─Details").borders(Borders::ALL).border_type(BorderType::Rounded);
     let details_panel_panes = Layout::new(Direction::Horizontal, [Constraint::Min(14), Constraint::Percentage(100)])
@@ -1132,27 +1162,32 @@ impl Component for Home {
     f.render_widget(paragraph, values_pane);
     f.render_widget(details_block, details_panel);
 
-    let log_lines = self
-      .logs
-      .iter()
-      .rev()
-      .map(|l| {
-        if let Some((timestamp, rest)) = l.split_once(' ') {
-          if let Some(formatted_date) = parse_journalctl_timestamp(timestamp) {
-            return Line::from(vec![
-              Span::styled(formatted_date, Style::default().add_modifier(Modifier::DIM)),
-              Span::raw(" "),
-              Span::raw(rest),
-            ]);
-          }
+    fn format_log_line(l: &str) -> Line<'_> {
+      if let Some((timestamp, rest)) = l.split_once(' ') {
+        if let Some(formatted_date) = parse_journalctl_timestamp(timestamp) {
+          return Line::from(vec![
+            Span::styled(formatted_date, Style::default().add_modifier(Modifier::DIM)),
+            Span::raw(" "),
+            Span::raw(rest),
+          ]);
         }
+      }
+      Line::from(l)
+    }
 
-        Line::from(l.as_str())
-      })
-      .collect_vec();
+    let log_lines: Vec<Line<'_>> = if self.logs_order == LogOrder::NewestAtTop {
+      self.logs.iter().rev().map(|l| format_log_line(l)).collect()
+    } else {
+      self.logs.iter().map(|l| format_log_line(l)).collect()
+    };
 
+    let logs_title = if self.logs_order == LogOrder::NewestAtTop {
+      "─Service Logs [newest at top | r to flip]"
+    } else {
+      "─Service Logs [newest at bottom | r to flip]"
+    };
     let paragraph = Paragraph::new(log_lines)
-      .block(Block::default().title("─Service Logs").borders(Borders::ALL).border_type(BorderType::Rounded))
+      .block(Block::default().title(logs_title).borders(Borders::ALL).border_type(BorderType::Rounded))
       .style(Style::default())
       .wrap(Wrap { trim: true })
       .scroll((self.logs_scroll_offset, 0));
@@ -1197,7 +1232,7 @@ impl Component for Home {
     }
 
     if self.mode == Mode::Help {
-      let popup = f.area().centered(Constraint::Length(50), Constraint::Length(18));
+      let popup = f.area().centered(Constraint::Length(50), Constraint::Length(19));
 
       let primary = |s| Span::styled(s, Style::default().fg(theme.primary));
       let help_lines = vec![
@@ -1216,6 +1251,7 @@ impl Component for Home {
         Line::from(vec![primary("j"), Span::raw(" / "), primary("k"), Span::raw(" navigate down/up")]),
         Line::from(vec![primary("g"), Span::raw(" / "), primary("G"), Span::raw(" jump to first/last service")]),
         Line::from(vec![primary("ctrl+U"), Span::raw(" / "), primary("ctrl+D"), Span::raw(" scroll the logs")]),
+        Line::from(vec![primary("r"), Span::raw(" reverse log order (newest at top/bottom)")]),
       ];
 
       let name = env!("CARGO_PKG_NAME");
