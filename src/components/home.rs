@@ -10,6 +10,7 @@ use ratatui::{
   text::{Line, Span},
   widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
+use regex::Regex;
 use tokio::{
   io::AsyncBufReadExt,
   sync::mpsc::{self, UnboundedSender},
@@ -109,6 +110,7 @@ pub struct Home {
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
   pub journalctl_tx: Option<std::sync::mpsc::Sender<UnitId>>,
   pub fuzzy_matcher: SkimMatcherV2,
+  pub regex_mode: bool,
 }
 
 pub struct MenuItem {
@@ -326,6 +328,20 @@ impl Home {
     let matching: Vec<MatchedUnit> = if search_value.is_empty() {
       // No search - return all units without highlighting
       self.all_units.values().map(|u| MatchedUnit { unit: u.clone(), match_indices: vec![] }).collect()
+    } else if self.regex_mode {
+      match Regex::new(search_value) {
+        Ok(re) => self
+          .all_units
+          .values()
+          .filter_map(|u| {
+            let name = u.short_name();
+            let m = re.find(name)?;
+            let match_indices: Vec<usize> = (m.start()..m.end()).collect();
+            Some(MatchedUnit { unit: u.clone(), match_indices })
+          })
+          .collect(),
+        Err(_) => self.all_units.values().map(|u| MatchedUnit { unit: u.clone(), match_indices: vec![] }).collect(),
+      }
     } else {
       // Fuzzy match with indices for highlighting
       let mut scored: Vec<(i64, MatchedUnit)> = self
@@ -605,6 +621,7 @@ impl Component for Home {
         KeyCode::Char('q') => return vec![Action::Quit],
         KeyCode::Char('z') => return vec![Action::Suspend],
         KeyCode::Char('f') => return vec![Action::EnterMode(Mode::Search)],
+        KeyCode::Char('r') => return vec![Action::ToggleRegexMode],
         KeyCode::Char('l') => return vec![Action::ToggleShowLogger],
         // vim-style half-page scrolling
         KeyCode::Char('d') => return vec![Action::ScrollDown(10), Action::Render],
@@ -758,6 +775,11 @@ impl Component for Home {
     match action {
       Action::ToggleShowLogger => {
         self.show_logger = !self.show_logger;
+        return Some(Action::Render);
+      },
+      Action::ToggleRegexMode => {
+        self.regex_mode = !self.regex_mode;
+        self.refresh_filtered_units();
         return Some(Action::Render);
       },
       Action::EnterMode(mode) => {
@@ -1160,20 +1182,51 @@ impl Component for Home {
 
     let width = search_panel.width.max(3) - 3; // keep 2 for borders and 1 for cursor
     let scroll = self.input.visual_scroll(width as usize);
-    let input = Paragraph::new(self.input.value())
-      .style(match self.mode {
+
+    let invalid_regex = self.regex_mode && !self.input.value().is_empty() && Regex::new(self.input.value()).is_err();
+
+    let search_border_style = if invalid_regex {
+      Style::default().fg(Color::Red)
+    } else {
+      match self.mode {
         Mode::Search => Style::default().fg(theme.accent),
         _ => Style::default(),
-      })
+      }
+    };
+
+    let regex_indicator: Vec<Span> = if self.regex_mode {
+      let style = if invalid_regex {
+        Style::default().add_modifier(Modifier::BOLD).fg(Color::Red)
+      } else {
+        Style::default().add_modifier(Modifier::BOLD).fg(theme.accent)
+      };
+      vec![Span::raw(" "), Span::styled("[regex]", style)]
+    } else {
+      vec![]
+    };
+
+    let mut title_spans = vec![
+      Span::raw("─Search "),
+      Span::styled("(", Style::default().fg(theme.muted_alt)),
+      Span::styled("ctrl+f", Style::default().add_modifier(Modifier::BOLD).fg(theme.kbd)),
+      Span::styled(" or ", Style::default().fg(theme.muted_alt)),
+      Span::styled("/", Style::default().add_modifier(Modifier::BOLD).fg(theme.kbd)),
+      Span::styled(" · toggle regex: ", Style::default().fg(theme.muted_alt)),
+      Span::styled("ctrl+r", Style::default().add_modifier(Modifier::BOLD).fg(theme.kbd)),
+      Span::styled(")", Style::default().fg(theme.muted_alt)),
+    ];
+    title_spans.extend(regex_indicator);
+
+    let input = Paragraph::new(self.input.value())
+      .style(if invalid_regex { Style::default().fg(Color::Red) } else { Style::default() })
       .scroll((0, scroll as u16))
-      .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(Line::from(vec![
-        Span::raw("─Search "),
-        Span::styled("(", Style::default().fg(theme.muted_alt)),
-        Span::styled("ctrl+f", Style::default().add_modifier(Modifier::BOLD).fg(theme.kbd)),
-        Span::styled(" or ", Style::default().fg(theme.muted_alt)),
-        Span::styled("/", Style::default().add_modifier(Modifier::BOLD).fg(theme.kbd)),
-        Span::styled(")", Style::default().fg(theme.muted_alt)),
-      ])));
+      .block(
+        Block::default()
+          .borders(Borders::ALL)
+          .border_type(BorderType::Rounded)
+          .border_style(search_border_style)
+          .title(Line::from(title_spans)),
+      );
     f.render_widget(input, search_panel);
     // clear top right of search panel so we can put help instructions there
     let help_width = 24;
@@ -1197,7 +1250,7 @@ impl Component for Home {
     }
 
     if self.mode == Mode::Help {
-      let popup = f.area().centered(Constraint::Length(50), Constraint::Length(18));
+      let popup = f.area().centered(Constraint::Length(50), Constraint::Length(19));
 
       let primary = |s| Span::styled(s, Style::default().fg(theme.primary));
       let help_lines = vec![
@@ -1205,6 +1258,7 @@ impl Component for Home {
         Line::from(Span::styled("Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
         Line::from(""),
         Line::from(vec![primary("ctrl+C"), Span::raw(" or "), primary("ctrl+Q"), Span::raw(" to quit")]),
+        Line::from(vec![primary("ctrl+R"), Span::raw(" toggles regex search mode")]),
         Line::from(vec![primary("ctrl+L"), Span::raw(" toggles the logger pane")]),
         Line::from(vec![primary("PageUp"), Span::raw(" / "), primary("PageDown"), Span::raw(" scroll the logs")]),
         Line::from(vec![primary("Home"), Span::raw(" / "), primary("End"), Span::raw(" scroll to top/bottom")]),

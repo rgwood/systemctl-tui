@@ -13,6 +13,7 @@ pub enum Action {
   SpinnerTick,
   Resize(u16, u16),
   ToggleShowLogger,
+  ToggleRegexMode,
   RefreshServices,
   RefreshUnitFiles,
   SetServices(Vec<UnitWithStatus>),
