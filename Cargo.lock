@@ -2110,6 +2110,7 @@ version = "0.5.2"
 dependencies = [
  "anyhow",
  "better-panic",
+ "bitflags 2.11.0",
  "chrono",
  "clap",
  "clipboard-anywhere",

@@ -1,5 +1,5 @@
 use crate::{
-  components::home::Mode,
+  components::home::{Mode, StatusFilters},
   systemd::{UnitFile, UnitId, UnitWithStatus},
 };
 
@@ -39,4 +39,6 @@ pub enum Action {
   EditUnitFile { unit: UnitId, path: String },
   OpenLogsInPager { logs: Vec<String> },
   Noop,
+  ToggleStatus(StatusFilters),
+  ResetStatus,
 }

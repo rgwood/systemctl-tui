@@ -6,6 +6,7 @@ use indexmap::IndexMap;
 use itertools::Itertools;
 use ratatui::{
   layout::{Constraint, Direction, Layout, Rect},
+  prelude::Stylize,
   style::{Color, Modifier, Style},
   text::{Line, Span},
   widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
@@ -40,6 +41,7 @@ pub enum Mode {
   Processing,
   Error,
   SignalMenu,
+  FilterByStatus,
 }
 
 #[derive(Clone, Copy)]
@@ -109,6 +111,43 @@ pub struct Home {
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
   pub journalctl_tx: Option<std::sync::mpsc::Sender<UnitId>>,
   pub fuzzy_matcher: SkimMatcherV2,
+  pub filtered_statuses: StatusFilters,
+}
+
+bitflags::bitflags! {
+  /// Selection over various systemd unit statuses. If a given filter is selected, it means that
+  /// units with this status should be filter _out_.
+  #[repr(transparent)]
+  #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+  pub struct StatusFilters: u8 {
+    const ACTIVE     = 0b00000001;
+    const INACTIVE   = 0b00000010;
+    const FAILED     = 0b00000100;
+    const LOADED     = 0b00001000;
+    const NOT_LOADED = 0b00010000;
+    const NOT_FOUND  = 0b00100000;
+    const MASKED     = 0b01000000;
+  }
+}
+
+impl StatusFilters {
+  #[inline]
+  fn unit_status(unit: &UnitWithStatus) -> Self {
+    let mut flag = StatusFilters::empty();
+    flag.set(StatusFilters::ACTIVE, unit.is_active());
+    flag.set(StatusFilters::INACTIVE, unit.activation_state == "inactive");
+    flag.set(StatusFilters::FAILED, unit.is_failed());
+    flag.set(StatusFilters::LOADED, unit.load_state == "loaded");
+    flag.set(StatusFilters::NOT_LOADED, unit.load_state == "not-loaded");
+    flag.set(StatusFilters::NOT_FOUND, unit.is_not_found());
+    flag.set(StatusFilters::MASKED, unit.load_state == "masked");
+    flag
+  }
+
+  #[inline]
+  fn filter_unit(&self, unit: &UnitWithStatus) -> bool {
+    !self.intersects(Self::unit_status(unit))
+  }
 }
 
 pub struct MenuItem {
@@ -323,14 +362,16 @@ impl Home {
     let previously_selected = self.selected_service();
     let search_value = self.input.value();
 
+    let statuses = self.filtered_statuses;
+
+    let units_filtered_by_status = self.all_units.values().filter(|u| statuses.filter_unit(u));
+
     let matching: Vec<MatchedUnit> = if search_value.is_empty() {
       // No search - return all units without highlighting
-      self.all_units.values().map(|u| MatchedUnit { unit: u.clone(), match_indices: vec![] }).collect()
+      units_filtered_by_status.map(|u| MatchedUnit { unit: u.clone(), match_indices: vec![] }).collect()
     } else {
       // Fuzzy match with indices for highlighting
-      let mut scored: Vec<(i64, MatchedUnit)> = self
-        .all_units
-        .values()
+      let mut scored: Vec<(i64, MatchedUnit)> = units_filtered_by_status
         .filter_map(|u| {
           self
             .fuzzy_matcher
@@ -340,7 +381,7 @@ impl Home {
         .collect();
 
       // Sort by score descending (best matches first)
-      scored.sort_by(|a, b| b.0.cmp(&a.0));
+      scored.sort_by_key(|b| std::cmp::Reverse(b.0));
       scored.into_iter().map(|(_, m)| m).collect()
     };
 
@@ -606,6 +647,8 @@ impl Component for Home {
         KeyCode::Char('z') => return vec![Action::Suspend],
         KeyCode::Char('f') => return vec![Action::EnterMode(Mode::Search)],
         KeyCode::Char('l') => return vec![Action::ToggleShowLogger],
+        KeyCode::Char('r') => return vec![Action::ResetStatus],
+        KeyCode::Char('s') => return vec![Action::EnterMode(Mode::FilterByStatus)],
         // vim-style half-page scrolling
         KeyCode::Char('d') => return vec![Action::ScrollDown(10), Action::Render],
         KeyCode::Char('u') => return vec![Action::ScrollUp(10), Action::Render],
@@ -726,7 +769,7 @@ impl Component for Home {
         KeyCode::Esc => vec![Action::CancelTask],
         _ => vec![],
       },
-      Mode::SignalMenu => match key.code {
+      Mode::SignalMenu | Mode::FilterByStatus => match key.code {
         KeyCode::Esc => vec![Action::EnterMode(Mode::ServiceList)],
         KeyCode::Down | KeyCode::Char('j') => {
           self.menu_items.next();
@@ -762,63 +805,87 @@ impl Component for Home {
       },
       Action::EnterMode(mode) => {
         if mode == Mode::ActionMenu {
-          if let Some(selected) = self.filtered_units.selected() {
-            let mut menu_items = vec![
-              MenuItem::new("Start", Action::StartService(selected.unit.id()), Some(KeyCode::Char('s'))),
-              MenuItem::new("Stop", Action::StopService(selected.unit.id()), Some(KeyCode::Char('t'))),
-              MenuItem::new("Restart", Action::RestartService(selected.unit.id()), Some(KeyCode::Char('r'))),
-              MenuItem::new("Reload", Action::ReloadService(selected.unit.id()), Some(KeyCode::Char('l'))),
-              MenuItem::new("Enable", Action::EnableService(selected.unit.id()), Some(KeyCode::Char('n'))),
-              MenuItem::new("Disable", Action::DisableService(selected.unit.id()), Some(KeyCode::Char('d'))),
-              MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('k'))),
-              MenuItem::new(
-                "Open logs in pager",
-                Action::OpenLogsInPager { logs: self.logs.clone() },
-                Some(KeyCode::Char('o')),
-              ),
-            ];
+          let selected = self.filtered_units.selected()?;
+          let mut menu_items = vec![
+            MenuItem::new("Start", Action::StartService(selected.unit.id()), Some(KeyCode::Char('s'))),
+            MenuItem::new("Stop", Action::StopService(selected.unit.id()), Some(KeyCode::Char('t'))),
+            MenuItem::new("Restart", Action::RestartService(selected.unit.id()), Some(KeyCode::Char('r'))),
+            MenuItem::new("Reload", Action::ReloadService(selected.unit.id()), Some(KeyCode::Char('l'))),
+            MenuItem::new("Enable", Action::EnableService(selected.unit.id()), Some(KeyCode::Char('n'))),
+            MenuItem::new("Disable", Action::DisableService(selected.unit.id()), Some(KeyCode::Char('d'))),
+            MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('k'))),
+            MenuItem::new(
+              "Open logs in pager",
+              Action::OpenLogsInPager { logs: self.logs.clone() },
+              Some(KeyCode::Char('o')),
+            ),
+          ];
 
-            if let Some(Ok(file_path)) = &selected.unit.file_path {
-              menu_items.push(MenuItem::new("Copy unit file path", Action::CopyUnitFilePath, Some(KeyCode::Char('c'))));
-              menu_items.push(MenuItem::new(
-                "Edit unit file",
-                Action::EditUnitFile { unit: selected.unit.id(), path: file_path.clone() },
-                Some(KeyCode::Char('e')),
-              ));
-            }
-
-            self.menu_items = StatefulList::with_items(menu_items);
-            self.menu_items.state.select(Some(0));
-          } else {
-            return None;
+          if let Some(Ok(file_path)) = &selected.unit.file_path {
+            menu_items.push(MenuItem::new("Copy unit file path", Action::CopyUnitFilePath, Some(KeyCode::Char('c'))));
+            menu_items.push(MenuItem::new(
+              "Edit unit file",
+              Action::EditUnitFile { unit: selected.unit.id(), path: file_path.clone() },
+              Some(KeyCode::Char('e')),
+            ));
           }
+
+          self.menu_items = StatefulList::with_items(menu_items);
+          self.menu_items.state.select(Some(0));
         } else if mode == Mode::SignalMenu {
-          if let Some(selected) = self.filtered_units.selected() {
-            let signals = vec![
-              ("SIGTERM", KeyCode::Char('t')),
-              ("SIGHUP", KeyCode::Char('h')),
-              ("SIGINT", KeyCode::Char('i')),
-              ("SIGQUIT", KeyCode::Char('q')),
-              ("SIGKILL", KeyCode::Char('k')),
-              ("SIGUSR1", KeyCode::Char('1')),
-              ("SIGUSR2", KeyCode::Char('2')),
-            ];
+          let selected = self.filtered_units.selected()?;
+          let signals = vec![
+            ("SIGTERM", KeyCode::Char('t')),
+            ("SIGHUP", KeyCode::Char('h')),
+            ("SIGINT", KeyCode::Char('i')),
+            ("SIGQUIT", KeyCode::Char('q')),
+            ("SIGKILL", KeyCode::Char('k')),
+            ("SIGUSR1", KeyCode::Char('1')),
+            ("SIGUSR2", KeyCode::Char('2')),
+          ];
 
-            let menu_items: Vec<MenuItem> = signals
-              .into_iter()
-              .map(|(name, key_code)| {
-                MenuItem::new(name, Action::KillService(selected.unit.id(), name.to_string()), Some(key_code))
-              })
-              .collect();
+          let menu_items: Vec<MenuItem> = signals
+            .into_iter()
+            .map(|(name, key_code)| {
+              MenuItem::new(name, Action::KillService(selected.unit.id(), name.to_string()), Some(key_code))
+            })
+            .collect();
 
-            self.menu_items = StatefulList::with_items(menu_items);
-            self.menu_items.state.select(Some(0));
-          } else {
-            return None;
-          }
+          self.menu_items = StatefulList::with_items(menu_items);
+          self.menu_items.state.select(Some(0));
+        } else if mode == Mode::FilterByStatus {
+          let statuses = [
+            ("Failed", KeyCode::Char('f'), StatusFilters::FAILED),
+            ("Active", KeyCode::Char('a'), StatusFilters::ACTIVE),
+            ("Inactive", KeyCode::Char('i'), StatusFilters::INACTIVE),
+            ("Loaded", KeyCode::Char('l'), StatusFilters::LOADED),
+            ("Not Loaded", KeyCode::Char('n'), StatusFilters::NOT_LOADED),
+            ("Not Found", KeyCode::Char('x'), StatusFilters::NOT_FOUND),
+            ("Masked", KeyCode::Char('m'), StatusFilters::MASKED),
+          ];
+
+          let menu_items: Vec<MenuItem> = statuses
+            .into_iter()
+            .map(|(name, key_code, status)| {
+              MenuItem::new(name, Action::ToggleStatus(status), Some(key_code))
+            })
+            .collect();
+
+          self.menu_items = StatefulList::with_items(menu_items);
+          self.menu_items.state.select(Some(0));
         }
 
         self.mode = mode;
+        return Some(Action::Render);
+      },
+      Action::ResetStatus => {
+        self.filtered_statuses = StatusFilters::empty();
+        self.refresh_filtered_units();
+        return Some(Action::Render);
+      },
+      Action::ToggleStatus(status) => {
+        self.filtered_statuses.toggle(status);
+        self.refresh_filtered_units();
         return Some(Action::Render);
       },
       Action::EnterError(err) => {
@@ -1040,7 +1107,12 @@ impl Component for Home {
           } else {
             Style::default()
           })
-          .title("─Services"),
+          .title(Line::from(vec![
+            Span::raw("─Services "),
+            Span::styled("(", Style::default().fg(theme.muted_alt)),
+            Span::styled("ctrl+s", Style::default().add_modifier(Modifier::BOLD).fg(theme.kbd)),
+            Span::styled(" to filter)", Style::default().fg(theme.muted_alt)),
+          ])),
       )
       .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
 
@@ -1206,6 +1278,7 @@ impl Component for Home {
         Line::from(""),
         Line::from(vec![primary("ctrl+C"), Span::raw(" or "), primary("ctrl+Q"), Span::raw(" to quit")]),
         Line::from(vec![primary("ctrl+L"), Span::raw(" toggles the logger pane")]),
+        Line::from(vec![primary("ctrl+R"), Span::raw(" reset status filters")]),
         Line::from(vec![primary("PageUp"), Span::raw(" / "), primary("PageDown"), Span::raw(" scroll the logs")]),
         Line::from(vec![primary("Home"), Span::raw(" / "), primary("End"), Span::raw(" scroll to top/bottom")]),
         Line::from(vec![primary("Enter"), Span::raw(" or "), primary("Space"), Span::raw(" open the action menu")]),
@@ -1248,10 +1321,45 @@ impl Component for Home {
       f.render_widget(paragraph, popup);
     }
 
-    let selected_item = match self.filtered_units.selected() {
-      Some(s) => s,
-      None => return,
-    };
+    if self.mode == Mode::FilterByStatus {
+      let title = "Filter Unit Statuses";
+      let min_width = title.len() as u16 + 2; // title plus corners
+      let popup_width = min_width.min(f.area().width);
+
+      let height = self.menu_items.items.len() as u16 + 2;
+      let popup = f.area().centered(Constraint::Length(popup_width), Constraint::Length(height));
+
+      let items: Vec<ListItem> = self
+        .menu_items
+        .items
+        .iter()
+        .map(|i| {
+          let key_string = Span::styled(format!(" {:1} ", i.key_string()), Style::default().fg(theme.primary));
+          let mut name = Span::raw(&i.name);
+
+          if let Action::ToggleStatus(status) = i.action {
+            if self.filtered_statuses.contains(status) {
+              name = name.crossed_out().italic().dim();
+            }
+          };
+
+          let line = Line::from(vec![key_string, name]);
+          ListItem::new(line)
+        })
+        .collect();
+      let items = List::new(items)
+        .block(
+          Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(theme.accent))
+            .title(title),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
+
+      f.render_widget(Clear, popup);
+      f.render_stateful_widget(items, popup, &mut self.menu_items.state);
+    }
 
     // Help line at the bottom
 
@@ -1273,10 +1381,16 @@ impl Component for Home {
       Mode::Processing => Line::from(span("Cancel task: <esc>", theme.primary)),
       Mode::Error => Line::from(span("Close menu: <esc>", theme.primary)),
       Mode::SignalMenu => Line::from(span("Send signal: <enter> | Close menu: <esc>", theme.primary)),
+      Mode::FilterByStatus => Line::from(span("Toggle status: <enter> | Close menu: <esc>", theme.primary)),
     };
 
     f.render_widget(help_line, help_rect);
     f.render_widget(Line::from(version), version_rect);
+
+    let selected_item = match self.filtered_units.selected() {
+      Some(s) => s,
+      None => return,
+    };
 
     let title = format!("Actions for {}", selected_item.unit.name);
     let mut min_width = title.len() as u16 + 2; // title plus corners
