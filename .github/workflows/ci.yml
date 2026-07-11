@@ -31,9 +31,9 @@ jobs:
     - name: Run tests
       run: cargo test
 
-  # End-to-end test of --host support: drives the real binary in tmux against
-  # sshd on the runner itself (GitHub runners run real systemd)
-  remote_integration:
+  # End-to-end tests: drives the real binary in tmux, both against local systemd
+  # and in --host mode against sshd on the runner itself (runners run real systemd)
+  integration:
     runs-on: ubuntu-latest
 
     steps:
@@ -65,5 +65,8 @@ jobs:
     - name: Build
       run: cargo build
 
-    - name: Run remote integration tests
-      run: ./scripts/remote-integration-test.py --host localhost
+    - name: Run integration tests (local)
+      run: ./scripts/integration-test.py
+
+    - name: Run integration tests (remote via ssh localhost)
+      run: ./scripts/integration-test.py --host localhost
