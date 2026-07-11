@@ -42,7 +42,7 @@ Use `tmux capture-pane -t sctui-test -p` to read the rendered screen and assert 
 3. No panics or errors in stderr
 4. Process exits cleanly on `q` (note: press `Escape` first if in search mode, where `q` is just text input)
 
-For remote host (`--host`) changes, run the end-to-end suite in `scripts/remote-integration-test.py` against a host you can ssh to without a password (it includes a keystroke-drop regression test that scripted manual testing tends to miss).
+`scripts/integration-test.py` automates this checklist end-to-end (local by default, or `--host user@hostname` for remote mode; it includes a keystroke-drop regression test that manual testing tends to miss). Prefer running it over hand-rolling tmux commands.
 
 ### Test checklist
 
