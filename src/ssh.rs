@@ -73,13 +73,14 @@ impl SshHost {
         args.push("--system".into());
       },
       UnitScope::User => {
-        // Non-interactive SSH sessions have no XDG_RUNTIME_DIR, so the bridge can't find the
-        // user bus without help. Requires a running user manager (active session or lingering).
+        // `systemd-stdio-bridge --user` is unreliable in non-interactive SSH sessions (it can
+        // silently serve the system bus or fail outright), so point it at the user bus socket
+        // explicitly. Requires a running user manager (active session or lingering).
         // The remote shell word-splits ssh's command string, so the -c payload must be quoted;
         // $(id -u) is expanded by the remote sh, not locally.
         args.push("sh".into());
         args.push("-c".into());
-        args.push("'XDG_RUNTIME_DIR=/run/user/$(id -u) exec systemd-stdio-bridge --user'".into());
+        args.push("'exec systemd-stdio-bridge -p unix:path=/run/user/$(id -u)/bus'".into());
       },
     }
     args
