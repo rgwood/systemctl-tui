@@ -235,7 +235,7 @@ pub async fn get_all_services(scope: Scope, services: &[String]) -> Result<Vec<U
   }
 
   // sort by name case-insensitive
-  units.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+  units.sort_by_key(|a| a.name.to_lowercase());
 
   info!("Loaded systemd services in {:?}", start.elapsed());
 

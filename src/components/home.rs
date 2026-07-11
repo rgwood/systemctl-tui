@@ -337,7 +337,7 @@ impl Home {
         .collect();
 
       // Sort by score descending (best matches first)
-      scored.sort_by(|a, b| b.0.cmp(&a.0));
+      scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
       scored.into_iter().map(|(_, m)| m).collect()
     };
 
@@ -754,7 +754,8 @@ impl Component for Home {
       },
       Action::EnterMode(mode) => {
         if mode == Mode::ActionMenu {
-          if let Some(selected) = self.filtered_units.selected() {
+          {
+            let selected = self.filtered_units.selected()?;
             let mut menu_items = vec![
               MenuItem::new("Start", Action::StartService(selected.unit.id()), Some(KeyCode::Char('s'))),
               MenuItem::new("Stop", Action::StopService(selected.unit.id()), Some(KeyCode::Char('t'))),
@@ -781,11 +782,10 @@ impl Component for Home {
 
             self.menu_items = StatefulList::with_items(menu_items);
             self.menu_items.state.select(Some(0));
-          } else {
-            return None;
           }
         } else if mode == Mode::SignalMenu {
-          if let Some(selected) = self.filtered_units.selected() {
+          {
+            let selected = self.filtered_units.selected()?;
             let signals = vec![
               ("SIGTERM", KeyCode::Char('t')),
               ("SIGHUP", KeyCode::Char('h')),
@@ -805,8 +805,6 @@ impl Component for Home {
 
             self.menu_items = StatefulList::with_items(menu_items);
             self.menu_items.state.select(Some(0));
-          } else {
-            return None;
           }
         }
 
