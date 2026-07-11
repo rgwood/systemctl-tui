@@ -35,11 +35,14 @@ tmux resize-pane -t sctui-test -x 80 -y 24
 tmux kill-session -t sctui-test 2>/dev/null
 ```
 
-Note: `tmux capture-pane -p` returns empty content for alternate-screen TUI apps. To verify rendering, check stderr (where the TUI escape codes go) or just confirm the process hasn't crashed. The primary signals for a passing test are:
+Use `tmux capture-pane -t sctui-test -p` to read the rendered screen and assert on its contents (it captures alternate-screen apps fine). The primary signals for a passing test are:
 
 1. Process is still alive after each interaction
-2. No panics or errors in stderr
-3. Process exits cleanly on `q`
+2. `capture-pane` shows the expected content (services list, dialogs, logs)
+3. No panics or errors in stderr
+4. Process exits cleanly on `q` (note: press `Escape` first if in search mode, where `q` is just text input)
+
+`scripts/integration-test.py` automates this checklist end-to-end (local by default, or `--host user@hostname` for remote mode; it includes a keystroke-drop regression test that manual testing tends to miss). Prefer running it over hand-rolling tmux commands.
 
 ### Test checklist
 
