@@ -31,13 +31,14 @@ pub fn remote_host() -> Option<&'static SshHost> {
 /// Must be called before entering the alternate screen so password/2FA prompts work.
 pub fn init(host: String) -> Result<()> {
   let runtime_dir = std::env::var("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
-  // %C expands to a hash of local host, remote host, port, and user
-  let control_path = runtime_dir.join("systemctl-tui-ssh-%C");
+  // %C expands to a hash of local host, remote host, port, and user. Include our PID so that
+  // concurrent instances don't share a master (teardown would kill it out from under the other)
+  let control_path = runtime_dir.join(format!("systemctl-tui-ssh-{}-%C", std::process::id()));
 
   let status = Command::new("ssh")
     .args(["-o", "ControlMaster=auto", "-o"])
     .arg(format!("ControlPath={}", control_path.display()))
-    .args(["-o", "ControlPersist=60", "-N", "-f", "--", &host])
+    .args(["-o", "ControlPersist=60", "-o", "ConnectTimeout=10", "-N", "-f", "--", &host])
     .status()
     .context("Failed to run ssh. Is OpenSSH installed?")?;
 
@@ -45,14 +46,24 @@ pub fn init(host: String) -> Result<()> {
     bail!("Failed to connect to {host} over SSH");
   }
 
-  REMOTE_HOST.set(SshHost { host, control_path }).expect("ssh::init called twice");
+  let ssh_host = SshHost { host, control_path };
+
+  // Fail now with a clear message rather than later with an opaque D-Bus error
+  let bridge_check = ssh_host.command("command", &["-v", "systemd-stdio-bridge"]).output();
+  if !bridge_check.map(|o| o.status.success()).unwrap_or(false) {
+    let host = &ssh_host.host;
+    ssh_host.close_master();
+    bail!("systemd-stdio-bridge not found on {host}. It ships with systemd; is {host} running a systemd distro?");
+  }
+
+  REMOTE_HOST.set(ssh_host).expect("ssh::init called twice");
   Ok(())
 }
 
 /// Close the master connection. Safe to skip (ControlPersist expires it), but tidy.
 pub fn teardown() {
   if let Some(ssh_host) = remote_host() {
-    let _ = Command::new("ssh").args(ssh_host.mux_options()).args(["-O", "exit", "--", &ssh_host.host]).output();
+    ssh_host.close_master();
   }
 }
 
@@ -86,10 +97,14 @@ impl SshHost {
     args
   }
 
+  fn close_master(&self) {
+    let _ = Command::new("ssh").args(self.mux_options()).args(["-O", "exit", "--", &self.host]).output();
+  }
+
   /// Build a `std::process::Command` that runs `program args...` on the remote host.
   pub fn command(&self, program: &str, args: &[&str]) -> Command {
     let mut cmd = Command::new("ssh");
-    self.add_remote_invocation(&mut cmd, program, args);
+    cmd.args(self.remote_invocation_args(program, args));
     // ssh forwards its stdin to the remote command; if it inherits the TUI's stdin it
     // steals keystrokes from the terminal
     cmd.stdin(std::process::Stdio::null());
@@ -99,24 +114,21 @@ impl SshHost {
   /// Like [`SshHost::command`] but for tokio.
   pub fn tokio_command(&self, program: &str, args: &[&str]) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new("ssh");
-    let mut std_cmd = Command::new("ssh");
-    self.add_remote_invocation(&mut std_cmd, program, args);
-    cmd.args(std_cmd.get_args());
+    cmd.args(self.remote_invocation_args(program, args));
     // same stdin-stealing hazard as in `command` above
     cmd.stdin(std::process::Stdio::null());
     cmd
   }
 
-  fn add_remote_invocation(&self, cmd: &mut Command, program: &str, args: &[&str]) {
-    cmd.arg("-xT");
-    cmd.args(self.mux_options());
-    cmd.arg("--");
-    cmd.arg(&self.host);
+  fn remote_invocation_args(&self, program: &str, args: &[&str]) -> Vec<String> {
+    let mut ssh_args = vec!["-xT".to_string()];
+    ssh_args.extend(self.mux_options());
+    ssh_args.push("--".into());
+    ssh_args.push(self.host.clone());
     // ssh concatenates arguments and hands them to the remote shell, so quote each one
-    cmd.arg(shell_quote(program));
-    for arg in args {
-      cmd.arg(shell_quote(arg));
-    }
+    ssh_args.push(shell_quote(program));
+    ssh_args.extend(args.iter().map(|arg| shell_quote(arg)));
+    ssh_args
   }
 }
 
