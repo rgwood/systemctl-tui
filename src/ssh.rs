@@ -168,4 +168,87 @@ mod tests {
     assert_eq!(shell_quote("it's"), r"'it'\''s'");
     assert_eq!(shell_quote(""), "''");
   }
+
+  fn test_host() -> SshHost {
+    SshHost { host: "user@example".into(), control_path: PathBuf::from("/tmp/ctl-%C") }
+  }
+
+  fn args_of(cmd: &Command) -> Vec<String> {
+    cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect()
+  }
+
+  #[test]
+  fn test_remote_command_args() {
+    let host = test_host();
+    let cmd = host.command("journalctl", &["--lines=500", "-u", "foo bar.service"]);
+    assert_eq!(cmd.get_program(), "ssh");
+    assert_eq!(
+      args_of(&cmd),
+      vec![
+        "-xT",
+        "-o",
+        "ControlPath=/tmp/ctl-%C",
+        "-o",
+        "BatchMode=yes",
+        "--",
+        "user@example",
+        "journalctl",
+        "--lines=500",
+        "-u",
+        // quoted so the remote shell doesn't word-split it
+        "'foo bar.service'",
+      ]
+    );
+    // NOTE: stdin must be null for remote commands (ssh steals terminal input otherwise),
+    // but std::process::Command has no getter for stdio config. The remote integration
+    // test's typing check covers that regression.
+  }
+
+  #[test]
+  fn test_tokio_command_matches_std_command() {
+    let host = test_host();
+    let std_cmd = host.command("systemctl", &["show", "-P", "FragmentPath", "foo.service"]);
+    let tokio_cmd = host.tokio_command("systemctl", &["show", "-P", "FragmentPath", "foo.service"]);
+    assert_eq!(args_of(tokio_cmd.as_std()), args_of(&std_cmd));
+  }
+
+  #[test]
+  fn test_bridge_args_global() {
+    let host = test_host();
+    let args: Vec<String> =
+      host.bridge_ssh_args(UnitScope::Global).iter().map(|a| a.to_string_lossy().into_owned()).collect();
+    assert_eq!(
+      args,
+      vec![
+        "-xT",
+        "-o",
+        "ControlPath=/tmp/ctl-%C",
+        "-o",
+        "BatchMode=yes",
+        "--",
+        "user@example",
+        "systemd-stdio-bridge",
+        "--system",
+      ]
+    );
+  }
+
+  #[test]
+  fn test_bridge_args_user() {
+    let host = test_host();
+    let args: Vec<String> =
+      host.bridge_ssh_args(UnitScope::User).iter().map(|a| a.to_string_lossy().into_owned()).collect();
+    // the -c payload must stay single-quoted: the remote shell word-splits ssh's
+    // command string, and $(id -u) must be expanded remotely, not locally
+    assert_eq!(args[args.len() - 3..], ["sh", "-c", "'exec systemd-stdio-bridge -p unix:path=/run/user/$(id -u)/bus'"]);
+    assert_eq!(args[args.len() - 4], "user@example");
+  }
+
+  #[test]
+  fn test_local_command_passthrough() {
+    // no remote host initialized in tests, so host_command should run the program directly
+    let cmd = host_command("journalctl", &["--lines=1"]);
+    assert_eq!(cmd.get_program(), "journalctl");
+    assert_eq!(args_of(&cmd), vec!["--lines=1"]);
+  }
 }

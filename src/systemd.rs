@@ -700,6 +700,8 @@ pub enum LogDiagnostic {
   PermissionDenied { error: String },
   /// Journal is available but no logs exist for this unit
   NoLogsRecorded { unit_name: String },
+  /// The user can only see their own journal entries, not system-wide ones
+  LimitedJournalAccess,
   /// journalctl command failed with an error
   JournalctlError { stderr: String },
 }
@@ -715,6 +717,15 @@ impl LogDiagnostic {
       Self::PermissionDenied { error } => format!("Permission denied: {}\n\nTry: sudo systemctl-tui", error),
       Self::NoLogsRecorded { unit_name } => {
         format!("No logs recorded for {} (unit has run but produced no journal output)", unit_name)
+      },
+      Self::LimitedJournalAccess => {
+        let place = match crate::ssh::remote_host() {
+          Some(ssh_host) => format!(" on {}", ssh_host.host),
+          None => String::new(),
+        };
+        format!(
+          "No access to system logs: this user can only see its own journal entries.\n\nTo fix, run{place}: sudo usermod -aG systemd-journal $USER\n(takes effect on next login)"
+        )
       },
       Self::JournalctlError { stderr } => format!("journalctl error: {}", stderr),
     }
@@ -739,23 +750,35 @@ pub fn check_unit_has_run(unit: &UnitId) -> bool {
     .unwrap_or(false)
 }
 
-/// Check if the journal is accessible at all (tests general read access)
-fn can_access_journal(scope: UnitScope) -> Result<(), String> {
-  let mut args = vec!["--lines=1", "--quiet"];
+/// Check whether the journal is readable and we can see system-wide entries.
+/// Returns a diagnostic if something is wrong. Deliberately not using --quiet:
+/// journalctl succeeds with empty output when the user can only see their own
+/// entries, and the warning on stderr is the only signal.
+fn check_journal_access(scope: UnitScope) -> Option<LogDiagnostic> {
+  let mut args = vec!["--lines=1"];
   if scope == UnitScope::User {
     args.push("--user");
   }
 
   match ssh::host_command("journalctl", &args).output() {
     Ok(output) => {
+      let stderr = String::from_utf8_lossy(&output.stderr);
+      if scope == UnitScope::Global && journalctl_warns_about_limited_access(&stderr) {
+        return Some(LogDiagnostic::LimitedJournalAccess);
+      }
       if output.status.success() {
-        Ok(())
+        None
       } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        Some(parse_journalctl_error(stderr.trim()))
       }
     },
-    Err(e) => Err(e.to_string()),
+    Err(e) => Some(LogDiagnostic::JournalInaccessible { error: e.to_string() }),
   }
+}
+
+/// Does this journalctl stderr contain the warning about only seeing your own messages?
+pub fn journalctl_warns_about_limited_access(stderr: &str) -> bool {
+  stderr.contains("Users in groups") || stderr.contains("not seeing messages from other users")
 }
 
 /// Parse journalctl stderr to determine the specific error type
@@ -773,14 +796,15 @@ pub fn parse_journalctl_error(stderr: &str) -> LogDiagnostic {
 
 /// Diagnose why logs are missing for a unit
 pub fn diagnose_missing_logs(unit: &UnitId) -> LogDiagnostic {
-  // Check 1: Has unit ever run?
-  if !check_unit_has_run(unit) {
-    return LogDiagnostic::NeverRun { unit_name: unit.name.clone() };
+  // Check 1: Can we read the journal at all? Do this first: without access,
+  // every unit looks like it has no logs and other checks are misleading
+  if let Some(diagnostic) = check_journal_access(unit.scope) {
+    return diagnostic;
   }
 
-  // Check 2: Can we access the journal at all?
-  if let Err(error) = can_access_journal(unit.scope) {
-    return parse_journalctl_error(&error);
+  // Check 2: Has the unit ever run?
+  if !check_unit_has_run(unit) {
+    return LogDiagnostic::NeverRun { unit_name: unit.name.clone() };
   }
 
   // If we get here, journal is accessible but no logs for this specific unit
@@ -812,6 +836,17 @@ mod tests {
   fn test_parse_journalctl_error_no_file() {
     let diagnostic = parse_journalctl_error("No such file or directory");
     assert!(matches!(diagnostic, LogDiagnostic::JournalInaccessible { .. }));
+  }
+
+  #[test]
+  fn test_limited_access_warning_detection() {
+    // real journalctl output from a user not in adm/systemd-journal (systemd 249)
+    let stderr = "Hint: You are currently not seeing messages from other users and the system.\n      \
+                  Users in groups 'adm', 'systemd-journal' can see all messages.\n      \
+                  Pass -q to turn off this notice.";
+    assert!(journalctl_warns_about_limited_access(stderr));
+    assert!(!journalctl_warns_about_limited_access("-- No entries --"));
+    assert!(!journalctl_warns_about_limited_access(""));
   }
 
   #[test]
