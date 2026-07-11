@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use systemctl_tui::{
   app::App,
-  systemd,
+  ssh, systemd,
   utils::{get_data_dir, initialize_logging, initialize_panic_handler, version},
 };
 
@@ -26,6 +26,9 @@ struct Args {
   /// Limit view to only these unit files
   #[clap(short, long, default_value="*.service", num_args=1..)]
   limit_units: Vec<String>,
+  /// Manage a remote host over SSH (e.g. user@hostname). Requires systemd-stdio-bridge on the remote host.
+  #[clap(long)]
+  host: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -81,8 +84,20 @@ async fn main() -> Result<()> {
     },
   };
 
+  // Connect before entering the TUI so SSH auth prompts (password, 2FA) work
+  if let Some(host) = args.host {
+    println!("Connecting to {host}...");
+    if let Err(e) = ssh::init(host) {
+      // ssh has already printed its own error to stderr
+      eprintln!("{e}");
+      std::process::exit(1);
+    }
+  }
+
   let mut app = App::new(scope, args.limit_units)?;
-  app.run().await?;
+  let result = app.run().await;
+  ssh::teardown();
+  result?;
 
   Ok(())
 }

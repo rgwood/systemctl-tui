@@ -19,10 +19,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use tui_input::{backend::crossterm::EventHandler, Input};
 
-use std::{
-  process::{Command, Stdio},
-  time::Duration,
-};
+use std::{process::Stdio, time::Duration};
 
 use super::{logger::Logger, Component, Frame};
 use crate::{
@@ -531,7 +528,7 @@ impl Component for Home {
           args.push("--user");
         }
 
-        match Command::new("journalctl").args(&args).output() {
+        match crate::ssh::host_command("journalctl", &args).output() {
           Ok(output) => {
             if output.status.success() {
               info!("Got logs for {} in {:?}", unit.name, start.elapsed());
@@ -568,19 +565,14 @@ impl Component for Home {
         // This does mean that we'll miss any logs that are written between the two commands, low enough risk for now
         let tx = tx.clone();
         last_follow_handle = Some(tokio::spawn(async move {
-          let mut command = tokio::process::Command::new("journalctl");
-          command.arg("-u");
-          command.arg(unit.name.clone());
-          command.arg("--output=short-iso");
-          command.arg("--follow");
-          command.arg("--lines=0");
-          command.arg("--quiet");
+          let mut args = vec!["-u", &unit.name, "--output=short-iso", "--follow", "--lines=0", "--quiet"];
+          if unit.scope == UnitScope::User {
+            args.push("--user");
+          }
+          let mut command = crate::ssh::host_tokio_command("journalctl", &args);
           command.stdout(Stdio::piped());
           command.stderr(Stdio::piped());
-
-          if unit.scope == UnitScope::User {
-            command.arg("--user");
-          }
+          command.kill_on_drop(true);
 
           let mut child = command.spawn().expect("failed to execute process");
 

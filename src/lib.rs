@@ -11,3 +11,5 @@ pub mod terminal;
 pub mod utils;
 
 pub mod systemd;
+
+pub mod ssh;
