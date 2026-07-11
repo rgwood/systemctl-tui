@@ -90,6 +90,9 @@ impl SshHost {
   pub fn command(&self, program: &str, args: &[&str]) -> Command {
     let mut cmd = Command::new("ssh");
     self.add_remote_invocation(&mut cmd, program, args);
+    // ssh forwards its stdin to the remote command; if it inherits the TUI's stdin it
+    // steals keystrokes from the terminal
+    cmd.stdin(std::process::Stdio::null());
     cmd
   }
 
@@ -99,6 +102,8 @@ impl SshHost {
     let mut std_cmd = Command::new("ssh");
     self.add_remote_invocation(&mut std_cmd, program, args);
     cmd.args(std_cmd.get_args());
+    // same stdin-stealing hazard as in `command` above
+    cmd.stdin(std::process::Stdio::null());
     cmd
   }
 
