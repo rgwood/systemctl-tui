@@ -1,13 +1,14 @@
 // File initially taken from https://github.com/servicer-labs/servicer/blob/master/src/utils/systemd.rs, since modified
 
 use core::str;
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use log::error;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use zbus::{proxy, zvariant, Connection};
+
+use crate::ssh;
 
 #[derive(Debug, Clone)]
 pub struct UnitWithStatus {
@@ -155,8 +156,8 @@ pub async fn get_unit_files(scope: Scope, services: &[String]) -> Result<Vec<Uni
       Ok(conn) => conn,
       Err(e) => {
         error!("get_unit_files: failed to get {:?} connection: {:?}", unit_scope, e);
-        if is_root && unit_scope == UnitScope::User {
-          info!("get_unit_files: skipping user scope because we're root");
+        if (is_root || ssh::remote_host().is_some()) && unit_scope == UnitScope::User {
+          info!("get_unit_files: skipping user scope");
           continue;
         }
         return Err(e);
@@ -171,8 +172,8 @@ pub async fn get_unit_files(scope: Scope, services: &[String]) -> Result<Vec<Uni
         },
         Err(e) => {
           error!("get_unit_files: list_unit_files_by_patterns failed for {:?}: {:?}", unit_scope, e);
-          if is_root && unit_scope == UnitScope::User {
-            info!("get_unit_files: ignoring user scope error because we're root");
+          if (is_root || ssh::remote_host().is_some()) && unit_scope == UnitScope::User {
+            info!("get_unit_files: ignoring user scope error");
             vec![]
           } else {
             return Err(e.into());
@@ -218,18 +219,23 @@ pub async fn get_all_services(scope: Scope, services: &[String]) -> Result<Vec<U
       units.extend(system_units?);
 
       // Should always be able to get user units, but it may fail when running as root
-      if let Ok(user_units) = user_units {
-        units.extend(user_units);
-      } else if is_root {
-        error!("Failed to get user units, ignoring because we're running as root")
-      } else {
-        user_units?;
+      // or when the remote host has no running user manager
+      match user_units {
+        Ok(user_units) => units.extend(user_units),
+        Err(e) if is_root => error!("Failed to get user units, ignoring because we're running as root: {e:?}"),
+        Err(e) if ssh::remote_host().is_some() => {
+          error!(
+            "Failed to get user units from remote host: {e:?}. \
+             This requires an active session or lingering (loginctl enable-linger) on the remote host."
+          )
+        },
+        Err(e) => return Err(e),
       }
     },
   }
 
   // sort by name case-insensitive
-  units.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+  units.sort_by_key(|a| a.name.to_lowercase());
 
   info!("Loaded systemd services in {:?}", start.elapsed());
 
@@ -253,7 +259,7 @@ pub fn get_unit_file_location(service: &UnitId) -> Result<String> {
     args.insert(0, "--user");
   }
 
-  let output = Command::new("systemctl").args(&args).output()?;
+  let output = ssh::host_command("systemctl", &args).output()?;
 
   if output.status.success() {
     let path = str::from_utf8(&output.stdout)?.trim();
@@ -329,10 +335,38 @@ pub async fn reload(scope: UnitScope, cancel_token: CancellationToken) -> Result
 }
 
 async fn get_connection(scope: UnitScope) -> Result<Connection, anyhow::Error> {
-  match scope {
-    UnitScope::Global => Ok(Connection::system().await?),
-    UnitScope::User => Ok(Connection::session().await?),
-  }
+  // Cache connections; this matters a lot for remote hosts, where each new connection
+  // spawns an ssh + systemd-stdio-bridge pair
+  static GLOBAL_CONNECTION: tokio::sync::OnceCell<Connection> = tokio::sync::OnceCell::const_new();
+  static USER_CONNECTION: tokio::sync::OnceCell<Connection> = tokio::sync::OnceCell::const_new();
+
+  let cell = match scope {
+    UnitScope::Global => &GLOBAL_CONNECTION,
+    UnitScope::User => &USER_CONNECTION,
+  };
+
+  let connection = cell
+    .get_or_try_init(|| async {
+      match ssh::remote_host() {
+        Some(ssh_host) => {
+          let unixexec = zbus::address::transport::Unixexec::new(
+            std::path::PathBuf::from("ssh"),
+            Some(std::ffi::OsString::from("ssh")),
+            ssh_host.bridge_ssh_args(scope),
+          );
+          let connection =
+            zbus::connection::Builder::address(zbus::address::Transport::Unixexec(unixexec))?.build().await?;
+          info!("Established remote D-Bus connection to {} for {:?} scope", ssh_host.host, scope);
+          Ok::<Connection, anyhow::Error>(connection)
+        },
+        None => match scope {
+          UnitScope::Global => Ok(Connection::system().await?),
+          UnitScope::User => Ok(Connection::session().await?),
+        },
+      }
+    })
+    .await?;
+  Ok(connection.clone())
 }
 
 pub async fn restart_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
@@ -426,7 +460,7 @@ pub async fn kill_service(service: UnitId, signal: String, cancel_token: Cancell
     }
     args.push(&service.name);
 
-    let output = Command::new("systemctl").args(&args).output()?;
+    let output = ssh::host_command("systemctl", &args).output()?;
 
     if output.status.success() {
       info!("Successfully sent signal {} to srvice {}", signal, service.name);
@@ -666,6 +700,8 @@ pub enum LogDiagnostic {
   PermissionDenied { error: String },
   /// Journal is available but no logs exist for this unit
   NoLogsRecorded { unit_name: String },
+  /// The user can only see their own journal entries, not system-wide ones
+  LimitedJournalAccess,
   /// journalctl command failed with an error
   JournalctlError { stderr: String },
 }
@@ -682,6 +718,15 @@ impl LogDiagnostic {
       Self::NoLogsRecorded { unit_name } => {
         format!("No logs recorded for {} (unit has run but produced no journal output)", unit_name)
       },
+      Self::LimitedJournalAccess => {
+        let place = match crate::ssh::remote_host() {
+          Some(ssh_host) => format!(" on {}", ssh_host.host),
+          None => String::new(),
+        };
+        format!(
+          "No access to system logs: this user can only see its own journal entries.\n\nTo fix, run{place}: sudo usermod -aG systemd-journal $USER\n(takes effect on next login)"
+        )
+      },
       Self::JournalctlError { stderr } => format!("journalctl error: {}", stderr),
     }
   }
@@ -695,8 +740,7 @@ pub fn check_unit_has_run(unit: &UnitId) -> bool {
   }
   args.push(&unit.name);
 
-  Command::new("systemctl")
-    .args(&args)
+  ssh::host_command("systemctl", &args)
     .output()
     .ok()
     .and_then(
@@ -706,23 +750,48 @@ pub fn check_unit_has_run(unit: &UnitId) -> bool {
     .unwrap_or(false)
 }
 
-/// Check if the journal is accessible at all (tests general read access)
-fn can_access_journal(scope: UnitScope) -> Result<(), String> {
-  let mut args = vec!["--lines=1", "--quiet"];
+/// Check whether the journal is readable and we can see system-wide entries.
+/// Returns a diagnostic if something is wrong. Deliberately not using --quiet:
+/// journalctl succeeds with empty output when the user can only see their own
+/// entries, and the warning on stderr is the only signal.
+/// Cached per scope: access won't change mid-session (group changes need a new
+/// login), and on remote hosts each check costs an SSH round trip.
+fn check_journal_access(scope: UnitScope) -> Option<LogDiagnostic> {
+  static GLOBAL_ACCESS: std::sync::OnceLock<Option<LogDiagnostic>> = std::sync::OnceLock::new();
+  static USER_ACCESS: std::sync::OnceLock<Option<LogDiagnostic>> = std::sync::OnceLock::new();
+
+  let cell = match scope {
+    UnitScope::Global => &GLOBAL_ACCESS,
+    UnitScope::User => &USER_ACCESS,
+  };
+  cell.get_or_init(|| check_journal_access_uncached(scope)).clone()
+}
+
+fn check_journal_access_uncached(scope: UnitScope) -> Option<LogDiagnostic> {
+  let mut args = vec!["--lines=1"];
   if scope == UnitScope::User {
     args.push("--user");
   }
 
-  match Command::new("journalctl").args(&args).output() {
+  match ssh::host_command("journalctl", &args).output() {
     Ok(output) => {
+      let stderr = String::from_utf8_lossy(&output.stderr);
+      if scope == UnitScope::Global && journalctl_warns_about_limited_access(&stderr) {
+        return Some(LogDiagnostic::LimitedJournalAccess);
+      }
       if output.status.success() {
-        Ok(())
+        None
       } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        Some(parse_journalctl_error(stderr.trim()))
       }
     },
-    Err(e) => Err(e.to_string()),
+    Err(e) => Some(LogDiagnostic::JournalInaccessible { error: e.to_string() }),
   }
+}
+
+/// Does this journalctl stderr contain the warning about only seeing your own messages?
+pub fn journalctl_warns_about_limited_access(stderr: &str) -> bool {
+  stderr.contains("Users in groups") || stderr.contains("not seeing messages from other users")
 }
 
 /// Parse journalctl stderr to determine the specific error type
@@ -740,14 +809,15 @@ pub fn parse_journalctl_error(stderr: &str) -> LogDiagnostic {
 
 /// Diagnose why logs are missing for a unit
 pub fn diagnose_missing_logs(unit: &UnitId) -> LogDiagnostic {
-  // Check 1: Has unit ever run?
-  if !check_unit_has_run(unit) {
-    return LogDiagnostic::NeverRun { unit_name: unit.name.clone() };
+  // Check 1: Can we read the journal at all? Do this first: without access,
+  // every unit looks like it has no logs and other checks are misleading
+  if let Some(diagnostic) = check_journal_access(unit.scope) {
+    return diagnostic;
   }
 
-  // Check 2: Can we access the journal at all?
-  if let Err(error) = can_access_journal(unit.scope) {
-    return parse_journalctl_error(&error);
+  // Check 2: Has the unit ever run?
+  if !check_unit_has_run(unit) {
+    return LogDiagnostic::NeverRun { unit_name: unit.name.clone() };
   }
 
   // If we get here, journal is accessible but no logs for this specific unit
@@ -779,6 +849,17 @@ mod tests {
   fn test_parse_journalctl_error_no_file() {
     let diagnostic = parse_journalctl_error("No such file or directory");
     assert!(matches!(diagnostic, LogDiagnostic::JournalInaccessible { .. }));
+  }
+
+  #[test]
+  fn test_limited_access_warning_detection() {
+    // real journalctl output from a user not in adm/systemd-journal (systemd 249)
+    let stderr = "Hint: You are currently not seeing messages from other users and the system.\n      \
+                  Users in groups 'adm', 'systemd-journal' can see all messages.\n      \
+                  Pass -q to turn off this notice.";
+    assert!(journalctl_warns_about_limited_access(stderr));
+    assert!(!journalctl_warns_about_limited_access("-- No entries --"));
+    assert!(!journalctl_warns_about_limited_access(""));
   }
 
   #[test]
