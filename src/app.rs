@@ -94,6 +94,11 @@ impl App {
           Action::Resize(_, _) => terminal.render().await,
           // This would normally be in home.rs, but it needs to do some terminal and event handling stuff that's easier here
           Action::EditUnitFile { unit, path } => {
+            // The unit file lives on the remote host; we can't open it in a local editor
+            if crate::ssh::remote_host().is_some() {
+              action_tx.send(Action::EnterError("Editing unit files on remote hosts is not supported (yet)".into()))?;
+              continue;
+            }
             event.stop();
             let mut tui = terminal.tui.lock().await;
             tui.exit()?;

@@ -1,13 +1,14 @@
 // File initially taken from https://github.com/servicer-labs/servicer/blob/master/src/utils/systemd.rs, since modified
 
 use core::str;
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use log::error;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use zbus::{proxy, zvariant, Connection};
+
+use crate::ssh;
 
 #[derive(Debug, Clone)]
 pub struct UnitWithStatus {
@@ -155,8 +156,8 @@ pub async fn get_unit_files(scope: Scope, services: &[String]) -> Result<Vec<Uni
       Ok(conn) => conn,
       Err(e) => {
         error!("get_unit_files: failed to get {:?} connection: {:?}", unit_scope, e);
-        if is_root && unit_scope == UnitScope::User {
-          info!("get_unit_files: skipping user scope because we're root");
+        if (is_root || ssh::remote_host().is_some()) && unit_scope == UnitScope::User {
+          info!("get_unit_files: skipping user scope");
           continue;
         }
         return Err(e);
@@ -171,8 +172,8 @@ pub async fn get_unit_files(scope: Scope, services: &[String]) -> Result<Vec<Uni
         },
         Err(e) => {
           error!("get_unit_files: list_unit_files_by_patterns failed for {:?}: {:?}", unit_scope, e);
-          if is_root && unit_scope == UnitScope::User {
-            info!("get_unit_files: ignoring user scope error because we're root");
+          if (is_root || ssh::remote_host().is_some()) && unit_scope == UnitScope::User {
+            info!("get_unit_files: ignoring user scope error");
             vec![]
           } else {
             return Err(e.into());
@@ -218,12 +219,17 @@ pub async fn get_all_services(scope: Scope, services: &[String]) -> Result<Vec<U
       units.extend(system_units?);
 
       // Should always be able to get user units, but it may fail when running as root
-      if let Ok(user_units) = user_units {
-        units.extend(user_units);
-      } else if is_root {
-        error!("Failed to get user units, ignoring because we're running as root")
-      } else {
-        user_units?;
+      // or when the remote host has no running user manager
+      match user_units {
+        Ok(user_units) => units.extend(user_units),
+        Err(e) if is_root => error!("Failed to get user units, ignoring because we're running as root: {e:?}"),
+        Err(e) if ssh::remote_host().is_some() => {
+          error!(
+            "Failed to get user units from remote host: {e:?}. \
+             This requires an active session or lingering (loginctl enable-linger) on the remote host."
+          )
+        },
+        Err(e) => return Err(e),
       }
     },
   }
@@ -253,7 +259,7 @@ pub fn get_unit_file_location(service: &UnitId) -> Result<String> {
     args.insert(0, "--user");
   }
 
-  let output = Command::new("systemctl").args(&args).output()?;
+  let output = ssh::host_command("systemctl", &args).output()?;
 
   if output.status.success() {
     let path = str::from_utf8(&output.stdout)?.trim();
@@ -329,10 +335,38 @@ pub async fn reload(scope: UnitScope, cancel_token: CancellationToken) -> Result
 }
 
 async fn get_connection(scope: UnitScope) -> Result<Connection, anyhow::Error> {
-  match scope {
-    UnitScope::Global => Ok(Connection::system().await?),
-    UnitScope::User => Ok(Connection::session().await?),
-  }
+  // Cache connections; this matters a lot for remote hosts, where each new connection
+  // spawns an ssh + systemd-stdio-bridge pair
+  static GLOBAL_CONNECTION: tokio::sync::OnceCell<Connection> = tokio::sync::OnceCell::const_new();
+  static USER_CONNECTION: tokio::sync::OnceCell<Connection> = tokio::sync::OnceCell::const_new();
+
+  let cell = match scope {
+    UnitScope::Global => &GLOBAL_CONNECTION,
+    UnitScope::User => &USER_CONNECTION,
+  };
+
+  let connection = cell
+    .get_or_try_init(|| async {
+      match ssh::remote_host() {
+        Some(ssh_host) => {
+          let unixexec = zbus::address::transport::Unixexec::new(
+            std::path::PathBuf::from("ssh"),
+            Some(std::ffi::OsString::from("ssh")),
+            ssh_host.bridge_ssh_args(scope),
+          );
+          let connection =
+            zbus::connection::Builder::address(zbus::address::Transport::Unixexec(unixexec))?.build().await?;
+          info!("Established remote D-Bus connection to {} for {:?} scope", ssh_host.host, scope);
+          Ok::<Connection, anyhow::Error>(connection)
+        },
+        None => match scope {
+          UnitScope::Global => Ok(Connection::system().await?),
+          UnitScope::User => Ok(Connection::session().await?),
+        },
+      }
+    })
+    .await?;
+  Ok(connection.clone())
 }
 
 pub async fn restart_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
@@ -426,7 +460,7 @@ pub async fn kill_service(service: UnitId, signal: String, cancel_token: Cancell
     }
     args.push(&service.name);
 
-    let output = Command::new("systemctl").args(&args).output()?;
+    let output = ssh::host_command("systemctl", &args).output()?;
 
     if output.status.success() {
       info!("Successfully sent signal {} to srvice {}", signal, service.name);
@@ -695,8 +729,7 @@ pub fn check_unit_has_run(unit: &UnitId) -> bool {
   }
   args.push(&unit.name);
 
-  Command::new("systemctl")
-    .args(&args)
+  ssh::host_command("systemctl", &args)
     .output()
     .ok()
     .and_then(
@@ -713,7 +746,7 @@ fn can_access_journal(scope: UnitScope) -> Result<(), String> {
     args.push("--user");
   }
 
-  match Command::new("journalctl").args(&args).output() {
+  match ssh::host_command("journalctl", &args).output() {
     Ok(output) => {
       if output.status.success() {
         Ok(())
