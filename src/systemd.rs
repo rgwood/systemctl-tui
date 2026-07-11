@@ -754,7 +754,20 @@ pub fn check_unit_has_run(unit: &UnitId) -> bool {
 /// Returns a diagnostic if something is wrong. Deliberately not using --quiet:
 /// journalctl succeeds with empty output when the user can only see their own
 /// entries, and the warning on stderr is the only signal.
+/// Cached per scope: access won't change mid-session (group changes need a new
+/// login), and on remote hosts each check costs an SSH round trip.
 fn check_journal_access(scope: UnitScope) -> Option<LogDiagnostic> {
+  static GLOBAL_ACCESS: std::sync::OnceLock<Option<LogDiagnostic>> = std::sync::OnceLock::new();
+  static USER_ACCESS: std::sync::OnceLock<Option<LogDiagnostic>> = std::sync::OnceLock::new();
+
+  let cell = match scope {
+    UnitScope::Global => &GLOBAL_ACCESS,
+    UnitScope::User => &USER_ACCESS,
+  };
+  cell.get_or_init(|| check_journal_access_uncached(scope)).clone()
+}
+
+fn check_journal_access_uncached(scope: UnitScope) -> Option<LogDiagnostic> {
   let mut args = vec!["--lines=1"];
   if scope == UnitScope::User {
     args.push("--user");
