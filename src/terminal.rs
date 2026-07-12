@@ -6,6 +6,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use crossterm::{
   cursor,
+  event::{DisableMouseCapture, EnableMouseCapture},
   terminal::{EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::backend::CrosstermBackend as Backend;
@@ -40,7 +41,7 @@ impl Tui {
 
   pub fn enter(&self) -> Result<()> {
     crossterm::terminal::enable_raw_mode()?;
-    crossterm::execute!(std::io::stderr(), EnterAlternateScreen, cursor::Hide)?;
+    crossterm::execute!(std::io::stderr(), EnterAlternateScreen, cursor::Hide, EnableMouseCapture)?;
     Ok(())
   }
 
@@ -63,7 +64,7 @@ impl Tui {
 
 // This one's public because we want to expose it to the panic handler
 pub fn exit() -> Result<()> {
-  crossterm::execute!(std::io::stderr(), LeaveAlternateScreen, cursor::Show)?;
+  crossterm::execute!(std::io::stderr(), DisableMouseCapture, LeaveAlternateScreen, cursor::Show)?;
   crossterm::terminal::disable_raw_mode()?;
   Ok(())
 }

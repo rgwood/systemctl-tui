@@ -44,11 +44,35 @@ def capture() -> str:
     return tmux("capture-pane", "-t", SESSION, "-p").stdout
 
 
+def capture_esc() -> str:
+    """Like capture(), but keeps ANSI escape sequences (e.g. to detect highlight colors)."""
+    return tmux("capture-pane", "-t", SESSION, "-e", "-p").stdout
+
+
 def send_keys(*keys: str, delay: float = 0.0) -> None:
     for key in keys:
         tmux("send-keys", "-t", SESSION, key)
         if delay:
             time.sleep(delay)
+
+
+def send_mouse(kind: str, col: int, row: int) -> None:
+    """Inject an SGR mouse event (1-based col/row) - the app enables SGR mouse tracking
+    (crossterm's EnableMouseCapture), so tmux can feed it raw escape sequences as if a real
+    mouse driver produced them.
+
+    kind: press|release|drag|move|wheel_up|wheel_down
+    """
+    code = {"press": "0", "release": "0", "drag": "32", "move": "35", "wheel_up": "64", "wheel_down": "65"}[kind]
+    suffix = "m" if kind == "release" else "M"
+    tmux("send-keys", "-t", SESSION, "-l", f"\x1b[<{code};{col};{row}{suffix}")
+
+
+def click(col: int, row: int) -> None:
+    """Press + release the left mouse button at a 1-based (col, row)."""
+    send_mouse("press", col, row)
+    time.sleep(0.1)
+    send_mouse("release", col, row)
 
 
 def start_app(binary: str, host: str | None, extra_args: list[str] | None = None) -> None:
@@ -146,6 +170,160 @@ def test_logs(binary: str, host: str | None) -> None:
 
     check("logs pane shows logs or diagnostic", wait_for(logs_or_diagnostic), capture())
     check("app still alive", app_alive())
+
+
+def test_mouse(binary: str, host: str | None) -> None:
+    """Mouse handling is client-side (crossterm SGR parsing + ratatui rect hit-testing), so this
+    runs identically in local and remote mode - unlike most of the remote suite it isn't testing
+    anything ssh-specific.
+    """
+    print("mouse interactions:")
+    start_app(binary, host)
+    wait_for(lambda: "Services" in capture())
+    # initial mode is Search; leave it so plain keys like 'f' below aren't typed into the box
+    send_keys("Escape")
+    time.sleep(0.3)
+
+    def highlighted_row(screen_esc: str) -> int | None:
+        """Row (0-based, matching capture().splitlines()) carrying the list-selection background."""
+        for i, line in enumerate(screen_esc.splitlines()):
+            if "48;5;8" in line:
+                return i
+        return None
+
+    def service_rows() -> list[int]:
+        """0-based row indices of visible, non-empty service list entries (left ~29 cols)."""
+        rows = []
+        lines = capture().splitlines()
+        in_list = False
+        for i, line in enumerate(lines):
+            if "Services" in line[:30]:
+                in_list = True
+                continue
+            if not in_list:
+                continue
+            if line.lstrip().startswith("╰"):
+                break
+            name = line[1:29].strip()
+            if name:
+                rows.append(i)
+        return rows
+
+    # 1. click selects a service
+    rows = service_rows()
+    before = highlighted_row(capture_esc())
+    target = next((r for r in rows if r != before), rows[0] if rows else None)
+    check("found a clickable service row", target is not None)
+    if target is not None:
+        click(10, target + 1)
+        time.sleep(0.4)
+        after = highlighted_row(capture_esc())
+        check("click selects a service", after == target, f"before={before} target={target} after={after}")
+
+    # For the rest of this test we want a unit with a guaranteed non-empty description and
+    # plenty of log history to scroll/select, so the click/wheel/drag checks below aren't at the
+    # mercy of whichever unit happened to be under the cursor in step 1. systemd-journald.service
+    # is a real (non-alias) unit that has logged on any systemd machine (see test_logs).
+    send_keys("C-f")
+    time.sleep(0.2)
+    type_text("systemd-journald")
+    time.sleep(0.3)
+    send_keys("Escape")
+    time.sleep(0.3)
+    # Click the exact "systemd-journald" row rather than taking the first fuzzy match: the list
+    # also contains the systemd-journald@ template unit (empty description, no logs), and fuzzy
+    # ranking put it first on some distros, breaking every check below.
+    screen_lines = capture().splitlines()
+    exact_row = next((r for r in service_rows() if screen_lines[r][1:29].strip() == "systemd-journald"), None)
+    check("found the systemd-journald row", exact_row is not None, capture())
+    if exact_row is not None:
+        click(10, exact_row + 1)
+    # journald log lines always contain "systemd-journald[<pid>]:", so this also guarantees the
+    # unit under test has real logs for the wheel/drag checks below
+    check(
+        "selected systemd-journald.service for the remaining checks",
+        wait_for(lambda: "systemd-journald[" in capture()),
+        capture(),
+    )
+
+    # 2. click on a details field copies the value and shows a toast
+    desc_line = next((i for i, l in enumerate(capture().splitlines()) if "Description:" in l), None)
+    check("details pane shows a Description field", desc_line is not None, capture())
+    if desc_line is not None:
+        line = capture().splitlines()[desc_line]
+        idx = line.index("Description:") + len("Description:")
+        match = re.search(r"\S", line[idx:])
+        value_col = idx + match.start() + 3 if match else idx + 3
+        click(value_col, desc_line + 1)
+        check("click on details field copies + shows toast", wait_for(lambda: re.search(r"Copied \d+ chars", capture()) is not None), capture())
+        time.sleep(2.1)  # let the toast expire before the next assertion that checks for its absence
+
+    # 3. wheel scrolls logs. If the unit's logs fit entirely in the pane there is nothing to
+    # scroll (the offset is clamped to 0), so in that case assert that End can't scroll either
+    # instead of failing on unchanged content. Compare only the logs pane: the details pane
+    # contains relative timestamps ("(17s ago)") that tick between captures.
+    def logs_region() -> str:
+        lines = capture().splitlines()
+        start = next((i for i, l in enumerate(lines) if "Service Logs" in l), 0)
+        return "\n".join(lines[start:])
+
+    logs_before = logs_region()
+    for _ in range(3):
+        send_mouse("wheel_down", 70, 20)
+        time.sleep(0.3)
+    logs_after = logs_region()
+    if logs_after != logs_before:
+        check("wheel scrolls logs", True)
+    else:
+        send_keys("End")
+        time.sleep(0.5)
+        check(
+            "wheel scrolls logs (logs fit on screen; End can't scroll either)",
+            logs_region() == logs_before,
+            f"wheel did nothing but End scrolled:\n{capture()}",
+        )
+        send_keys("Home")
+        time.sleep(0.3)
+
+    # 4. drag-selecting log text copies it and shows a toast
+    send_mouse("press", 40, 11)
+    time.sleep(0.1)
+    send_mouse("drag", 44, 11)
+    time.sleep(0.1)
+    send_mouse("drag", 48, 11)
+    time.sleep(0.1)
+    send_mouse("release", 48, 11)
+    check("drag selection copies log text", wait_for(lambda: re.search(r"Copied \d+ chars", capture()) is not None), capture())
+    time.sleep(2.1)
+
+    # 5. clicking outside the action menu closes it
+    send_keys("Enter")
+    check("action menu opens", wait_for(lambda: "Actions for" in capture()), capture())
+    click(5, 5)
+    time.sleep(0.4)
+    check("click outside closes action menu", "Actions for" not in capture(), capture())
+    check("app alive after closing menu", app_alive())
+
+    # 6. clicking a status filter entry toggles it
+    send_keys("Escape")
+    time.sleep(0.3)
+    send_keys("f")
+    check("status filter popup opens", wait_for(lambda: "Status filter" in capture()), capture())
+    filter_line = next((i for i, l in enumerate(capture().splitlines()) if "✓ active" in l), None)
+    check("status filter has a checked entry", filter_line is not None, capture())
+    if filter_line is not None:
+        line = capture().splitlines()[filter_line]
+        col = line.index("✓ active") + 2  # land inside "active", not on the border/checkmark
+        click(col, filter_line + 1)
+        time.sleep(0.4)
+        toggled = capture().splitlines()[filter_line]
+        check("clicking a status filter entry toggles its checkmark", "✓ active" not in toggled, toggled)
+    click(5, 5)
+    time.sleep(0.4)
+    check("click outside closes status filter popup", "Status filter" not in capture(), capture())
+
+    check("app alive after mouse interactions", app_alive())
+    send_keys("q")
 
 
 def test_no_dropped_keystrokes(binary: str, host: str | None) -> None:
@@ -379,6 +557,7 @@ def main() -> int:
     try:
         test_startup_and_browse(args.binary, args.host)
         test_logs(args.binary, args.host)
+        test_mouse(args.binary, args.host)
         if not args.remote_suite:
             test_no_dropped_keystrokes(args.binary, args.host)
         test_clean_exit(args.binary, args.host)

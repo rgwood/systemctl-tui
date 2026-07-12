@@ -1,11 +1,11 @@
 use chrono::DateTime;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use futures::Future;
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use indexmap::IndexMap;
 use itertools::Itertools;
 use ratatui::{
-  layout::{Constraint, Direction, Layout, Rect},
+  layout::{Constraint, Direction, Layout, Margin, Position, Rect},
   style::{Color, Modifier, Style},
   text::{Line, Span},
   widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
@@ -217,6 +217,34 @@ pub struct Home {
   pub fuzzy_matcher: SkimMatcherV2,
   pub filtered_statuses: HashSet<UnitStatus>,
   pub filter_cursor: usize,
+  /// Inner (border-excluded) area of the logs panel, as of the most recent render.
+  pub logs_panel_inner: Rect,
+  /// Area of the services list panel, as of the most recent render.
+  pub services_panel: Rect,
+  /// Active mouse-drag text selection in the logs panel: (anchor, cursor), in absolute screen
+  /// coordinates.
+  pub logs_selection: Option<(Position, Position)>,
+  /// Text extracted from the current `logs_selection`, computed at render time.
+  pub selected_log_text: String,
+  /// Most recent mouse position, in absolute screen coordinates.
+  pub mouse_position: Position,
+  /// Copyable fields in the details pane (rect on screen -> full text to copy), as of the most
+  /// recent render.
+  pub copyable_fields: Vec<(Rect, String)>,
+  /// Area of the search input panel, as of the most recent render.
+  pub search_panel: Rect,
+  /// A transient toast message and when it was shown.
+  pub toast: Option<(String, std::time::Instant)>,
+  /// Screen rects of each filter item line in the status filter popup, paired with the filter
+  /// index they correspond to, as of the most recent render. Empty when the popup isn't shown.
+  pub filter_item_rects: Vec<(Rect, usize)>,
+  /// Area of the status filter popup, as of the most recent render.
+  pub filter_popup_rect: Rect,
+  /// Screen rects of each item line in the action/signal menu popup, paired with the item
+  /// index they correspond to, as of the most recent render. Empty when the popup isn't shown.
+  pub menu_item_rects: Vec<(Rect, usize)>,
+  /// Area of the action/signal menu popup, as of the most recent render.
+  pub menu_popup_rect: Rect,
 }
 
 pub struct MenuItem {
@@ -403,6 +431,7 @@ impl Home {
     self.filtered_units.next();
     self.get_logs();
     self.logs_scroll_offset = 0;
+    self.clear_logs_selection();
   }
 
   pub fn previous(&mut self) {
@@ -411,6 +440,7 @@ impl Home {
     self.filtered_units.previous();
     self.get_logs();
     self.logs_scroll_offset = 0;
+    self.clear_logs_selection();
   }
 
   pub fn select(&mut self, index: Option<usize>, refresh_logs: bool) {
@@ -422,6 +452,7 @@ impl Home {
     if refresh_logs {
       self.get_logs();
       self.logs_scroll_offset = 0;
+      self.clear_logs_selection();
     }
   }
 
@@ -429,6 +460,52 @@ impl Home {
     self.logs = vec![];
     self.runtime_info = None;
     self.filtered_units.unselect();
+  }
+
+  fn clear_logs_selection(&mut self) {
+    self.logs_selection = None;
+    self.selected_log_text.clear();
+  }
+
+  fn hovered_field(&self, pos: Position) -> Option<usize> {
+    self.copyable_fields.iter().position(|(rect, _)| rect.contains(pos))
+  }
+
+  fn copy_with_toast(&mut self, text: &str) {
+    crate::utils::copy_to_clipboard(text);
+    let n = text.chars().count();
+    self.show_toast(&format!("Copied {n} chars"));
+  }
+
+  fn show_toast(&mut self, msg: &str) {
+    self.toast = Some((msg.to_string(), std::time::Instant::now()));
+    if let Some(tx) = self.action_tx.clone() {
+      tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+        let _ = tx.send(Action::Render);
+      });
+    }
+  }
+
+  /// Draw the transient copy toast in the bottom-right corner. Must be called at the very end of
+  /// `render` so nothing draws over it.
+  fn render_toast(&mut self, f: &mut Frame<'_>) {
+    if let Some((msg, shown_at)) = &self.toast {
+      if shown_at.elapsed() < std::time::Duration::from_secs(2) {
+        let area = f.area();
+        let width = msg.len() as u16 + 2;
+        if area.width > width && area.height > 1 {
+          let toast_rect =
+            Rect { x: area.right().saturating_sub(width), y: area.bottom().saturating_sub(1), width, height: 1 };
+          let paragraph = Paragraph::new(Line::from(format!(" {msg} ")))
+            .style(Style::default().fg(self.theme.accent).add_modifier(Modifier::REVERSED));
+          f.render_widget(Clear, toast_rect);
+          f.render_widget(paragraph, toast_rect);
+        }
+      } else {
+        self.toast = None;
+      }
+    }
   }
 
   pub fn selected_service(&self) -> Option<UnitId> {
@@ -786,6 +863,10 @@ impl Component for Home {
     match self.mode {
       Mode::ServiceList => {
         match key.code {
+          KeyCode::Esc if self.logs_selection.is_some() => {
+            self.clear_logs_selection();
+            vec![Action::Render]
+          },
           KeyCode::Char('q') => vec![Action::Quit],
           KeyCode::Up | KeyCode::Char('k') => {
             // if we're filtering the list, and we're at the top, and there's text in the search box, go to search mode
@@ -955,6 +1036,214 @@ impl Component for Home {
     }
   }
 
+  fn handle_mouse_events(&mut self, mouse: MouseEvent) -> Vec<Action> {
+    // In modal/transient modes, mouse events shouldn't affect selection or scrolling.
+    if matches!(self.mode, Mode::Processing) {
+      return vec![];
+    }
+
+    let pos = Position::new(mouse.column, mouse.row);
+
+    if self.mode == Mode::Help {
+      return match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => vec![Action::ToggleHelp],
+        _ => vec![],
+      };
+    }
+
+    if self.mode == Mode::Error {
+      return match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => vec![Action::EnterMode(Mode::ServiceList)],
+        _ => vec![],
+      };
+    }
+
+    if self.mode == Mode::ActionMenu || self.mode == Mode::SignalMenu {
+      let hovered_item = self.menu_item_rects.iter().find(|(rect, _)| rect.contains(pos)).map(|(_, idx)| *idx);
+
+      return match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+          if let Some(idx) = hovered_item {
+            self.menu_items.state.select(Some(idx));
+            match self.menu_items.selected() {
+              Some(i) => vec![i.action.clone()],
+              None => vec![Action::EnterMode(Mode::ServiceList)],
+            }
+          } else if !self.menu_popup_rect.contains(pos) {
+            // Clicked outside the popup: close it, same as Escape.
+            vec![Action::EnterMode(Mode::ServiceList)]
+          } else {
+            vec![]
+          }
+        },
+        MouseEventKind::Moved => {
+          if let Some(idx) = hovered_item {
+            if Some(idx) != self.menu_items.state.selected() {
+              self.menu_items.state.select(Some(idx));
+              return vec![Action::Render];
+            }
+          }
+          vec![]
+        },
+        MouseEventKind::ScrollDown => {
+          self.menu_items.next();
+          vec![Action::Render]
+        },
+        MouseEventKind::ScrollUp => {
+          self.menu_items.previous();
+          vec![Action::Render]
+        },
+        _ => vec![],
+      };
+    }
+
+    if self.mode == Mode::StatusFilter {
+      let hovered_item = self.filter_item_rects.iter().find(|(rect, _)| rect.contains(pos)).map(|(_, idx)| *idx);
+
+      return match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+          if let Some(idx) = hovered_item {
+            self.filter_cursor = idx;
+            self.toggle_filtered_status(UnitStatus::ALL[idx]);
+            vec![Action::RefreshStatusFilterMenu]
+          } else if !self.filter_popup_rect.contains(pos) {
+            // Clicked outside the popup: close it, same as Escape.
+            vec![Action::EnterMode(Mode::ServiceList)]
+          } else {
+            // Clicked inside the popup but not on an item (e.g. a category header).
+            vec![]
+          }
+        },
+        MouseEventKind::Moved => {
+          if let Some(idx) = hovered_item {
+            if idx != self.filter_cursor {
+              self.filter_cursor = idx;
+              return vec![Action::RefreshStatusFilterMenu];
+            }
+          }
+          vec![]
+        },
+        MouseEventKind::ScrollDown => {
+          if self.filter_cursor < UnitStatus::ALL.len() - 1 {
+            self.filter_cursor += 1;
+          } else {
+            self.filter_cursor = 0;
+          }
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        MouseEventKind::ScrollUp => {
+          if self.filter_cursor > 0 {
+            self.filter_cursor -= 1;
+          } else {
+            self.filter_cursor = UnitStatus::ALL.len() - 1;
+          }
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        _ => vec![],
+      };
+    }
+
+    fn clamp_into(rect: Rect, pos: Position) -> Position {
+      if rect.width == 0 || rect.height == 0 {
+        return Position::new(rect.x, rect.y);
+      }
+      let x = pos.x.clamp(rect.x, rect.x + rect.width - 1);
+      let y = pos.y.clamp(rect.y, rect.y + rect.height - 1);
+      Position::new(x, y)
+    }
+
+    match mouse.kind {
+      MouseEventKind::Moved => {
+        let was_hovering = self.hovered_field(self.mouse_position);
+        self.mouse_position = pos;
+        let is_hovering = self.hovered_field(pos);
+        if was_hovering != is_hovering {
+          vec![Action::Render]
+        } else {
+          vec![]
+        }
+      },
+      MouseEventKind::ScrollUp => {
+        self.mouse_position = pos;
+        self.clear_logs_selection();
+        if self.services_panel.contains(pos) {
+          if self.filtered_units.state.selected() == Some(0) {
+            return vec![Action::EnterMode(Mode::Search)];
+          }
+          self.previous();
+          vec![Action::Render]
+        } else {
+          vec![Action::ScrollUp(2), Action::Render]
+        }
+      },
+      MouseEventKind::ScrollDown => {
+        self.mouse_position = pos;
+        self.clear_logs_selection();
+        if self.services_panel.contains(pos) {
+          self.next();
+          vec![Action::Render]
+        } else {
+          vec![Action::ScrollDown(2), Action::Render]
+        }
+      },
+      MouseEventKind::Down(MouseButton::Left) => {
+        self.mouse_position = pos;
+        if let Some(idx) = self.hovered_field(pos) {
+          let text = self.copyable_fields[idx].1.clone();
+          self.copy_with_toast(&text);
+          return vec![Action::Render];
+        }
+        if self.search_panel.contains(pos) && self.mode == Mode::ServiceList {
+          return vec![Action::EnterMode(Mode::Search)];
+        }
+        if self.services_panel.contains(pos) && matches!(self.mode, Mode::ServiceList | Mode::Search) {
+          let inner = self.services_panel.inner(Margin::new(1, 1));
+          if inner.contains(pos) {
+            let clicked_index = self.filtered_units.state.offset() + (pos.y - inner.y) as usize;
+            if clicked_index < self.filtered_units.items.len() {
+              let was_search = self.mode == Mode::Search;
+              self.select(Some(clicked_index), true);
+              let mut actions = vec![];
+              if was_search {
+                actions.push(Action::EnterMode(Mode::ServiceList));
+              }
+              actions.push(Action::Render);
+              return actions;
+            }
+          }
+          return vec![];
+        }
+        if self.logs_panel_inner.contains(pos) {
+          self.logs_selection = Some((pos, pos));
+        } else {
+          self.clear_logs_selection();
+        }
+        vec![Action::Render]
+      },
+      MouseEventKind::Drag(MouseButton::Left) => {
+        self.mouse_position = pos;
+        if let Some((anchor, _)) = self.logs_selection {
+          let clamped = clamp_into(self.logs_panel_inner, pos);
+          self.logs_selection = Some((anchor, clamped));
+        }
+        vec![Action::Render]
+      },
+      MouseEventKind::Up(MouseButton::Left) => {
+        self.mouse_position = pos;
+        if let Some((anchor, cursor)) = self.logs_selection {
+          if anchor != cursor && !self.selected_log_text.is_empty() {
+            let text = self.selected_log_text.clone();
+            self.copy_with_toast(&text);
+          } else {
+            self.clear_logs_selection();
+          }
+        }
+        vec![Action::Render]
+      },
+      _ => vec![],
+    }
+  }
+
   fn dispatch(&mut self, action: Action) -> Option<Action> {
     match action {
       Action::ToggleShowLogger => {
@@ -1039,10 +1328,9 @@ impl Component for Home {
       Action::CopyUnitFilePath => {
         if let Some(selected) = self.filtered_units.selected() {
           if let Some(Ok(file_path)) = &selected.unit.file_path {
-            match clipboard_anywhere::set_clipboard(file_path) {
-              Ok(_) => return Some(Action::EnterMode(Mode::ServiceList)),
-              Err(e) => return Some(Action::EnterError(format!("Error copying to clipboard: {e}"))),
-            }
+            let file_path = file_path.clone();
+            self.copy_with_toast(&file_path);
+            return Some(Action::EnterMode(Mode::ServiceList));
           } else {
             return Some(Action::EnterError("No unit file path available".into()));
           }
@@ -1078,20 +1366,21 @@ impl Component for Home {
       Action::ScrollUp(offset) => {
         self.logs_scroll_offset = self.logs_scroll_offset.saturating_sub(offset);
         info!("scroll offset: {}", self.logs_scroll_offset);
+        self.clear_logs_selection();
       },
       Action::ScrollDown(offset) => {
         self.logs_scroll_offset = self.logs_scroll_offset.saturating_add(offset);
         info!("scroll offset: {}", self.logs_scroll_offset);
+        self.clear_logs_selection();
       },
       Action::ScrollToTop => {
         self.logs_scroll_offset = 0;
+        self.clear_logs_selection();
       },
       Action::ScrollToBottom => {
-        // TODO: this is partially broken, figure out a better way to scroll to end
-        // problem: we don't actually know the height of the paragraph before it's rendered
-        // because it's wrapped based on the width of the widget
-        // A proper fix might need to wait until ratatui improves scrolling: https://github.com/ratatui-org/ratatui/issues/174
-        self.logs_scroll_offset = self.logs.len() as u16;
+        // Clamped to the actual wrapped height at render time (see `render`).
+        self.logs_scroll_offset = u16::MAX;
+        self.clear_logs_selection();
       },
 
       Action::StartService(service_name) => self.start_service(service_name),
@@ -1183,6 +1472,8 @@ impl Component for Home {
     let main_panel = rects[1];
     let help_line_rect = rects[2];
 
+    self.search_panel = search_panel;
+
     // Helper for colouring based on the same logic as sysz
     // https://github.com/joehillen/sysz/blob/8da8e0dcbfde8d68fbdb22382671e395bd370d69/sysz#L69C1-L72C24
     //    Some units are colored based on state:
@@ -1260,6 +1551,8 @@ impl Component for Home {
       Layout::new(Direction::Horizontal, [Constraint::Min(30), Constraint::Percentage(100)]).split(main_panel);
     let right_panel = chunks[1];
 
+    self.services_panel = chunks[0];
+
     f.render_stateful_widget(items, chunks[0], &mut self.filtered_units.state);
 
     let selected_item = self.filtered_units.selected();
@@ -1331,7 +1624,7 @@ impl Component for Home {
         "Unit file",
         match &m.unit.file_path {
           Some(Ok(file_path)) => Line::from(file_path.as_str()),
-          Some(Err(e)) => colored_line(e, Color::Red),
+          Some(Err(e)) => Line::from(Span::styled(e.as_str(), Style::default().fg(Color::Red))),
           None => Line::from(""),
         },
       ));
@@ -1410,12 +1703,34 @@ impl Component for Home {
         .split(details_inner)
     };
 
-    let (labels, values) = split_labels_values(rows);
+    // Every details value line (and runtime stat line) is hoverable and click-to-copy. Register
+    // each rendered line's rect and text, bolding the hovered one.
+    self.copyable_fields.clear();
+    fn register_copyable_fields(values: &mut [Line], pane: Rect, mouse: Position, out: &mut Vec<(Rect, String)>) {
+      for (i, line) in values.iter_mut().enumerate() {
+        if i as u16 >= pane.height {
+          break;
+        }
+        let text = line.spans.iter().map(|s| s.content.as_ref()).collect::<String>().trim().to_string();
+        if text.is_empty() {
+          continue;
+        }
+        let rect = Rect { x: pane.x, y: pane.y + i as u16, width: (line.width() as u16).min(pane.width), height: 1 };
+        if rect.contains(mouse) {
+          line.style = line.style.add_modifier(Modifier::BOLD);
+        }
+        out.push((rect, text));
+      }
+    }
+
+    let (labels, mut values) = split_labels_values(rows);
+    register_copyable_fields(&mut values, panes[1], self.mouse_position, &mut self.copyable_fields);
     f.render_widget(Paragraph::new(labels).alignment(ratatui::layout::Alignment::Right), panes[0]);
     f.render_widget(Paragraph::new(values), panes[1]);
 
     if two_columns {
-      let (stat_labels, stat_values) = split_labels_values(stat_rows);
+      let (stat_labels, mut stat_values) = split_labels_values(stat_rows);
+      register_copyable_fields(&mut stat_values, panes[3], self.mouse_position, &mut self.copyable_fields);
       f.render_widget(Paragraph::new(stat_labels).alignment(ratatui::layout::Alignment::Right), panes[2]);
       f.render_widget(Paragraph::new(stat_values), panes[3]);
     }
@@ -1442,9 +1757,65 @@ impl Component for Home {
     let paragraph = Paragraph::new(log_lines)
       .block(Block::default().title("─Service Logs").borders(Borders::ALL).border_type(BorderType::Rounded))
       .style(Style::default())
-      .wrap(Wrap { trim: true })
-      .scroll((self.logs_scroll_offset, 0));
+      .wrap(Wrap { trim: true });
+
+    // line_count wraps at the given width but includes the block's border rows in its count,
+    // so wrap at the inner width and compare against the full panel height.
+    let inner_width = logs_panel.width.saturating_sub(2);
+    let total_lines = u16::try_from(paragraph.line_count(inner_width)).unwrap_or(u16::MAX);
+    let max_offset = total_lines.saturating_sub(logs_panel.height);
+    self.logs_scroll_offset = self.logs_scroll_offset.min(max_offset);
+
+    let paragraph = paragraph.scroll((self.logs_scroll_offset, 0));
     f.render_widget(paragraph, logs_panel);
+
+    // Inner area of the logs panel (border-excluded), used for mouse hit-testing and selection.
+    self.logs_panel_inner = logs_panel.inner(Margin::new(1, 1));
+
+    if let Some((anchor, cursor)) = self.logs_selection {
+      let inner = self.logs_panel_inner;
+      // Normalize selection ordering by (y, then x).
+      let (start, end) = if (anchor.y, anchor.x) <= (cursor.y, cursor.x) { (anchor, cursor) } else { (cursor, anchor) };
+
+      let buf = f.buffer_mut();
+      let mut selected_rows: Vec<String> = Vec::new();
+
+      if inner.width > 0 && inner.height > 0 {
+        let left = inner.x;
+        let right = inner.x + inner.width - 1;
+
+        for y in start.y..=end.y {
+          if y < inner.y || y >= inner.y + inner.height {
+            continue;
+          }
+
+          let (row_start_x, row_end_x) = if start.y == end.y {
+            (start.x.max(left), end.x.min(right))
+          } else if y == start.y {
+            (start.x.max(left), right)
+          } else if y == end.y {
+            (left, end.x.min(right))
+          } else {
+            (left, right)
+          };
+
+          if row_start_x > row_end_x {
+            continue;
+          }
+
+          let mut row_text = String::new();
+          for x in row_start_x..=row_end_x {
+            if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
+              cell.modifier.insert(Modifier::REVERSED);
+              row_text.push_str(cell.symbol());
+            }
+          }
+          selected_rows.push(row_text.trim_end().to_string());
+        }
+      }
+
+      self.selected_log_text = selected_rows.join("\n");
+    }
 
     let width = search_panel.width.max(3) - 3; // keep 2 for borders and 1 for cursor
     let scroll = self.input.visual_scroll(width as usize);
@@ -1485,7 +1856,7 @@ impl Component for Home {
     }
 
     if self.mode == Mode::Help {
-      let popup = f.area().centered(Constraint::Length(50), Constraint::Length(18));
+      let popup = f.area().centered(Constraint::Length(50), Constraint::Length(19));
 
       let primary = |s| Span::styled(s, Style::default().fg(theme.primary));
       let help_lines = vec![
@@ -1499,6 +1870,7 @@ impl Component for Home {
         Line::from(vec![primary("Enter"), Span::raw(" or "), primary("Space"), Span::raw(" open the action menu")]),
         Line::from(vec![primary("f"), Span::raw(" filter services by status")]),
         Line::from(vec![primary("?"), Span::raw(" / "), primary("F1"), Span::raw(" open this help pane")]),
+        Line::from(vec![primary("mouse"), Span::raw(": drag to select+copy logs, wheel to scroll")]),
         Line::from(""),
         Line::from(Span::styled("Vim Style Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
         Line::from(""),
@@ -1580,15 +1952,19 @@ impl Component for Home {
 
     let popup_width = min_width.min(f.area().width);
 
+    self.filter_item_rects.clear();
+    self.menu_item_rects.clear();
     if self.mode == Mode::StatusFilter {
       // Custom grouped layout for the status filter popup
       let mut lines: Vec<Line> = Vec::new();
+      let mut line_item_indices: Vec<Option<usize>> = Vec::new();
       let mut idx = 0;
       for (category_name, filters) in STATUS_CATEGORIES {
         lines.push(Line::from(Span::styled(
           *category_name,
           Style::default().fg(theme.muted).add_modifier(Modifier::BOLD),
         )));
+        line_item_indices.push(None);
         for filter in *filters {
           let is_checked = self.filtered_statuses.contains(filter);
           let is_selected = idx == self.filter_cursor;
@@ -1605,6 +1981,7 @@ impl Component for Home {
           } else {
             lines.push(Line::from(line_spans));
           }
+          line_item_indices.push(Some(idx));
           idx += 1;
         }
       }
@@ -1612,6 +1989,15 @@ impl Component for Home {
       let filter_popup_width = 20u16.min(f.area().width);
       let height = lines.len() as u16 + 2;
       let popup = f.area().centered(Constraint::Length(filter_popup_width), Constraint::Length(height));
+      self.filter_popup_rect = popup;
+
+      for (i, item_idx) in line_item_indices.iter().enumerate() {
+        if let Some(item_idx) = item_idx {
+          let rect =
+            Rect { x: popup.x + 1, y: popup.y + 1 + i as u16, width: popup.width.saturating_sub(2), height: 1 };
+          self.filter_item_rects.push((rect, *item_idx));
+        }
+      }
 
       let paragraph = Paragraph::new(lines).block(
         Block::default()
@@ -1633,6 +2019,7 @@ impl Component for Home {
       };
       let height = self.menu_items.items.len() as u16 + 2;
       let popup = f.area().centered(Constraint::Length(popup_width), Constraint::Length(height));
+      self.menu_popup_rect = popup;
 
       let items: Vec<ListItem> = self
         .menu_items
@@ -1653,6 +2040,19 @@ impl Component for Home {
             .title(title),
         )
         .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
+
+      let offset = self.menu_items.state.offset();
+      for i in offset..self.menu_items.items.len() {
+        let rect = Rect {
+          x: popup.x + 1,
+          y: popup.y + 1 + (i - offset) as u16,
+          width: popup.width.saturating_sub(2),
+          height: 1,
+        };
+        if popup.height > 2 && rect.y < popup.y + popup.height - 1 {
+          self.menu_item_rects.push((rect, i));
+        }
+      }
 
       f.render_widget(Clear, popup);
       f.render_stateful_widget(items, popup, &mut self.menu_items.state);
@@ -1680,6 +2080,8 @@ impl Component for Home {
       f.render_widget(Clear, popup);
       f.render_widget(paragraph, popup);
     }
+
+    self.render_toast(f);
   }
 }
 

@@ -11,7 +11,7 @@ license = "MIT"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ratatui = "0.30.0"
+ratatui = { version = "0.30.0", features = ["unstable-rendered-line-info"] }
 crossterm = { version = "0.29.0", default-features = false, features = ["event-stream"] }
 tokio = { version = "1.28.2", features = ["full"] }
 unicode-segmentation = "1.10.1"
@@ -34,13 +34,13 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 fuzzy-matcher = "0.3"
 itertools = "0.14.0"
 indexmap = "2.0.0"
-clipboard-anywhere = "0.2.2"
 chrono = { version = "0.4.31", default-features = false, features = ["clock"] }
 lazy_static = "1.4.0"
 nix = { version = "0.31.0", features = ["user"] }
 is-wsl = "0.4.0"
 tracing-appender = "0.2.3"
 terminal-light = "1"
+base64 = "0.22"
 
 # build with `cargo build --profile profiling`
 # to analyze performance with tooling like perf / samply / superluminal
