@@ -62,10 +62,16 @@ impl App {
 
     self.home.lock().await.init(action_tx.clone())?;
 
-    let units = get_all_services(self.scope, &self.limit_units)
-      .await
-      .context("Unable to get services. Check that systemd is running and try running this tool with sudo.")?;
-    self.home.lock().await.set_units(units);
+    let units = get_all_services(self.scope, &self.limit_units).await.with_context(|| {
+      // "run with sudo" is only sensible advice for the local failure mode; on a remote
+      // host the usual cause is that systemd isn't actually running there (e.g. a distro
+      // that merely has the systemd package installed)
+      match crate::ssh::remote_host() {
+        Some(ssh_host) => format!("Unable to get services from {}. Is systemd running on it?", ssh_host.host),
+        None => "Unable to get services. Check that systemd is running and try running this tool with sudo.".into(),
+      }
+    })?;
+    self.home.lock().await.set_units(units.units);
 
     // Fetch unit files (includes enablement state and disabled units not returned by ListUnits)
     action_tx.send(Action::RefreshUnitFiles)?;
@@ -94,6 +100,11 @@ impl App {
           Action::Resize(_, _) => terminal.render().await,
           // This would normally be in home.rs, but it needs to do some terminal and event handling stuff that's easier here
           Action::EditUnitFile { unit, path } => {
+            // The unit file lives on the remote host; we can't open it in a local editor
+            if crate::ssh::remote_host().is_some() {
+              action_tx.send(Action::EnterError("Editing unit files on remote hosts is not supported (yet)".into()))?;
+              continue;
+            }
             event.stop();
             let mut tui = terminal.tui.lock().await;
             tui.exit()?;

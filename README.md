@@ -61,6 +61,12 @@ nix-shell -p systemctl-tui
 sudo ln -s ~/.cargo/bin/systemctl-tui /usr/bin/systemctl-tui
 ```
 
+## Remote hosts
+
+`systemctl-tui --host user@hostname` manages a remote machine over SSH, no remote install needed. Service operations go over a [systemd-stdio-bridge](https://www.freedesktop.org/software/systemd/man/latest/systemd-stdio-bridge.html) D-Bus connection (like `systemctl --host`) and logs come from running `journalctl` on the remote host, all multiplexed over a single SSH connection.
+
+The remote host needs `systemd-stdio-bridge` (part of the core systemd package on all major distros; verified working on systemd 249 and 255, and the flags we use exist back to at least systemd 239) and `journalctl`. Viewing user-scope services requires a running user manager on the remote host (an active session, or lingering enabled via `loginctl enable-linger`). Editing unit files remotely is not supported yet.
+
 ## Help
 ![image](https://github.com/rgwood/systemctl-tui/assets/26268125/b1b49850-61c4-4667-9110-20a34f917055)
 
