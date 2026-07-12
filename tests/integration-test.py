@@ -10,8 +10,8 @@ By default it tests against local systemd; pass --host to run the same tests
 against a remote machine over SSH.
 
 Usage:
-    ./scripts/integration-test.py                        # local
-    ./scripts/integration-test.py --host user@hostname   # remote
+    ./tests/integration-test.py                        # local
+    ./tests/integration-test.py --host user@hostname   # remote
 
 Requires: tmux and a debug build (`cargo build`). Remote mode needs
 passwordless ssh to the target.
