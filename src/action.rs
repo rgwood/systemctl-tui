@@ -1,6 +1,6 @@
 use crate::{
   components::home::Mode,
-  systemd::{ServiceList, UnitFile, UnitId},
+  systemd::{ServiceList, UnitFile, UnitId, UnitRuntimeInfo},
 };
 
 #[derive(Debug, Clone)]
@@ -22,6 +22,7 @@ pub enum Action {
   CancelTask,
   ToggleHelp,
   SetUnitFilePath { unit: UnitId, path: Result<String, String> },
+  SetUnitRuntimeInfo { unit: UnitId, info: Box<UnitRuntimeInfo> },
   CopyUnitFilePath,
   SetLogs { unit: UnitId, logs: Vec<String> },
   AppendLogLine { unit: UnitId, line: String },
