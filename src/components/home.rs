@@ -5,7 +5,7 @@ use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use indexmap::IndexMap;
 use itertools::Itertools;
 use ratatui::{
-  layout::{Constraint, Direction, Layout, Position, Rect},
+  layout::{Constraint, Direction, Layout, Margin, Position, Rect},
   style::{Color, Modifier, Style},
   text::{Line, Span},
   widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
@@ -185,11 +185,6 @@ impl Theme {
   }
 }
 
-/// Whether `pos` falls within `rect`.
-fn contains(rect: Rect, pos: Position) -> bool {
-  pos.x >= rect.x && pos.x < rect.x + rect.width && pos.y >= rect.y && pos.y < rect.y + rect.height
-}
-
 /// A unit with fuzzy match indices for highlighting
 #[derive(Clone)]
 pub struct MatchedUnit {
@@ -235,6 +230,8 @@ pub struct Home {
   pub mouse_position: Position,
   /// Area of the unit file path line in the details pane, as of the most recent render.
   pub file_path_rect: Rect,
+  /// Area of the search input panel, as of the most recent render.
+  pub search_panel: Rect,
   /// A transient toast message and when it was shown.
   pub toast: Option<(String, std::time::Instant)>,
 }
@@ -993,6 +990,11 @@ impl Component for Home {
   }
 
   fn handle_mouse_events(&mut self, mouse: MouseEvent) -> Vec<Action> {
+    // In modal/transient modes, mouse events shouldn't affect selection or scrolling.
+    if matches!(self.mode, Mode::Help | Mode::ActionMenu | Mode::SignalMenu | Mode::Processing | Mode::Error) {
+      return vec![];
+    }
+
     let pos = Position::new(mouse.column, mouse.row);
 
     fn clamp_into(rect: Rect, pos: Position) -> Position {
@@ -1006,9 +1008,9 @@ impl Component for Home {
 
     match mouse.kind {
       MouseEventKind::Moved => {
-        let was_hovering = contains(self.file_path_rect, self.mouse_position);
+        let was_hovering = self.file_path_rect.contains(self.mouse_position);
         self.mouse_position = pos;
-        let is_hovering = contains(self.file_path_rect, pos);
+        let is_hovering = self.file_path_rect.contains(pos);
         if was_hovering != is_hovering {
           vec![Action::Render]
         } else {
@@ -1018,7 +1020,7 @@ impl Component for Home {
       MouseEventKind::ScrollUp => {
         self.mouse_position = pos;
         self.clear_logs_selection();
-        if contains(self.services_panel, pos) {
+        if self.services_panel.contains(pos) {
           if self.filtered_units.state.selected() == Some(0) {
             return vec![Action::EnterMode(Mode::Search)];
           }
@@ -1031,7 +1033,7 @@ impl Component for Home {
       MouseEventKind::ScrollDown => {
         self.mouse_position = pos;
         self.clear_logs_selection();
-        if contains(self.services_panel, pos) {
+        if self.services_panel.contains(pos) {
           self.next();
           vec![Action::Render]
         } else {
@@ -1040,7 +1042,7 @@ impl Component for Home {
       },
       MouseEventKind::Down(MouseButton::Left) => {
         self.mouse_position = pos;
-        if contains(self.file_path_rect, pos) {
+        if self.file_path_rect.contains(pos) {
           if let Some(m) = self.filtered_units.selected() {
             if let Some(Ok(path)) = &m.unit.file_path {
               crate::utils::copy_to_clipboard_osc52(path);
@@ -1049,7 +1051,27 @@ impl Component for Home {
             }
           }
         }
-        if contains(self.logs_panel_inner, pos) {
+        if self.search_panel.contains(pos) && self.mode == Mode::ServiceList {
+          return vec![Action::EnterMode(Mode::Search)];
+        }
+        if self.services_panel.contains(pos) && matches!(self.mode, Mode::ServiceList | Mode::Search) {
+          let inner = self.services_panel.inner(Margin::new(1, 1));
+          if inner.contains(pos) {
+            let clicked_index = self.filtered_units.state.offset() + (pos.y - inner.y) as usize;
+            if clicked_index < self.filtered_units.items.len() {
+              let was_search = self.mode == Mode::Search;
+              self.select(Some(clicked_index), true);
+              let mut actions = vec![];
+              if was_search {
+                actions.push(Action::EnterMode(Mode::ServiceList));
+              }
+              actions.push(Action::Render);
+              return actions;
+            }
+          }
+          return vec![];
+        }
+        if self.logs_panel_inner.contains(pos) {
           self.logs_selection = Some((pos, pos));
         } else {
           self.clear_logs_selection();
@@ -1309,6 +1331,8 @@ impl Component for Home {
     let main_panel = rects[1];
     let help_line_rect = rects[2];
 
+    self.search_panel = search_panel;
+
     // Helper for colouring based on the same logic as sysz
     // https://github.com/joehillen/sysz/blob/8da8e0dcbfde8d68fbdb22382671e395bd370d69/sysz#L69C1-L72C24
     //    Some units are colored based on state:
@@ -1459,7 +1483,7 @@ impl Component for Home {
 
       // Hover state is tested against the previous frame's rect; the rect itself is updated
       // below once the details layout is known.
-      let file_path_style = if contains(self.file_path_rect, self.mouse_position) {
+      let file_path_style = if self.file_path_rect.contains(self.mouse_position) {
         Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
       } else {
         Style::default()
@@ -1602,12 +1626,7 @@ impl Component for Home {
     f.render_widget(paragraph, logs_panel);
 
     // Inner area of the logs panel (border-excluded), used for mouse hit-testing and selection.
-    self.logs_panel_inner = Rect {
-      x: logs_panel.x.saturating_add(1),
-      y: logs_panel.y.saturating_add(1),
-      width: logs_panel.width.saturating_sub(2),
-      height: logs_panel.height.saturating_sub(2),
-    };
+    self.logs_panel_inner = logs_panel.inner(Margin::new(1, 1));
 
     if let Some((anchor, cursor)) = self.logs_selection {
       let inner = self.logs_panel_inner;
