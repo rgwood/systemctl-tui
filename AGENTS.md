@@ -44,6 +44,12 @@ Use `tmux capture-pane -t sctui-test -p` to read the rendered screen and assert 
 
 `scripts/integration-test.py` automates this checklist end-to-end (local by default, or `--host user@hostname` for remote mode; it includes a keystroke-drop regression test that manual testing tends to miss). Prefer running it over hand-rolling tmux commands.
 
+Note: the TUI renders to **stderr**, so don't redirect `2>` when driving it in tmux — you'll get a blank-looking pane and think the app is hung.
+
+### systemd version matrix
+
+`scripts/remote-matrix.py` runs the remote-mode test suite against containers running real systemd versions (239→current: Rocky 8, Ubuntu 20.04/22.04/24.04, Debian 12, Fedora). It builds systemd+sshd container images, waits for system and user managers, and runs `integration-test.py --host ... --remote-suite` against each. Needs podman or docker. `--distro ubuntu-24.04` to run one; `--keep` leaves a failed container up for debugging. Slow (~10-20 min for the full matrix) — run it when touching remote-mode code (`src/ssh.rs`, journalctl/D-Bus plumbing) or before a release, not for routine changes. CI runs it on every PR.
+
 ### Test checklist
 
 When validating changes, run through these scenarios:
