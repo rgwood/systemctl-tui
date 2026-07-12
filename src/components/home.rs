@@ -228,8 +228,9 @@ pub struct Home {
   pub selected_log_text: String,
   /// Most recent mouse position, in absolute screen coordinates.
   pub mouse_position: Position,
-  /// Area of the unit file path line in the details pane, as of the most recent render.
-  pub file_path_rect: Rect,
+  /// Copyable fields in the details pane (rect on screen -> full text to copy), as of the most
+  /// recent render.
+  pub copyable_fields: Vec<(Rect, String)>,
   /// Area of the search input panel, as of the most recent render.
   pub search_panel: Rect,
   /// A transient toast message and when it was shown.
@@ -456,6 +457,16 @@ impl Home {
     self.selected_log_text.clear();
   }
 
+  fn hovered_field(&self, pos: Position) -> Option<usize> {
+    self.copyable_fields.iter().position(|(rect, _)| rect.contains(pos))
+  }
+
+  fn copy_with_toast(&mut self, text: &str) {
+    crate::utils::copy_to_clipboard_osc52(text);
+    let n = text.chars().count();
+    self.show_toast(&format!("Copied {n} chars via OSC 52"));
+  }
+
   fn show_toast(&mut self, msg: &str) {
     self.toast = Some((msg.to_string(), std::time::Instant::now()));
     if let Some(tx) = self.action_tx.clone() {
@@ -463,6 +474,27 @@ impl Home {
         tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
         let _ = tx.send(Action::Render);
       });
+    }
+  }
+
+  /// Draw the transient copy toast in the bottom-right corner. Must be called at the very end of
+  /// `render` so nothing draws over it.
+  fn render_toast(&mut self, f: &mut Frame<'_>) {
+    if let Some((msg, shown_at)) = &self.toast {
+      if shown_at.elapsed() < std::time::Duration::from_secs(2) {
+        let area = f.area();
+        let width = msg.len() as u16 + 2;
+        if area.width > width && area.height > 1 {
+          let toast_rect =
+            Rect { x: area.right().saturating_sub(width), y: area.bottom().saturating_sub(1), width, height: 1 };
+          let paragraph = Paragraph::new(Line::from(format!(" {msg} ")))
+            .style(Style::default().fg(self.theme.accent).add_modifier(Modifier::REVERSED));
+          f.render_widget(Clear, toast_rect);
+          f.render_widget(paragraph, toast_rect);
+        }
+      } else {
+        self.toast = None;
+      }
     }
   }
 
@@ -1008,9 +1040,9 @@ impl Component for Home {
 
     match mouse.kind {
       MouseEventKind::Moved => {
-        let was_hovering = self.file_path_rect.contains(self.mouse_position);
+        let was_hovering = self.hovered_field(self.mouse_position);
         self.mouse_position = pos;
-        let is_hovering = self.file_path_rect.contains(pos);
+        let is_hovering = self.hovered_field(pos);
         if was_hovering != is_hovering {
           vec![Action::Render]
         } else {
@@ -1042,14 +1074,10 @@ impl Component for Home {
       },
       MouseEventKind::Down(MouseButton::Left) => {
         self.mouse_position = pos;
-        if self.file_path_rect.contains(pos) {
-          if let Some(m) = self.filtered_units.selected() {
-            if let Some(Ok(path)) = &m.unit.file_path {
-              crate::utils::copy_to_clipboard_osc52(path);
-              self.show_toast("Copied to clipboard");
-              return vec![Action::Render];
-            }
-          }
+        if let Some(idx) = self.hovered_field(pos) {
+          let text = self.copyable_fields[idx].1.clone();
+          self.copy_with_toast(&text);
+          return vec![Action::Render];
         }
         if self.search_panel.contains(pos) && self.mode == Mode::ServiceList {
           return vec![Action::EnterMode(Mode::Search)];
@@ -1090,8 +1118,8 @@ impl Component for Home {
         self.mouse_position = pos;
         if let Some((anchor, cursor)) = self.logs_selection {
           if anchor != cursor && !self.selected_log_text.is_empty() {
-            crate::utils::copy_to_clipboard_osc52(&self.selected_log_text);
-            self.show_toast("Copied to clipboard");
+            let text = self.selected_log_text.clone();
+            self.copy_with_toast(&text);
           } else {
             self.clear_logs_selection();
           }
@@ -1421,8 +1449,6 @@ impl Component for Home {
     let dim = Style::default().add_modifier(Modifier::DIM);
     let mut rows: Vec<(&str, Line)> = vec![];
     let mut stat_rows: Vec<(&str, Line)> = vec![];
-    // Row index and display width of the unit file path, if shown; used for mouse hit-testing.
-    let mut file_path_row: Option<(usize, u16)> = None;
 
     if let Some(m) = selected_item {
       rows.push(("Description", Line::from(m.unit.description.as_str())));
@@ -1481,20 +1507,10 @@ impl Component for Home {
       }
       rows.push(("Enablement", Line::from(state_spans)));
 
-      // Hover state is tested against the previous frame's rect; the rect itself is updated
-      // below once the details layout is known.
-      let file_path_style = if self.file_path_rect.contains(self.mouse_position) {
-        Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-      } else {
-        Style::default()
-      };
-      if let Some(Ok(file_path)) = &m.unit.file_path {
-        file_path_row = Some((rows.len(), file_path.len() as u16));
-      }
       rows.push((
         "Unit file",
         match &m.unit.file_path {
-          Some(Ok(file_path)) => Line::from(Span::styled(file_path.as_str(), file_path_style)),
+          Some(Ok(file_path)) => Line::from(file_path.as_str()),
           Some(Err(e)) => Line::from(Span::styled(e.as_str(), Style::default().fg(Color::Red))),
           None => Line::from(""),
         },
@@ -1574,19 +1590,34 @@ impl Component for Home {
         .split(details_inner)
     };
 
-    let (labels, values) = split_labels_values(rows);
+    // Every details value line (and runtime stat line) is hoverable and click-to-copy. Register
+    // each rendered line's rect and text, bolding the hovered one.
+    self.copyable_fields.clear();
+    fn register_copyable_fields(values: &mut [Line], pane: Rect, mouse: Position, out: &mut Vec<(Rect, String)>) {
+      for (i, line) in values.iter_mut().enumerate() {
+        if i as u16 >= pane.height {
+          break;
+        }
+        let text = line.spans.iter().map(|s| s.content.as_ref()).collect::<String>().trim().to_string();
+        if text.is_empty() {
+          continue;
+        }
+        let rect = Rect { x: pane.x, y: pane.y + i as u16, width: (line.width() as u16).min(pane.width), height: 1 };
+        if rect.contains(mouse) {
+          line.style = line.style.add_modifier(Modifier::BOLD);
+        }
+        out.push((rect, text));
+      }
+    }
+
+    let (labels, mut values) = split_labels_values(rows);
+    register_copyable_fields(&mut values, panes[1], self.mouse_position, &mut self.copyable_fields);
     f.render_widget(Paragraph::new(labels).alignment(ratatui::layout::Alignment::Right), panes[0]);
     f.render_widget(Paragraph::new(values), panes[1]);
 
-    self.file_path_rect = match file_path_row {
-      Some((idx, width)) if (idx as u16) < panes[1].height => {
-        Rect { x: panes[1].x, y: panes[1].y + idx as u16, width: width.min(panes[1].width), height: 1 }
-      },
-      _ => Rect::ZERO,
-    };
-
     if two_columns {
-      let (stat_labels, stat_values) = split_labels_values(stat_rows);
+      let (stat_labels, mut stat_values) = split_labels_values(stat_rows);
+      register_copyable_fields(&mut stat_values, panes[3], self.mouse_position, &mut self.copyable_fields);
       f.render_widget(Paragraph::new(stat_labels).alignment(ratatui::layout::Alignment::Right), panes[2]);
       f.render_widget(Paragraph::new(stat_values), panes[3]);
     }
@@ -1765,25 +1796,6 @@ impl Component for Home {
       f.render_widget(paragraph, popup);
     }
 
-    if let Some((msg, shown_at)) = &self.toast {
-      let elapsed = shown_at.elapsed();
-      if elapsed < std::time::Duration::from_secs(2) {
-        let area = f.area();
-        let width = msg.len() as u16 + 2;
-        if area.width > width + 1 && area.height > 2 {
-          let toast_rect =
-            Rect { x: area.right().saturating_sub(width + 1), y: area.bottom().saturating_sub(2), width, height: 1 };
-          let toast_text = format!(" {msg} ");
-          let paragraph = Paragraph::new(Line::from(toast_text))
-            .style(Style::default().fg(theme.accent).add_modifier(Modifier::REVERSED));
-          f.render_widget(Clear, toast_rect);
-          f.render_widget(paragraph, toast_rect);
-        }
-      } else {
-        self.toast = None;
-      }
-    }
-
     let selected_unit_name = match self.filtered_units.selected() {
       Some(s) => &s.unit.name,
       None => "",
@@ -1927,6 +1939,8 @@ impl Component for Home {
       f.render_widget(Clear, popup);
       f.render_widget(paragraph, popup);
     }
+
+    self.render_toast(f);
   }
 }
 
