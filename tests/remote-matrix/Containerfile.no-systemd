@@ -1,0 +1,14 @@
+# A host with sshd but no systemd at all, for testing that remote mode fails
+# gracefully ("systemd-stdio-bridge not found...") instead of hanging or crashing.
+FROM alpine:latest
+
+ARG SSH_PUBKEY
+
+RUN apk add --no-cache openssh \
+    && ssh-keygen -A \
+    && mkdir -p /root/.ssh \
+    && echo "$SSH_PUBKEY" > /root/.ssh/authorized_keys \
+    && chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys \
+    && sed -i 's/#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+
+CMD ["/usr/sbin/sshd", "-D", "-e"]

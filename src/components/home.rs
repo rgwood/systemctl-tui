@@ -19,15 +19,15 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use tui_input::{backend::crossterm::EventHandler, Input};
 
-use std::{
-  process::{Command, Stdio},
-  time::Duration,
-};
+use std::{collections::HashSet, process::Stdio, time::Duration};
 
 use super::{logger::Logger, Component, Frame};
 use crate::{
   action::Action,
-  systemd::{self, diagnose_missing_logs, parse_journalctl_error, Scope, UnitFile, UnitId, UnitScope, UnitWithStatus},
+  systemd::{
+    self, diagnose_missing_logs, parse_journalctl_error, Scope, UnitFile, UnitId, UnitRuntimeInfo, UnitScope,
+    UnitWithStatus,
+  },
 };
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
@@ -40,7 +40,111 @@ pub enum Mode {
   Processing,
   Error,
   SignalMenu,
+  StatusFilter,
 }
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum UnitStatus {
+  // Activation state
+  Active,
+  Inactive,
+  Failed,
+  // Enablement state
+  Enabled,
+  Disabled,
+  Static,
+  Masked,
+  // Load state
+  Loaded,
+  NotFound,
+}
+
+impl UnitStatus {
+  const ALL: [UnitStatus; 9] = [
+    UnitStatus::Active,
+    UnitStatus::Inactive,
+    UnitStatus::Failed,
+    UnitStatus::Enabled,
+    UnitStatus::Disabled,
+    UnitStatus::Static,
+    UnitStatus::Masked,
+    UnitStatus::Loaded,
+    UnitStatus::NotFound,
+  ];
+
+  const NONE: [UnitStatus; 0] = [];
+
+  fn label(&self) -> &'static str {
+    match self {
+      UnitStatus::Active => "active",
+      UnitStatus::Inactive => "inactive",
+      UnitStatus::Failed => "failed",
+      UnitStatus::Enabled => "enabled",
+      UnitStatus::Disabled => "disabled",
+      UnitStatus::Static => "static",
+      UnitStatus::Masked => "masked",
+      UnitStatus::Loaded => "loaded",
+      UnitStatus::NotFound => "not-found",
+    }
+  }
+
+  fn shortcut_key(&self) -> KeyCode {
+    match self {
+      UnitStatus::Active => KeyCode::Char('c'),
+      UnitStatus::Inactive => KeyCode::Char('i'),
+      UnitStatus::Failed => KeyCode::Char('f'),
+      UnitStatus::Enabled => KeyCode::Char('e'),
+      UnitStatus::Disabled => KeyCode::Char('d'),
+      UnitStatus::Static => KeyCode::Char('s'),
+      UnitStatus::Masked => KeyCode::Char('m'),
+      UnitStatus::Loaded => KeyCode::Char('l'),
+      UnitStatus::NotFound => KeyCode::Char('u'),
+    }
+  }
+
+  /// Map a unit's ActiveState to a filter bucket. Transitional states
+  /// (activating/deactivating) are momentary, so they get lumped into the
+  /// nearest stable bucket rather than getting their own checkboxes.
+  fn activation_bucket(state: &str) -> UnitStatus {
+    match state {
+      "active" | "reloading" => UnitStatus::Active,
+      "failed" => UnitStatus::Failed,
+      // inactive, activating, deactivating, maintenance
+      _ => UnitStatus::Inactive,
+    }
+  }
+
+  /// Map a unit's UnitFileState to a filter bucket. Unknown or future states
+  /// return None, meaning the unit is never filtered out on enablement.
+  fn enablement_bucket(state: &str) -> Option<UnitStatus> {
+    match state {
+      // alias/indirect/linked follow another unit's enablement, so "enabled"
+      // is the closest fit
+      "enabled" | "enabled-runtime" | "alias" | "indirect" | "linked" | "linked-runtime" => Some(UnitStatus::Enabled),
+      // no [Install] section / not user-managed
+      "static" | "generated" | "transient" => Some(UnitStatus::Static),
+      "disabled" => Some(UnitStatus::Disabled),
+      "masked" | "masked-runtime" => Some(UnitStatus::Masked),
+      _ => None,
+    }
+  }
+
+  /// Map a unit's LoadState to a filter bucket. A "masked" load state counts
+  /// as loaded here; visibility of masked units is governed by the Masked
+  /// enablement filter instead.
+  fn load_bucket(state: &str) -> UnitStatus {
+    match state {
+      "not-found" | "bad-setting" | "error" => UnitStatus::NotFound,
+      _ => UnitStatus::Loaded,
+    }
+  }
+}
+
+const STATUS_CATEGORIES: &[(&str, &[UnitStatus])] = &[
+  ("Activation", &[UnitStatus::Active, UnitStatus::Inactive, UnitStatus::Failed]),
+  ("Enablement", &[UnitStatus::Enabled, UnitStatus::Disabled, UnitStatus::Static, UnitStatus::Masked]),
+  ("Load", &[UnitStatus::Loaded, UnitStatus::NotFound]),
+];
 
 #[derive(Clone, Copy)]
 pub struct Theme {
@@ -99,6 +203,8 @@ pub struct Home {
   pub filtered_units: StatefulList<MatchedUnit>,
   pub logs: Vec<String>,
   pub logs_scroll_offset: u16,
+  /// Runtime info for the currently selected unit, fetched lazily after selection
+  pub runtime_info: Option<UnitRuntimeInfo>,
   pub mode: Mode,
   pub previous_mode: Option<Mode>,
   pub input: Input,
@@ -109,6 +215,8 @@ pub struct Home {
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
   pub journalctl_tx: Option<std::sync::mpsc::Sender<UnitId>>,
   pub fuzzy_matcher: SkimMatcherV2,
+  pub filtered_statuses: HashSet<UnitStatus>,
+  pub filter_cursor: usize,
 }
 
 pub struct MenuItem {
@@ -208,7 +316,8 @@ impl<T> StatefulList<T> {
 impl Home {
   pub fn new(scope: Scope, limit_units: &[String]) -> Self {
     let limit_units = limit_units.to_vec();
-    Self { scope, limit_units, ..Default::default() }
+    let filtered_statuses = UnitStatus::ALL.into_iter().collect();
+    Self { scope, limit_units, filtered_statuses, filter_cursor: 0, ..Default::default() }
   }
 
   pub fn set_units(&mut self, units: Vec<UnitWithStatus>) {
@@ -257,14 +366,28 @@ impl Home {
   // This is inefficient but it's fast enough
   // (on gen 13 i7: ~100 microseconds to update, ~100 microseconds to filter)
   // revisit if needed
-  pub fn update_units(&mut self, units: Vec<UnitWithStatus>) {
+  pub fn update_units(&mut self, service_list: systemd::ServiceList) {
     let now = std::time::Instant::now();
 
-    for unit in units {
+    let refreshed_ids: std::collections::HashSet<UnitId> = service_list.units.iter().map(|u| u.id()).collect();
+
+    for unit in service_list.units {
       if let Some(existing) = self.all_units.get_mut(&unit.id()) {
         existing.update(unit);
       } else {
         self.all_units.insert(unit.id(), unit);
+      }
+    }
+
+    // ListUnits only returns *loaded* units. A unit missing from a scope we successfully
+    // refreshed has been unloaded (e.g. a disabled unit unloads when it stops), so reset it
+    // to the same state merge_unit_files uses for not-loaded units instead of showing its
+    // last-known (stale) state forever.
+    for (id, unit) in self.all_units.iter_mut() {
+      if service_list.refreshed_scopes.contains(&unit.scope) && !refreshed_ids.contains(id) {
+        unit.load_state = "not-loaded".into();
+        unit.activation_state = "inactive".into();
+        unit.sub_state = "dead".into();
       }
     }
     info!("Updated units in {:?}", now.elapsed());
@@ -276,6 +399,7 @@ impl Home {
 
   pub fn next(&mut self) {
     self.logs = vec![];
+    self.runtime_info = None;
     self.filtered_units.next();
     self.get_logs();
     self.logs_scroll_offset = 0;
@@ -283,6 +407,7 @@ impl Home {
 
   pub fn previous(&mut self) {
     self.logs = vec![];
+    self.runtime_info = None;
     self.filtered_units.previous();
     self.get_logs();
     self.logs_scroll_offset = 0;
@@ -291,6 +416,7 @@ impl Home {
   pub fn select(&mut self, index: Option<usize>, refresh_logs: bool) {
     if refresh_logs {
       self.logs = vec![];
+      self.runtime_info = None;
     }
     self.filtered_units.select(index);
     if refresh_logs {
@@ -301,6 +427,7 @@ impl Home {
 
   pub fn unselect(&mut self) {
     self.logs = vec![];
+    self.runtime_info = None;
     self.filtered_units.unselect();
   }
 
@@ -322,15 +449,30 @@ impl Home {
   pub fn refresh_filtered_units(&mut self) {
     let previously_selected = self.selected_service();
     let search_value = self.input.value();
+    let status_filtered_units = self.all_units.values().filter(|u| {
+      let passes_activation = self.filtered_statuses.contains(&UnitStatus::activation_bucket(&u.activation_state));
+
+      let passes_enablement = match u.enablement_state.as_deref() {
+        // Enablement state not loaded yet — don't filter on it
+        None => true,
+        Some(state) => match UnitStatus::enablement_bucket(state) {
+          // Unknown state — don't filter on it
+          None => true,
+          Some(bucket) => self.filtered_statuses.contains(&bucket),
+        },
+      };
+
+      let passes_load = self.filtered_statuses.contains(&UnitStatus::load_bucket(&u.load_state));
+
+      passes_activation && passes_enablement && passes_load
+    });
 
     let matching: Vec<MatchedUnit> = if search_value.is_empty() {
       // No search - return all units without highlighting
-      self.all_units.values().map(|u| MatchedUnit { unit: u.clone(), match_indices: vec![] }).collect()
+      status_filtered_units.map(|u| MatchedUnit { unit: u.clone(), match_indices: vec![] }).collect()
     } else {
       // Fuzzy match with indices for highlighting
-      let mut scored: Vec<(i64, MatchedUnit)> = self
-        .all_units
-        .values()
+      let mut scored: Vec<(i64, MatchedUnit)> = status_filtered_units
         .filter_map(|u| {
           self
             .fuzzy_matcher
@@ -340,11 +482,16 @@ impl Home {
         .collect();
 
       // Sort by score descending (best matches first)
-      scored.sort_by(|a, b| b.0.cmp(&a.0));
+      scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
       scored.into_iter().map(|(_, m)| m).collect()
     };
 
     self.filtered_units.items = matching;
+    // Reset the visible-window offset whenever the items list is rebuilt.
+    // Without this, a stale offset from a larger list can leave items above the
+    // viewport hidden when the list shrinks (e.g. typing a query, clearing it,
+    // and retyping it can leave the first matches scrolled out of view).
+    *self.filtered_units.state.offset_mut() = 0;
 
     // try to select the same item we had selected before
     if let Some(previously_selected) = previously_selected {
@@ -404,6 +551,16 @@ impl Home {
     self.service_action(service, "Disable".into(), cancel_token, future, true);
   }
 
+  fn is_status_filter_active(&self) -> bool {
+    self.filtered_statuses.len() != UnitStatus::ALL.len()
+  }
+
+  fn toggle_filtered_status(&mut self, status: UnitStatus) {
+    if !self.filtered_statuses.remove(&status) {
+      self.filtered_statuses.insert(status);
+    }
+  }
+
   fn service_action<Fut>(
     &mut self,
     service: UnitId,
@@ -423,16 +580,16 @@ impl Home {
       let mut interval = tokio::time::interval(Duration::from_millis(200));
       loop {
         interval.tick().await;
-        tx_clone.send(Action::SpinnerTick).unwrap();
+        let _ = tx_clone.send(Action::SpinnerTick);
       }
     });
 
     tokio::spawn(async move {
-      tx.send(Action::EnterMode(Mode::Processing)).unwrap();
+      let _ = tx.send(Action::EnterMode(Mode::Processing));
       match action.await {
         Ok(_) => {
           info!("{} of {:?} service {} succeeded", action_name, service.scope, service.name);
-          tx.send(Action::EnterMode(Mode::ServiceList)).unwrap();
+          let _ = tx.send(Action::EnterMode(Mode::ServiceList));
         },
         // would be nicer to check the error type here, but this is easier
         Err(_) if cancel_token.is_cancelled() => {
@@ -448,19 +605,19 @@ impl Home {
             error_string.push_str("Try running this tool with sudo.");
           }
 
-          tx.send(Action::EnterError(error_string)).unwrap();
+          let _ = tx.send(Action::EnterError(error_string));
         },
       }
       spinner_task.abort();
-      tx.send(Action::RefreshServices).unwrap();
+      let _ = tx.send(Action::RefreshServices);
       if refresh_unit_files {
-        tx.send(Action::RefreshUnitFiles).unwrap();
+        let _ = tx.send(Action::RefreshUnitFiles);
       }
 
       // Refresh a bit more frequently after a service action
       for _ in 0..3 {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        tx.send(Action::RefreshServices).unwrap();
+        let _ = tx.send(Action::RefreshServices);
       }
     });
   }
@@ -504,10 +661,16 @@ impl Component for Home {
         // lazy debounce to avoid spamming journalctl on slow connections/systems
         std::thread::sleep(Duration::from_millis(100));
 
-        // get the unit file path
-        match systemd::get_unit_file_location(&unit) {
-          Ok(path) => {
-            let _ = tx.send(Action::SetUnitFilePath { unit: unit.clone(), path: Ok(path) });
+        // get the unit file path + runtime info (one systemctl call for both)
+        match systemd::get_unit_runtime_info(&unit) {
+          Ok(info) => {
+            let path = if info.fragment_path.is_empty() {
+              Err("could not be determined".into())
+            } else {
+              Ok(info.fragment_path.clone())
+            };
+            let _ = tx.send(Action::SetUnitFilePath { unit: unit.clone(), path });
+            let _ = tx.send(Action::SetUnitRuntimeInfo { unit: unit.clone(), info: Box::new(info) });
             let _ = tx.send(Action::Render);
           },
           Err(e) => {
@@ -515,7 +678,7 @@ impl Component for Home {
             let _ =
               tx.send(Action::SetUnitFilePath { unit: unit.clone(), path: Err("could not be determined".into()) });
             let _ = tx.send(Action::Render);
-            error!("Error getting unit file path for {}: {}", unit.name, e);
+            error!("Error getting unit info for {}: {}", unit.name, e);
           },
         }
 
@@ -531,7 +694,7 @@ impl Component for Home {
           args.push("--user");
         }
 
-        match Command::new("journalctl").args(&args).output() {
+        match crate::ssh::host_command("journalctl", &args).output() {
           Ok(output) => {
             if output.status.success() {
               info!("Got logs for {} in {:?}", unit.name, start.elapsed());
@@ -568,19 +731,14 @@ impl Component for Home {
         // This does mean that we'll miss any logs that are written between the two commands, low enough risk for now
         let tx = tx.clone();
         last_follow_handle = Some(tokio::spawn(async move {
-          let mut command = tokio::process::Command::new("journalctl");
-          command.arg("-u");
-          command.arg(unit.name.clone());
-          command.arg("--output=short-iso");
-          command.arg("--follow");
-          command.arg("--lines=0");
-          command.arg("--quiet");
+          let mut args = vec!["-u", &unit.name, "--output=short-iso", "--follow", "--lines=0", "--quiet"];
+          if unit.scope == UnitScope::User {
+            args.push("--user");
+          }
+          let mut command = crate::ssh::host_tokio_command("journalctl", &args);
           command.stdout(Stdio::piped());
           command.stderr(Stdio::piped());
-
-          if unit.scope == UnitScope::User {
-            command.arg("--user");
-          }
+          command.kill_on_drop(true);
 
           let mut child = command.spawn().expect("failed to execute process");
 
@@ -663,6 +821,7 @@ impl Component for Home {
             self.select(Some(0), true);
             vec![Action::Render]
           },
+          KeyCode::Char('f') => vec![Action::EnterMode(Mode::StatusFilter)],
           KeyCode::Enter | KeyCode::Char(' ') => vec![Action::EnterMode(Mode::ActionMenu)],
           _ => vec![],
         }
@@ -751,6 +910,48 @@ impl Component for Home {
           vec![]
         },
       },
+      Mode::StatusFilter => match key.code {
+        KeyCode::Esc => vec![Action::EnterMode(Mode::ServiceList)],
+        KeyCode::Down | KeyCode::Char('j') => {
+          if self.filter_cursor < UnitStatus::ALL.len() - 1 {
+            self.filter_cursor += 1;
+          } else {
+            self.filter_cursor = 0;
+          }
+          vec![Action::Render]
+        },
+        KeyCode::Up | KeyCode::Char('k') => {
+          if self.filter_cursor > 0 {
+            self.filter_cursor -= 1;
+          } else {
+            self.filter_cursor = UnitStatus::ALL.len() - 1;
+          }
+          vec![Action::Render]
+        },
+        KeyCode::Enter | KeyCode::Char(' ') => {
+          self.toggle_filtered_status(UnitStatus::ALL[self.filter_cursor]);
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        KeyCode::Char('a') => {
+          self.filtered_statuses = UnitStatus::ALL.into_iter().collect();
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        KeyCode::Char('n') => {
+          self.filtered_statuses = UnitStatus::NONE.into_iter().collect();
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        _ => {
+          // Shortcut keys: toggle the matching filter directly
+          for (i, status) in UnitStatus::ALL.iter().enumerate() {
+            if status.shortcut_key() == key.code {
+              self.filter_cursor = i;
+              self.toggle_filtered_status(*status);
+              return vec![Action::RefreshStatusFilterMenu];
+            }
+          }
+          vec![]
+        },
+      },
     }
   }
 
@@ -762,7 +963,8 @@ impl Component for Home {
       },
       Action::EnterMode(mode) => {
         if mode == Mode::ActionMenu {
-          if let Some(selected) = self.filtered_units.selected() {
+          {
+            let selected = self.filtered_units.selected()?;
             let mut menu_items = vec![
               MenuItem::new("Start", Action::StartService(selected.unit.id()), Some(KeyCode::Char('s'))),
               MenuItem::new("Stop", Action::StopService(selected.unit.id()), Some(KeyCode::Char('t'))),
@@ -789,11 +991,10 @@ impl Component for Home {
 
             self.menu_items = StatefulList::with_items(menu_items);
             self.menu_items.state.select(Some(0));
-          } else {
-            return None;
           }
         } else if mode == Mode::SignalMenu {
-          if let Some(selected) = self.filtered_units.selected() {
+          {
+            let selected = self.filtered_units.selected()?;
             let signals = vec![
               ("SIGTERM", KeyCode::Char('t')),
               ("SIGHUP", KeyCode::Char('h')),
@@ -813,9 +1014,9 @@ impl Component for Home {
 
             self.menu_items = StatefulList::with_items(menu_items);
             self.menu_items.state.select(Some(0));
-          } else {
-            return None;
           }
+        } else if mode == Mode::StatusFilter {
+          self.filter_cursor = 0;
         }
 
         self.mode = mode;
@@ -852,6 +1053,13 @@ impl Component for Home {
           unit.file_path = Some(path.clone());
         }
         self.refresh_filtered_units(); // copy the updated unit file path to the filtered list
+      },
+      Action::SetUnitRuntimeInfo { unit, info } => {
+        if let Some(selected) = self.filtered_units.selected() {
+          if selected.unit.id() == unit {
+            self.runtime_info = Some(*info);
+          }
+        }
       },
       Action::SetLogs { unit, logs } => {
         if let Some(selected) = self.filtered_units.selected() {
@@ -900,7 +1108,7 @@ impl Component for Home {
           let units = systemd::get_all_services(scope, &limit_units)
             .await
             .expect("Failed to get services. Check that systemd is running and try running this tool with sudo.");
-          tx.send(Action::SetServices(units)).unwrap();
+          let _ = tx.send(Action::SetServices(units));
         });
       },
       Action::SetServices(units) => {
@@ -921,6 +1129,10 @@ impl Component for Home {
             },
           }
         });
+      },
+      Action::RefreshStatusFilterMenu => {
+        self.refresh_filtered_units();
+        return Some(Action::Render);
       },
       Action::SetUnitFiles(unit_files) => {
         self.merge_unit_files(unit_files);
@@ -1040,7 +1252,7 @@ impl Component for Home {
           } else {
             Style::default()
           })
-          .title("─Services"),
+          .title(if self.is_status_filter_active() { "─Services (filtered)" } else { "─Services" }),
       )
       .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
 
@@ -1052,52 +1264,44 @@ impl Component for Home {
 
     let selected_item = self.filtered_units.selected();
 
-    let right_panel =
-      Layout::new(Direction::Vertical, [Constraint::Min(8), Constraint::Percentage(100)]).split(right_panel);
-    let details_panel = right_panel[0];
-    let logs_panel = right_panel[1];
+    // Details rows: base unit facts on the left, runtime stats (fetched lazily on selection)
+    // in a second column on wide terminals, or folded into a single "Runtime" row otherwise.
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let mut rows: Vec<(&str, Line)> = vec![];
+    let mut stat_rows: Vec<(&str, Line)> = vec![];
 
-    let details_block = Block::default().title("─Details").borders(Borders::ALL).border_type(BorderType::Rounded);
-    let details_panel_panes = Layout::new(Direction::Horizontal, [Constraint::Min(14), Constraint::Percentage(100)])
-      .split(details_block.inner(details_panel));
-    let props_pane = details_panel_panes[0];
-    let values_pane = details_panel_panes[1];
-
-    let props_lines = vec![
-      Line::from("Description: "),
-      Line::from("Enablement: "),
-      Line::from("Scope: "),
-      Line::from("Loaded: "),
-      Line::from("Active: "),
-      Line::from("Unit file: "),
-    ];
-
-    let details_text = if let Some(m) = selected_item {
-      fn line_color_string<'a>(value: String, color: Color) -> Line<'a> {
-        Line::from(vec![Span::styled(value, Style::default().fg(color))])
-      }
-
-      let load_color = match m.unit.load_state.as_str() {
-        "loaded" => Color::Green,
-        "not-found" => Color::Yellow,
-        "error" => Color::Red,
-        _ => Color::Reset,
-      };
+    if let Some(m) = selected_item {
+      rows.push(("Description", Line::from(m.unit.description.as_str())));
 
       let active_color = match m.unit.activation_state.as_str() {
         "active" => Color::Green,
-        "inactive" => Color::Reset,
         "failed" => Color::Red,
         _ => Color::Reset,
       };
+      let mut active_spans = vec![Span::styled(
+        format!("{} ({})", m.unit.activation_state, m.unit.sub_state),
+        Style::default().fg(active_color),
+      )];
+      if let Some(info) = &self.runtime_info {
+        if m.unit.activation_state == "failed" {
+          if let Some(result) = info.result.as_deref().filter(|r| *r != "success") {
+            let status = info.exec_main_status.filter(|&s| s != 0).map(|s| format!(", status={s}")).unwrap_or_default();
+            active_spans.push(Span::styled(format!(" ({result}{status})"), Style::default().fg(Color::Red)));
+          }
+        }
+        let since = if m.unit.activation_state == "active" {
+          info.active_enter_timestamp.as_deref()
+        } else {
+          info.inactive_enter_timestamp.as_deref()
+        };
+        if let Some((absolute, relative)) = since.and_then(format_systemd_timestamp) {
+          let relative = relative.map(|r| format!(" ({r})")).unwrap_or_default();
+          active_spans.push(Span::styled(format!(" since {absolute}{relative}"), dim));
+        }
+      }
+      rows.push(("Active", Line::from(active_spans)));
 
-      let active_state_value = format!("{} ({})", m.unit.activation_state, m.unit.sub_state);
-
-      let scope = match m.unit.scope {
-        UnitScope::Global => "Global",
-        UnitScope::User => "User",
-      };
-
+      // Enablement, scope, and any load problem share a line
       let enablement_state = m.unit.enablement_state.as_deref().unwrap_or("");
       let enablement_color = match enablement_state {
         "enabled" => Color::Green,
@@ -1105,32 +1309,116 @@ impl Component for Home {
         "masked" => Color::Red,
         _ => Color::Reset,
       };
+      let scope = match m.unit.scope {
+        UnitScope::Global => "global",
+        UnitScope::User => "user",
+      };
+      let mut state_spans = vec![
+        Span::styled(enablement_state, Style::default().fg(enablement_color)),
+        Span::styled(format!(" · {scope}"), dim),
+      ];
+      if m.unit.load_state != "loaded" {
+        let load_color = match m.unit.load_state.as_str() {
+          "not-found" => Color::Yellow,
+          "error" | "masked" | "bad-setting" => Color::Red,
+          _ => Color::Reset,
+        };
+        state_spans.push(Span::styled(format!(" · {}", m.unit.load_state), Style::default().fg(load_color)));
+      }
+      rows.push(("Enablement", Line::from(state_spans)));
 
-      let lines = vec![
-        colored_line(&m.unit.description, Color::Reset),
-        colored_line(enablement_state, enablement_color),
-        colored_line(scope, Color::Reset),
-        colored_line(&m.unit.load_state, load_color),
-        line_color_string(active_state_value, active_color),
+      rows.push((
+        "Unit file",
         match &m.unit.file_path {
           Some(Ok(file_path)) => Line::from(file_path.as_str()),
           Some(Err(e)) => colored_line(e, Color::Red),
           None => Line::from(""),
         },
-      ];
+      ));
 
-      lines
+      if let Some(info) = &self.runtime_info {
+        if let Some(pid) = info.main_pid {
+          stat_rows.push(("PID", Line::from(pid.to_string())));
+        }
+        if let Some(memory) = info.memory_current {
+          stat_rows.push(("Memory", Line::from(format_bytes(memory))));
+        }
+        if let Some(tasks) = info.tasks_current {
+          stat_rows.push(("Tasks", Line::from(tasks.to_string())));
+        }
+        if let Some(cpu) = info.cpu_usage_nsec.filter(|&n| n > 0) {
+          stat_rows.push(("CPU", Line::from(format_cpu_nsec(cpu))));
+        }
+        if let Some(restarts) = info.n_restarts.filter(|&n| n > 0) {
+          stat_rows
+            .push(("Restarts", Line::from(Span::styled(restarts.to_string(), Style::default().fg(Color::Yellow)))));
+        }
+        if let Some((absolute, relative)) = info.next_elapse.as_deref().and_then(format_systemd_timestamp) {
+          let relative = relative.map(|r| format!(" ({r})")).unwrap_or_default();
+          stat_rows.push(("Next run", Line::from(format!("{absolute}{relative}"))));
+        }
+      }
+    }
+
+    let two_columns = right_panel.width >= 90 && !stat_rows.is_empty();
+    if !two_columns && !stat_rows.is_empty() {
+      // Narrow terminal: fold the stats into one line to save vertical space
+      let mut spans: Vec<Span> = vec![];
+      for (i, (label, line)) in stat_rows.drain(..).enumerate() {
+        if i > 0 {
+          spans.push(Span::styled(" · ", dim));
+        }
+        spans.push(Span::styled(format!("{label} "), dim));
+        spans.extend(line.spans);
+      }
+      rows.push(("Runtime", Line::from(spans)));
+    }
+
+    // Size the details panel to its content instead of a fixed height
+    let details_content_height = rows.len().max(stat_rows.len()).max(1) as u16;
+    let right_panel =
+      Layout::new(Direction::Vertical, [Constraint::Length(details_content_height + 2), Constraint::Percentage(100)])
+        .split(right_panel);
+    let details_panel = right_panel[0];
+    let logs_panel = right_panel[1];
+
+    let details_block = Block::default().title("─Details").borders(Borders::ALL).border_type(BorderType::Rounded);
+    let details_inner = details_block.inner(details_panel);
+    f.render_widget(details_block, details_panel);
+
+    fn label_width(rows: &[(&str, Line)]) -> u16 {
+      rows.iter().map(|(label, _)| label.len() + 2).max().unwrap_or(0) as u16
+    }
+
+    fn split_labels_values<'a>(rows: Vec<(&'a str, Line<'a>)>) -> (Vec<Line<'a>>, Vec<Line<'a>>) {
+      rows.into_iter().map(|(label, value)| (Line::from(format!("{label}: ")), value)).unzip()
+    }
+
+    let panes = if two_columns {
+      Layout::new(
+        Direction::Horizontal,
+        [
+          Constraint::Length(label_width(&rows)),
+          Constraint::Fill(2),
+          Constraint::Length(label_width(&stat_rows) + 1),
+          Constraint::Fill(1),
+        ],
+      )
+      .split(details_inner)
     } else {
-      vec![]
+      Layout::new(Direction::Horizontal, [Constraint::Length(label_width(&rows)), Constraint::Fill(1)])
+        .split(details_inner)
     };
 
-    let paragraph = Paragraph::new(details_text).style(Style::default());
+    let (labels, values) = split_labels_values(rows);
+    f.render_widget(Paragraph::new(labels).alignment(ratatui::layout::Alignment::Right), panes[0]);
+    f.render_widget(Paragraph::new(values), panes[1]);
 
-    let props_widget = Paragraph::new(props_lines).alignment(ratatui::layout::Alignment::Right);
-    f.render_widget(props_widget, props_pane);
-
-    f.render_widget(paragraph, values_pane);
-    f.render_widget(details_block, details_panel);
+    if two_columns {
+      let (stat_labels, stat_values) = split_labels_values(stat_rows);
+      f.render_widget(Paragraph::new(stat_labels).alignment(ratatui::layout::Alignment::Right), panes[2]);
+      f.render_widget(Paragraph::new(stat_values), panes[3]);
+    }
 
     let log_lines = self
       .logs
@@ -1209,6 +1497,7 @@ impl Component for Home {
         Line::from(vec![primary("PageUp"), Span::raw(" / "), primary("PageDown"), Span::raw(" scroll the logs")]),
         Line::from(vec![primary("Home"), Span::raw(" / "), primary("End"), Span::raw(" scroll to top/bottom")]),
         Line::from(vec![primary("Enter"), Span::raw(" or "), primary("Space"), Span::raw(" open the action menu")]),
+        Line::from(vec![primary("f"), Span::raw(" filter services by status")]),
         Line::from(vec![primary("?"), Span::raw(" / "), primary("F1"), Span::raw(" open this help pane")]),
         Line::from(""),
         Line::from(Span::styled("Vim Style Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
@@ -1248,9 +1537,9 @@ impl Component for Home {
       f.render_widget(paragraph, popup);
     }
 
-    let selected_item = match self.filtered_units.selected() {
-      Some(s) => s,
-      None => return,
+    let selected_unit_name = match self.filtered_units.selected() {
+      Some(s) => &s.unit.name,
+      None => "",
     };
 
     // Help line at the bottom
@@ -1266,27 +1555,82 @@ impl Component for Home {
     let help_line = match self.mode {
       Mode::Search => Line::from(span("Show actions: <enter>", theme.primary)),
       Mode::ServiceList => {
-        Line::from(span("Show actions: <enter> | Open logs in pager: o | Edit unit file: e | Quit: q", theme.primary))
+        let mut spans =
+          vec![span("Show actions: <enter> | Open logs in pager: o | Edit unit file: e | Filter: f", theme.primary)];
+        if self.is_status_filter_active() {
+          spans.push(Span::styled(" ●", Style::default().fg(theme.accent)));
+        }
+        spans.push(span(" | Quit: q", theme.primary));
+        Line::from(spans)
       },
       Mode::Help => Line::from(span("Close menu: <esc>", theme.primary)),
       Mode::ActionMenu => Line::from(span("Execute action: <enter> | Close menu: <esc>", theme.primary)),
       Mode::Processing => Line::from(span("Cancel task: <esc>", theme.primary)),
       Mode::Error => Line::from(span("Close menu: <esc>", theme.primary)),
       Mode::SignalMenu => Line::from(span("Send signal: <enter> | Close menu: <esc>", theme.primary)),
+      Mode::StatusFilter => Line::from(span("Toggle: <space> | All: a | None: n | Close: <esc>", theme.primary)),
     };
 
     f.render_widget(help_line, help_rect);
     f.render_widget(Line::from(version), version_rect);
 
-    let title = format!("Actions for {}", selected_item.unit.name);
+    let title = format!("Actions for {}", selected_unit_name);
     let mut min_width = title.len() as u16 + 2; // title plus corners
     min_width = min_width.max(24); // hack: the width of the longest action name + 2
 
     let popup_width = min_width.min(f.area().width);
 
+    if self.mode == Mode::StatusFilter {
+      // Custom grouped layout for the status filter popup
+      let mut lines: Vec<Line> = Vec::new();
+      let mut idx = 0;
+      for (category_name, filters) in STATUS_CATEGORIES {
+        lines.push(Line::from(Span::styled(
+          *category_name,
+          Style::default().fg(theme.muted).add_modifier(Modifier::BOLD),
+        )));
+        for filter in *filters {
+          let is_checked = self.filtered_statuses.contains(filter);
+          let is_selected = idx == self.filter_cursor;
+
+          let check_span =
+            if is_checked { Span::styled("✓ ", Style::default().fg(theme.accent)) } else { Span::raw("  ") };
+          let name_color = if is_checked { theme.accent } else { theme.muted };
+          let name_span = Span::styled(format!("{:<12}", filter.label()), Style::default().fg(name_color));
+          let key_span = Span::styled(format!("{}", filter.shortcut_key()), Style::default().fg(theme.primary));
+
+          let line_spans = vec![Span::raw("  "), check_span, name_span, Span::raw(" "), key_span];
+          if is_selected {
+            lines.push(Line::from(line_spans).style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)));
+          } else {
+            lines.push(Line::from(line_spans));
+          }
+          idx += 1;
+        }
+      }
+
+      let filter_popup_width = 20u16.min(f.area().width);
+      let height = lines.len() as u16 + 2;
+      let popup = f.area().centered(Constraint::Length(filter_popup_width), Constraint::Length(height));
+
+      let paragraph = Paragraph::new(lines).block(
+        Block::default()
+          .borders(Borders::ALL)
+          .border_type(BorderType::Rounded)
+          .border_style(Style::default().fg(theme.accent))
+          .title("─Status filter"),
+      );
+
+      f.render_widget(Clear, popup);
+      f.render_widget(paragraph, popup);
+    }
+
     if self.mode == Mode::ActionMenu || self.mode == Mode::SignalMenu {
-      let title_prefix = if self.mode == Mode::ActionMenu { "Actions" } else { "Signals" };
-      let title = format!("{} for {}", title_prefix, selected_item.unit.name);
+      let title = match self.mode {
+        Mode::ActionMenu => format!("Actions for {}", selected_unit_name),
+        Mode::SignalMenu => format!("Signals for {}", selected_unit_name),
+        _ => unreachable!(),
+      };
       let height = self.menu_items.items.len() as u16 + 2;
       let popup = f.area().centered(Constraint::Length(popup_width), Constraint::Length(height));
 
@@ -1343,6 +1687,58 @@ impl Component for Home {
 ///
 /// systemd v255 changed the timestamp format from `-0700` to `-07:00` (RFC 3339).
 /// See: https://github.com/systemd/systemd/pull/29134
+/// Parses a systemd "show" timestamp like "Wed 2026-07-08 10:00:00 PDT" into a compact
+/// absolute form ("2026-07-08 10:00") and a relative one ("2d 4h ago" or "in 2d 4h").
+/// The relative part assumes the host clock/timezone roughly match ours, which can be
+/// slightly off in remote mode — good enough for a human-scale "how long ago".
+fn format_systemd_timestamp(timestamp: &str) -> Option<(String, Option<String>)> {
+  let mut parts = timestamp.split_whitespace();
+  let _weekday = parts.next()?;
+  let date = parts.next()?;
+  let time = parts.next()?;
+  let naive = chrono::NaiveDateTime::parse_from_str(&format!("{date} {time}"), "%Y-%m-%d %H:%M:%S").ok()?;
+  let absolute = naive.format("%Y-%m-%d %H:%M").to_string();
+  let seconds = chrono::Local::now().naive_local().signed_duration_since(naive).num_seconds();
+  let relative = if seconds >= 0 {
+    format!("{} ago", format_duration(seconds as u64))
+  } else {
+    format!("in {}", format_duration(seconds.unsigned_abs()))
+  };
+  Some((absolute, Some(relative)))
+}
+
+fn format_duration(seconds: u64) -> String {
+  match seconds {
+    s if s < 60 => format!("{s}s"),
+    s if s < 3600 => format!("{}m {}s", s / 60, s % 60),
+    s if s < 86400 => format!("{}h {}m", s / 3600, (s % 3600) / 60),
+    s => format!("{}d {}h", s / 86400, (s % 86400) / 3600),
+  }
+}
+
+fn format_bytes(bytes: u64) -> String {
+  const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
+  let mut value = bytes as f64;
+  let mut unit = 0;
+  while value >= 1024.0 && unit < UNITS.len() - 1 {
+    value /= 1024.0;
+    unit += 1;
+  }
+  if unit == 0 {
+    format!("{bytes}B")
+  } else {
+    format!("{value:.1}{}", UNITS[unit])
+  }
+}
+
+fn format_cpu_nsec(nsec: u64) -> String {
+  if nsec < 1_000_000_000 {
+    format!("{}ms", nsec / 1_000_000)
+  } else {
+    format_duration(nsec / 1_000_000_000)
+  }
+}
+
 fn parse_journalctl_timestamp(timestamp: &str) -> Option<String> {
   // %z accepts both "-0700" (systemd <v255) and "-07:00" (systemd >=v255)
   DateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S%z").ok().map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())

@@ -35,7 +35,7 @@ fuzzy-matcher = "0.3"
 itertools = "0.14.0"
 indexmap = "2.0.0"
 clipboard-anywhere = "0.2.2"
-chrono = { version = "0.4.31", default-features = false }
+chrono = { version = "0.4.31", default-features = false, features = ["clock"] }
 lazy_static = "1.4.0"
 nix = { version = "0.31.0", features = ["user"] }
 is-wsl = "0.4.0"

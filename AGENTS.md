@@ -35,11 +35,20 @@ tmux resize-pane -t sctui-test -x 80 -y 24
 tmux kill-session -t sctui-test 2>/dev/null
 ```
 
-Note: `tmux capture-pane -p` returns empty content for alternate-screen TUI apps. To verify rendering, check stderr (where the TUI escape codes go) or just confirm the process hasn't crashed. The primary signals for a passing test are:
+Use `tmux capture-pane -t sctui-test -p` to read the rendered screen and assert on its contents (it captures alternate-screen apps fine). The primary signals for a passing test are:
 
 1. Process is still alive after each interaction
-2. No panics or errors in stderr
-3. Process exits cleanly on `q`
+2. `capture-pane` shows the expected content (services list, dialogs, logs)
+3. No panics or errors in stderr
+4. Process exits cleanly on `q` (note: press `Escape` first if in search mode, where `q` is just text input)
+
+`tests/integration-test.py` automates this checklist end-to-end (local by default, or `--host user@hostname` for remote mode; it includes a keystroke-drop regression test that manual testing tends to miss). Prefer running it over hand-rolling tmux commands.
+
+Note: the TUI renders to **stderr**, so don't redirect `2>` when driving it in tmux — you'll get a blank-looking pane and think the app is hung.
+
+### systemd version matrix
+
+`tests/remote-matrix.py` runs the remote-mode test suite against containers running real systemd versions (239→current: Rocky 8, Ubuntu 20.04/22.04/24.04, Debian 12, Fedora), plus two "hostile" hosts where remote mode must fail fast with a clear error: `no-systemd` (alpine) and `dead-systemd` (systemd installed but not booted). Pre-239 systemd can't boot in containers on cgroup-v2 hosts (and pre-230 lacks `ListUnitsByPatterns`), so graceful failure is the only testable contract for genuinely old hosts. It builds systemd+sshd container images, waits for system and user managers, and runs `integration-test.py --host ... --remote-suite` against each. Needs podman or docker. `--distro ubuntu-24.04` to run one; `--keep` leaves a failed container up for debugging. Slow (~10-20 min for the full matrix) — run it when touching remote-mode code (`src/ssh.rs`, journalctl/D-Bus plumbing) or before a release, not for routine changes. CI runs it on every PR.
 
 ### Test checklist
 
