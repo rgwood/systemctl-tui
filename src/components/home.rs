@@ -1,11 +1,11 @@
 use chrono::DateTime;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use futures::Future;
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use indexmap::IndexMap;
 use itertools::Itertools;
 use ratatui::{
-  layout::{Constraint, Direction, Layout, Rect},
+  layout::{Constraint, Direction, Layout, Position, Rect},
   style::{Color, Modifier, Style},
   text::{Line, Span},
   widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
@@ -217,6 +217,15 @@ pub struct Home {
   pub fuzzy_matcher: SkimMatcherV2,
   pub filtered_statuses: HashSet<UnitStatus>,
   pub filter_cursor: usize,
+  /// Inner (border-excluded) area of the logs panel, as of the most recent render.
+  pub logs_panel_inner: Rect,
+  /// Area of the services list panel, as of the most recent render.
+  pub services_panel: Rect,
+  /// Active mouse-drag text selection in the logs panel: (anchor, cursor), in absolute screen
+  /// coordinates.
+  pub logs_selection: Option<(Position, Position)>,
+  /// Text extracted from the current `logs_selection`, computed at render time.
+  pub selected_log_text: String,
 }
 
 pub struct MenuItem {
@@ -403,6 +412,7 @@ impl Home {
     self.filtered_units.next();
     self.get_logs();
     self.logs_scroll_offset = 0;
+    self.clear_logs_selection();
   }
 
   pub fn previous(&mut self) {
@@ -411,6 +421,7 @@ impl Home {
     self.filtered_units.previous();
     self.get_logs();
     self.logs_scroll_offset = 0;
+    self.clear_logs_selection();
   }
 
   pub fn select(&mut self, index: Option<usize>, refresh_logs: bool) {
@@ -422,6 +433,7 @@ impl Home {
     if refresh_logs {
       self.get_logs();
       self.logs_scroll_offset = 0;
+      self.clear_logs_selection();
     }
   }
 
@@ -429,6 +441,11 @@ impl Home {
     self.logs = vec![];
     self.runtime_info = None;
     self.filtered_units.unselect();
+  }
+
+  fn clear_logs_selection(&mut self) {
+    self.logs_selection = None;
+    self.selected_log_text.clear();
   }
 
   pub fn selected_service(&self) -> Option<UnitId> {
@@ -781,6 +798,10 @@ impl Component for Home {
     match self.mode {
       Mode::ServiceList => {
         match key.code {
+          KeyCode::Esc if self.logs_selection.is_some() => {
+            self.clear_logs_selection();
+            vec![Action::Render]
+          },
           KeyCode::Char('q') => vec![Action::Quit],
           KeyCode::Up | KeyCode::Char('k') => {
             // if we're filtering the list, and we're at the top, and there's text in the search box, go to search mode
@@ -950,6 +971,73 @@ impl Component for Home {
     }
   }
 
+  fn handle_mouse_events(&mut self, mouse: MouseEvent) -> Vec<Action> {
+    let pos = Position::new(mouse.column, mouse.row);
+
+    fn contains(rect: Rect, pos: Position) -> bool {
+      pos.x >= rect.x && pos.x < rect.x + rect.width && pos.y >= rect.y && pos.y < rect.y + rect.height
+    }
+
+    fn clamp_into(rect: Rect, pos: Position) -> Position {
+      if rect.width == 0 || rect.height == 0 {
+        return Position::new(rect.x, rect.y);
+      }
+      let x = pos.x.clamp(rect.x, rect.x + rect.width - 1);
+      let y = pos.y.clamp(rect.y, rect.y + rect.height - 1);
+      Position::new(x, y)
+    }
+
+    match mouse.kind {
+      MouseEventKind::ScrollUp => {
+        self.clear_logs_selection();
+        if contains(self.services_panel, pos) {
+          if self.filtered_units.state.selected() == Some(0) {
+            return vec![Action::EnterMode(Mode::Search)];
+          }
+          self.previous();
+          vec![Action::Render]
+        } else {
+          vec![Action::ScrollUp(2), Action::Render]
+        }
+      },
+      MouseEventKind::ScrollDown => {
+        self.clear_logs_selection();
+        if contains(self.services_panel, pos) {
+          self.next();
+          vec![Action::Render]
+        } else {
+          vec![Action::ScrollDown(2), Action::Render]
+        }
+      },
+      MouseEventKind::Down(MouseButton::Left) => {
+        if contains(self.logs_panel_inner, pos) {
+          self.logs_selection = Some((pos, pos));
+        } else {
+          self.clear_logs_selection();
+        }
+        vec![Action::Render]
+      },
+      MouseEventKind::Drag(MouseButton::Left) => {
+        if let Some((anchor, _)) = self.logs_selection {
+          let clamped = clamp_into(self.logs_panel_inner, pos);
+          self.logs_selection = Some((anchor, clamped));
+        }
+        vec![Action::Render]
+      },
+      MouseEventKind::Up(MouseButton::Left) => {
+        if let Some((anchor, cursor)) = self.logs_selection {
+          if anchor != cursor && !self.selected_log_text.is_empty() {
+            crate::utils::copy_to_clipboard_osc52(&self.selected_log_text);
+          } else {
+            self.clear_logs_selection();
+          }
+        }
+        vec![Action::Render]
+      },
+      _ => vec![],
+    }
+  }
+
   fn dispatch(&mut self, action: Action) -> Option<Action> {
     match action {
       Action::ToggleShowLogger => {
@@ -1073,17 +1161,21 @@ impl Component for Home {
       Action::ScrollUp(offset) => {
         self.logs_scroll_offset = self.logs_scroll_offset.saturating_sub(offset);
         info!("scroll offset: {}", self.logs_scroll_offset);
+        self.clear_logs_selection();
       },
       Action::ScrollDown(offset) => {
         self.logs_scroll_offset = self.logs_scroll_offset.saturating_add(offset);
         info!("scroll offset: {}", self.logs_scroll_offset);
+        self.clear_logs_selection();
       },
       Action::ScrollToTop => {
         self.logs_scroll_offset = 0;
+        self.clear_logs_selection();
       },
       Action::ScrollToBottom => {
         // Clamped to the actual wrapped height at render time (see `render`).
         self.logs_scroll_offset = u16::MAX;
+        self.clear_logs_selection();
       },
 
       Action::StartService(service_name) => self.start_service(service_name),
@@ -1251,6 +1343,8 @@ impl Component for Home {
     let chunks =
       Layout::new(Direction::Horizontal, [Constraint::Min(30), Constraint::Percentage(100)]).split(main_panel);
     let right_panel = chunks[1];
+
+    self.services_panel = chunks[0];
 
     f.render_stateful_widget(items, chunks[0], &mut self.filtered_units.state);
 
@@ -1446,6 +1540,59 @@ impl Component for Home {
     let paragraph = paragraph.scroll((self.logs_scroll_offset, 0));
     f.render_widget(paragraph, logs_panel);
 
+    // Inner area of the logs panel (border-excluded), used for mouse hit-testing and selection.
+    self.logs_panel_inner = Rect {
+      x: logs_panel.x.saturating_add(1),
+      y: logs_panel.y.saturating_add(1),
+      width: logs_panel.width.saturating_sub(2),
+      height: logs_panel.height.saturating_sub(2),
+    };
+
+    if let Some((anchor, cursor)) = self.logs_selection {
+      let inner = self.logs_panel_inner;
+      // Normalize selection ordering by (y, then x).
+      let (start, end) = if (anchor.y, anchor.x) <= (cursor.y, cursor.x) { (anchor, cursor) } else { (cursor, anchor) };
+
+      let buf = f.buffer_mut();
+      let mut selected_rows: Vec<String> = Vec::new();
+
+      if inner.width > 0 && inner.height > 0 {
+        let left = inner.x;
+        let right = inner.x + inner.width - 1;
+
+        for y in start.y..=end.y {
+          if y < inner.y || y >= inner.y + inner.height {
+            continue;
+          }
+
+          let (row_start_x, row_end_x) = if start.y == end.y {
+            (start.x.max(left), end.x.min(right))
+          } else if y == start.y {
+            (start.x.max(left), right)
+          } else if y == end.y {
+            (left, end.x.min(right))
+          } else {
+            (left, right)
+          };
+
+          if row_start_x > row_end_x {
+            continue;
+          }
+
+          let mut row_text = String::new();
+          for x in row_start_x..=row_end_x {
+            if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
+              cell.modifier.insert(Modifier::REVERSED);
+              row_text.push_str(cell.symbol());
+            }
+          }
+          selected_rows.push(row_text.trim_end().to_string());
+        }
+      }
+
+      self.selected_log_text = selected_rows.join("\n");
+    }
+
     let width = search_panel.width.max(3) - 3; // keep 2 for borders and 1 for cursor
     let scroll = self.input.visual_scroll(width as usize);
     let input = Paragraph::new(self.input.value())
@@ -1485,7 +1632,7 @@ impl Component for Home {
     }
 
     if self.mode == Mode::Help {
-      let popup = f.area().centered(Constraint::Length(50), Constraint::Length(18));
+      let popup = f.area().centered(Constraint::Length(50), Constraint::Length(19));
 
       let primary = |s| Span::styled(s, Style::default().fg(theme.primary));
       let help_lines = vec![
@@ -1499,6 +1646,7 @@ impl Component for Home {
         Line::from(vec![primary("Enter"), Span::raw(" or "), primary("Space"), Span::raw(" open the action menu")]),
         Line::from(vec![primary("f"), Span::raw(" filter services by status")]),
         Line::from(vec![primary("?"), Span::raw(" / "), primary("F1"), Span::raw(" open this help pane")]),
+        Line::from(vec![primary("mouse"), Span::raw(": drag to select+copy logs, wheel to scroll")]),
         Line::from(""),
         Line::from(Span::styled("Vim Style Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
         Line::from(""),

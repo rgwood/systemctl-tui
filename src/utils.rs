@@ -114,6 +114,23 @@ macro_rules! trace_dbg {
     };
 }
 
+/// Copy text to the system clipboard using an OSC 52 escape sequence, written directly to the
+/// TUI's output stream (stderr). This works over SSH and inside tmux (with `set-clipboard on`)
+/// without needing any special passthrough wrapping.
+pub fn copy_to_clipboard_osc52(text: &str) {
+  use std::io::Write;
+
+  use base64::{engine::general_purpose::STANDARD, Engine};
+
+  let encoded = STANDARD.encode(text);
+  let mut stderr = std::io::stderr();
+  if let Err(e) = write!(stderr, "\x1b]52;c;{encoded}\x07") {
+    error!("Failed to write OSC 52 clipboard sequence: {e}");
+    return;
+  }
+  let _ = stderr.flush();
+}
+
 pub fn version() -> String {
   let author = clap::crate_authors!();
 
