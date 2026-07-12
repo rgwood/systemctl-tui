@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use tui_input::{backend::crossterm::EventHandler, Input};
 
-use std::{process::Stdio, time::Duration};
+use std::{collections::HashSet, process::Stdio, time::Duration};
 
 use super::{logger::Logger, Component, Frame};
 use crate::{
@@ -37,7 +37,99 @@ pub enum Mode {
   Processing,
   Error,
   SignalMenu,
+  StatusFilter,
 }
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum UnitStatus {
+  // Activation state
+  Active,
+  Inactive,
+  Failed,
+  // Enablement state
+  Enabled,
+  Disabled,
+  Masked,
+  // Load state
+  Loaded,
+  NotLoaded,
+}
+
+impl UnitStatus {
+  const ALL: [UnitStatus; 8] = [
+    UnitStatus::Active,
+    UnitStatus::Inactive,
+    UnitStatus::Failed,
+    UnitStatus::Enabled,
+    UnitStatus::Disabled,
+    UnitStatus::Masked,
+    UnitStatus::Loaded,
+    UnitStatus::NotLoaded,
+  ];
+
+  const NONE: [UnitStatus; 0] = [];
+
+  fn label(&self) -> &'static str {
+    match self {
+      UnitStatus::Active => "active",
+      UnitStatus::Inactive => "inactive",
+      UnitStatus::Failed => "failed",
+      UnitStatus::Enabled => "enabled",
+      UnitStatus::Disabled => "disabled",
+      UnitStatus::Masked => "masked",
+      UnitStatus::Loaded => "loaded",
+      UnitStatus::NotLoaded => "not-loaded",
+    }
+  }
+
+  fn shortcut_key(&self) -> KeyCode {
+    match self {
+      UnitStatus::Active => KeyCode::Char('c'),
+      UnitStatus::Inactive => KeyCode::Char('i'),
+      UnitStatus::Failed => KeyCode::Char('f'),
+      UnitStatus::Enabled => KeyCode::Char('e'),
+      UnitStatus::Disabled => KeyCode::Char('d'),
+      UnitStatus::Masked => KeyCode::Char('m'),
+      UnitStatus::Loaded => KeyCode::Char('l'),
+      UnitStatus::NotLoaded => KeyCode::Char('u'),
+    }
+  }
+
+  /// Whether a unit's activation state matches this filter
+  fn matches_activation(&self, state: &str) -> bool {
+    match self {
+      UnitStatus::Active => state == "active",
+      UnitStatus::Failed => state == "failed",
+      UnitStatus::Inactive => state != "active" && state != "failed",
+      _ => false,
+    }
+  }
+
+  /// Whether a unit's enablement state matches this filter
+  fn matches_enablement(&self, state: &str) -> bool {
+    match self {
+      UnitStatus::Disabled => state == "disabled",
+      UnitStatus::Masked => state == "masked",
+      UnitStatus::Enabled => state != "disabled" && state != "masked",
+      _ => false,
+    }
+  }
+
+  /// Whether a unit's load state matches this filter
+  fn matches_load(&self, state: &str) -> bool {
+    match self {
+      UnitStatus::Loaded => state == "loaded",
+      UnitStatus::NotLoaded => state != "loaded",
+      _ => false,
+    }
+  }
+}
+
+const STATUS_CATEGORIES: &[(&str, &[UnitStatus])] = &[
+  ("Activation", &[UnitStatus::Active, UnitStatus::Inactive, UnitStatus::Failed]),
+  ("Enablement", &[UnitStatus::Enabled, UnitStatus::Disabled, UnitStatus::Masked]),
+  ("Load", &[UnitStatus::Loaded, UnitStatus::NotLoaded]),
+];
 
 #[derive(Clone, Copy)]
 pub struct Theme {
@@ -106,6 +198,8 @@ pub struct Home {
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
   pub journalctl_tx: Option<std::sync::mpsc::Sender<UnitId>>,
   pub fuzzy_matcher: SkimMatcherV2,
+  pub filtered_statuses: HashSet<UnitStatus>,
+  pub filter_cursor: usize,
 }
 
 pub struct MenuItem {
@@ -205,7 +299,8 @@ impl<T> StatefulList<T> {
 impl Home {
   pub fn new(scope: Scope, limit_units: &[String]) -> Self {
     let limit_units = limit_units.to_vec();
-    Self { scope, limit_units, ..Default::default() }
+    let filtered_statuses = UnitStatus::ALL.into_iter().collect();
+    Self { scope, limit_units, filtered_statuses, filter_cursor: 0, ..Default::default() }
   }
 
   pub fn set_units(&mut self, units: Vec<UnitWithStatus>) {
@@ -333,15 +428,32 @@ impl Home {
   pub fn refresh_filtered_units(&mut self) {
     let previously_selected = self.selected_service();
     let search_value = self.input.value();
+    let status_filtered_units: Vec<UnitWithStatus> = self
+      .all_units
+      .values()
+      .filter(|u| {
+        let passes_activation = self.filtered_statuses.iter().any(|f| f.matches_activation(&u.activation_state));
+
+        let passes_enablement = match u.enablement_state.as_deref() {
+          // Enablement state not loaded yet — don't filter on it
+          None => true,
+          Some(state) => self.filtered_statuses.iter().any(|f| f.matches_enablement(state)),
+        };
+
+        let passes_load = self.filtered_statuses.iter().any(|f| f.matches_load(&u.load_state));
+
+        passes_activation && passes_enablement && passes_load
+      })
+      .cloned()
+      .collect();
 
     let matching: Vec<MatchedUnit> = if search_value.is_empty() {
       // No search - return all units without highlighting
-      self.all_units.values().map(|u| MatchedUnit { unit: u.clone(), match_indices: vec![] }).collect()
+      status_filtered_units.into_iter().map(|u| MatchedUnit { unit: u.clone(), match_indices: vec![] }).collect()
     } else {
       // Fuzzy match with indices for highlighting
-      let mut scored: Vec<(i64, MatchedUnit)> = self
-        .all_units
-        .values()
+      let mut scored: Vec<(i64, MatchedUnit)> = status_filtered_units
+        .into_iter()
         .filter_map(|u| {
           self
             .fuzzy_matcher
@@ -415,6 +527,12 @@ impl Home {
     self.service_action(service, "Disable".into(), cancel_token, future, true);
   }
 
+  fn toggle_filtered_status(&mut self, status: UnitStatus) {
+    if !self.filtered_statuses.remove(&status) {
+      self.filtered_statuses.insert(status);
+    }
+  }
+
   fn service_action<Fut>(
     &mut self,
     service: UnitId,
@@ -434,16 +552,16 @@ impl Home {
       let mut interval = tokio::time::interval(Duration::from_millis(200));
       loop {
         interval.tick().await;
-        tx_clone.send(Action::SpinnerTick).unwrap();
+        let _ = tx_clone.send(Action::SpinnerTick);
       }
     });
 
     tokio::spawn(async move {
-      tx.send(Action::EnterMode(Mode::Processing)).unwrap();
+      let _ = tx.send(Action::EnterMode(Mode::Processing));
       match action.await {
         Ok(_) => {
           info!("{} of {:?} service {} succeeded", action_name, service.scope, service.name);
-          tx.send(Action::EnterMode(Mode::ServiceList)).unwrap();
+          let _ = tx.send(Action::EnterMode(Mode::ServiceList));
         },
         // would be nicer to check the error type here, but this is easier
         Err(_) if cancel_token.is_cancelled() => {
@@ -459,19 +577,19 @@ impl Home {
             error_string.push_str("Try running this tool with sudo.");
           }
 
-          tx.send(Action::EnterError(error_string)).unwrap();
+          let _ = tx.send(Action::EnterError(error_string));
         },
       }
       spinner_task.abort();
-      tx.send(Action::RefreshServices).unwrap();
+      let _ = tx.send(Action::RefreshServices);
       if refresh_unit_files {
-        tx.send(Action::RefreshUnitFiles).unwrap();
+        let _ = tx.send(Action::RefreshUnitFiles);
       }
 
       // Refresh a bit more frequently after a service action
       for _ in 0..3 {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        tx.send(Action::RefreshServices).unwrap();
+        let _ = tx.send(Action::RefreshServices);
       }
     });
   }
@@ -669,6 +787,7 @@ impl Component for Home {
             self.select(Some(0), true);
             vec![Action::Render]
           },
+          KeyCode::Char('f') => vec![Action::EnterMode(Mode::StatusFilter)],
           KeyCode::Enter | KeyCode::Char(' ') => vec![Action::EnterMode(Mode::ActionMenu)],
           _ => vec![],
         }
@@ -757,6 +876,48 @@ impl Component for Home {
           vec![]
         },
       },
+      Mode::StatusFilter => match key.code {
+        KeyCode::Esc => vec![Action::EnterMode(Mode::ServiceList)],
+        KeyCode::Down | KeyCode::Char('j') => {
+          if self.filter_cursor < UnitStatus::ALL.len() - 1 {
+            self.filter_cursor += 1;
+          } else {
+            self.filter_cursor = 0;
+          }
+          vec![Action::Render]
+        },
+        KeyCode::Up | KeyCode::Char('k') => {
+          if self.filter_cursor > 0 {
+            self.filter_cursor -= 1;
+          } else {
+            self.filter_cursor = UnitStatus::ALL.len() - 1;
+          }
+          vec![Action::Render]
+        },
+        KeyCode::Enter | KeyCode::Char(' ') => {
+          self.toggle_filtered_status(UnitStatus::ALL[self.filter_cursor]);
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        KeyCode::Char('a') => {
+          self.filtered_statuses = UnitStatus::ALL.into_iter().collect();
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        KeyCode::Char('n') => {
+          self.filtered_statuses = UnitStatus::NONE.into_iter().collect();
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        _ => {
+          // Shortcut keys: toggle the matching filter directly
+          for (i, status) in UnitStatus::ALL.iter().enumerate() {
+            if status.shortcut_key() == key.code {
+              self.filter_cursor = i;
+              self.toggle_filtered_status(*status);
+              return vec![Action::RefreshStatusFilterMenu];
+            }
+          }
+          vec![]
+        },
+      },
     }
   }
 
@@ -820,6 +981,8 @@ impl Component for Home {
             self.menu_items = StatefulList::with_items(menu_items);
             self.menu_items.state.select(Some(0));
           }
+        } else if mode == Mode::StatusFilter {
+          self.filter_cursor = 0;
         }
 
         self.mode = mode;
@@ -904,7 +1067,7 @@ impl Component for Home {
           let units = systemd::get_all_services(scope, &limit_units)
             .await
             .expect("Failed to get services. Check that systemd is running and try running this tool with sudo.");
-          tx.send(Action::SetServices(units)).unwrap();
+          let _ = tx.send(Action::SetServices(units));
         });
       },
       Action::SetServices(units) => {
@@ -925,6 +1088,10 @@ impl Component for Home {
             },
           }
         });
+      },
+      Action::RefreshStatusFilterMenu => {
+        self.refresh_filtered_units();
+        return Some(Action::Render);
       },
       Action::SetUnitFiles(unit_files) => {
         self.merge_unit_files(unit_files);
@@ -1252,9 +1419,9 @@ impl Component for Home {
       f.render_widget(paragraph, popup);
     }
 
-    let selected_item = match self.filtered_units.selected() {
-      Some(s) => s,
-      None => return,
+    let selected_unit_name = match self.filtered_units.selected() {
+      Some(s) => &s.unit.name,
+      None => "",
     };
 
     // Help line at the bottom
@@ -1269,28 +1436,78 @@ impl Component for Home {
 
     let help_line = match self.mode {
       Mode::Search => Line::from(span("Show actions: <enter>", theme.primary)),
-      Mode::ServiceList => {
-        Line::from(span("Show actions: <enter> | Open logs in pager: o | Edit unit file: e | Quit: q", theme.primary))
-      },
+      Mode::ServiceList => Line::from(span(
+        "Show actions: <enter> | Open logs in pager: o | Edit unit file: e | Filter: f | Quit: q",
+        theme.primary,
+      )),
       Mode::Help => Line::from(span("Close menu: <esc>", theme.primary)),
       Mode::ActionMenu => Line::from(span("Execute action: <enter> | Close menu: <esc>", theme.primary)),
       Mode::Processing => Line::from(span("Cancel task: <esc>", theme.primary)),
       Mode::Error => Line::from(span("Close menu: <esc>", theme.primary)),
       Mode::SignalMenu => Line::from(span("Send signal: <enter> | Close menu: <esc>", theme.primary)),
+      Mode::StatusFilter => Line::from(span("Toggle: <space> | All: a | None: n | Close: <esc>", theme.primary)),
     };
 
     f.render_widget(help_line, help_rect);
     f.render_widget(Line::from(version), version_rect);
 
-    let title = format!("Actions for {}", selected_item.unit.name);
+    let title = format!("Actions for {}", selected_unit_name);
     let mut min_width = title.len() as u16 + 2; // title plus corners
     min_width = min_width.max(24); // hack: the width of the longest action name + 2
 
     let popup_width = min_width.min(f.area().width);
 
+    if self.mode == Mode::StatusFilter {
+      // Custom grouped layout for the status filter popup
+      let mut lines: Vec<Line> = Vec::new();
+      let mut idx = 0;
+      for (category_name, filters) in STATUS_CATEGORIES {
+        lines.push(Line::from(Span::styled(
+          *category_name,
+          Style::default().fg(theme.muted).add_modifier(Modifier::BOLD),
+        )));
+        for filter in *filters {
+          let is_checked = self.filtered_statuses.contains(filter);
+          let is_selected = idx == self.filter_cursor;
+
+          let check_span =
+            if is_checked { Span::styled("✓ ", Style::default().fg(theme.accent)) } else { Span::raw("  ") };
+          let name_color = if is_checked { theme.accent } else { theme.muted };
+          let name_span = Span::styled(format!("{:<12}", filter.label()), Style::default().fg(name_color));
+          let key_span = Span::styled(format!("{}", filter.shortcut_key()), Style::default().fg(theme.primary));
+
+          let line_spans = vec![Span::raw("  "), check_span, name_span, Span::raw(" "), key_span];
+          if is_selected {
+            lines.push(Line::from(line_spans).style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)));
+          } else {
+            lines.push(Line::from(line_spans));
+          }
+          idx += 1;
+        }
+      }
+
+      let filter_popup_width = 20u16.min(f.area().width);
+      let height = lines.len() as u16 + 2;
+      let popup = f.area().centered(Constraint::Length(filter_popup_width), Constraint::Length(height));
+
+      let paragraph = Paragraph::new(lines).block(
+        Block::default()
+          .borders(Borders::ALL)
+          .border_type(BorderType::Rounded)
+          .border_style(Style::default().fg(theme.accent))
+          .title("─Status filter"),
+      );
+
+      f.render_widget(Clear, popup);
+      f.render_widget(paragraph, popup);
+    }
+
     if self.mode == Mode::ActionMenu || self.mode == Mode::SignalMenu {
-      let title_prefix = if self.mode == Mode::ActionMenu { "Actions" } else { "Signals" };
-      let title = format!("{} for {}", title_prefix, selected_item.unit.name);
+      let title = match self.mode {
+        Mode::ActionMenu => format!("Actions for {}", selected_unit_name),
+        Mode::SignalMenu => format!("Signals for {}", selected_unit_name),
+        _ => unreachable!(),
+      };
       let height = self.menu_items.items.len() as u16 + 2;
       let popup = f.area().centered(Constraint::Length(popup_width), Constraint::Length(height));
 
