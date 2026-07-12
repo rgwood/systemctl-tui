@@ -114,10 +114,60 @@ macro_rules! trace_dbg {
     };
 }
 
+/// Copy text to the system clipboard. Always emits OSC 52 (works over SSH and inside tmux), and
+/// additionally pipes the text to a system clipboard utility if one is available, for terminals
+/// that don't support OSC 52.
+pub fn copy_to_clipboard(text: &str) {
+  copy_to_clipboard_osc52(text);
+  copy_to_clipboard_native(text);
+}
+
+/// Best-effort copy via a system clipboard utility (wl-copy/xclip/xsel/pbcopy). These tools fork
+/// and keep serving the selection after we exit, which a write-and-drop native clipboard library
+/// can't do on X11/Wayland. Failures are silent by design; OSC 52 is the primary mechanism, and
+/// all output is redirected to null so nothing can scribble on the TUI.
+fn copy_to_clipboard_native(text: &str) {
+  use std::{
+    io::Write,
+    process::{Command, Stdio},
+  };
+
+  let candidates: &[&[&str]] = if cfg!(target_os = "macos") {
+    &[&["pbcopy"]]
+  } else if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+    &[&["wl-copy"], &["xclip", "-selection", "clipboard"], &["xsel", "--clipboard", "--input"]]
+  } else if std::env::var_os("DISPLAY").is_some() {
+    &[&["xclip", "-selection", "clipboard"], &["xsel", "--clipboard", "--input"]]
+  } else {
+    return; // no display server; OSC 52 is the only option (e.g. over SSH)
+  };
+
+  let text = text.to_owned();
+  let candidates: Vec<Vec<String>> = candidates.iter().map(|c| c.iter().map(|s| s.to_string()).collect()).collect();
+  // Write and reap in a background thread so a slow or missing utility can't stall the UI.
+  std::thread::spawn(move || {
+    for candidate in candidates {
+      let spawned = Command::new(&candidate[0])
+        .args(&candidate[1..])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+      if let Ok(mut child) = spawned {
+        if let Some(mut stdin) = child.stdin.take() {
+          let _ = stdin.write_all(text.as_bytes());
+        }
+        let _ = child.wait();
+        return;
+      }
+    }
+  });
+}
+
 /// Copy text to the system clipboard using an OSC 52 escape sequence, written directly to the
 /// TUI's output stream (stderr). This works over SSH and inside tmux (with `set-clipboard on`)
 /// without needing any special passthrough wrapping.
-pub fn copy_to_clipboard_osc52(text: &str) {
+fn copy_to_clipboard_osc52(text: &str) {
   use std::io::Write;
 
   use base64::{engine::general_purpose::STANDARD, Engine};

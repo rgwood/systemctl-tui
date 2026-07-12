@@ -243,7 +243,7 @@ def test_mouse(binary: str, host: str | None) -> None:
         match = re.search(r"\S", line[idx:])
         value_col = idx + match.start() + 3 if match else idx + 3
         click(value_col, desc_line + 1)
-        check("click on details field copies + shows toast", wait_for(lambda: "via OSC 52" in capture()), capture())
+        check("click on details field copies + shows toast", wait_for(lambda: re.search(r"Copied \d+ chars", capture()) is not None), capture())
         time.sleep(2.1)  # let the toast expire before the next assertion that checks for its absence
 
     # 3. wheel scrolls logs
@@ -262,7 +262,7 @@ def test_mouse(binary: str, host: str | None) -> None:
     send_mouse("drag", 48, 11)
     time.sleep(0.1)
     send_mouse("release", 48, 11)
-    check("drag selection copies log text", wait_for(lambda: "via OSC 52" in capture()), capture())
+    check("drag selection copies log text", wait_for(lambda: re.search(r"Copied \d+ chars", capture()) is not None), capture())
     time.sleep(2.1)
 
     # 5. clicking outside the action menu closes it
