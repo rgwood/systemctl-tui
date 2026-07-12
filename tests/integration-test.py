@@ -260,12 +260,18 @@ def test_mouse(binary: str, host: str | None) -> None:
 
     # 3. wheel scrolls logs. If the unit's logs fit entirely in the pane there is nothing to
     # scroll (the offset is clamped to 0), so in that case assert that End can't scroll either
-    # instead of failing on unchanged content.
-    logs_before = capture()
+    # instead of failing on unchanged content. Compare only the logs pane: the details pane
+    # contains relative timestamps ("(17s ago)") that tick between captures.
+    def logs_region() -> str:
+        lines = capture().splitlines()
+        start = next((i for i, l in enumerate(lines) if "Service Logs" in l), 0)
+        return "\n".join(lines[start:])
+
+    logs_before = logs_region()
     for _ in range(3):
         send_mouse("wheel_down", 70, 20)
         time.sleep(0.3)
-    logs_after = capture()
+    logs_after = logs_region()
     if logs_after != logs_before:
         check("wheel scrolls logs", True)
     else:
@@ -273,7 +279,7 @@ def test_mouse(binary: str, host: str | None) -> None:
         time.sleep(0.5)
         check(
             "wheel scrolls logs (logs fit on screen; End can't scroll either)",
-            capture() == logs_before,
+            logs_region() == logs_before,
             f"wheel did nothing but End scrolled:\n{capture()}",
         )
         send_keys("Home")
