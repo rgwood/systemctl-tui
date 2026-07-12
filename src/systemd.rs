@@ -267,9 +267,31 @@ async fn get_services(scope: UnitScope, services: &[String]) -> Result<Vec<UnitW
   Ok(units)
 }
 
-pub fn get_unit_file_location(service: &UnitId) -> Result<String> {
-  // show -P FragmentPath reitunes.service
-  let mut args = vec!["--quiet", "show", "-P", "FragmentPath"];
+/// Runtime properties for a single unit, fetched on demand when it's selected.
+/// All fields are optional because they vary by unit type (services have PIDs,
+/// timers have a next elapse, etc.) and by systemd version.
+#[derive(Debug, Clone, Default)]
+pub struct UnitRuntimeInfo {
+  pub fragment_path: String,
+  pub main_pid: Option<u32>,
+  pub memory_current: Option<u64>,
+  pub tasks_current: Option<u64>,
+  pub n_restarts: Option<u32>,
+  pub cpu_usage_nsec: Option<u64>,
+  pub active_enter_timestamp: Option<String>,
+  pub inactive_enter_timestamp: Option<String>,
+  pub result: Option<String>,
+  pub exec_main_status: Option<i32>,
+  pub next_elapse: Option<String>,
+}
+
+/// Fetches runtime properties (including the unit file path) for a unit in a single
+/// `systemctl show` invocation. Uses systemctl rather than D-Bus so it works in remote mode too.
+/// Properties that don't apply to the unit type are simply omitted from the output.
+pub fn get_unit_runtime_info(service: &UnitId) -> Result<UnitRuntimeInfo> {
+  const PROPERTIES: &str = "FragmentPath,MainPID,MemoryCurrent,TasksCurrent,NRestarts,CPUUsageNSec,\
+                            ActiveEnterTimestamp,InactiveEnterTimestamp,Result,ExecMainStatus,NextElapseUSecRealtime";
+  let mut args = vec!["--quiet", "show", "-p", PROPERTIES];
   args.push(&service.name);
 
   if service.scope == UnitScope::User {
@@ -278,16 +300,40 @@ pub fn get_unit_file_location(service: &UnitId) -> Result<String> {
 
   let output = ssh::host_command("systemctl", &args).output()?;
 
-  if output.status.success() {
-    let path = str::from_utf8(&output.stdout)?.trim();
-    if path.is_empty() {
-      bail!("No unit file found for {}", service.name);
-    }
-    Ok(path.trim().to_string())
-  } else {
+  if !output.status.success() {
     let stderr = String::from_utf8(output.stderr)?;
     bail!(stderr);
   }
+
+  fn non_empty(value: &str) -> Option<String> {
+    match value {
+      "" | "[not set]" | "n/a" => None,
+      v => Some(v.to_string()),
+    }
+  }
+
+  let mut info = UnitRuntimeInfo::default();
+  for line in str::from_utf8(&output.stdout)?.lines() {
+    let Some((key, value)) = line.split_once('=') else { continue };
+    let value = value.trim();
+    match key {
+      "FragmentPath" => info.fragment_path = value.to_string(),
+      "MainPID" => info.main_pid = value.parse().ok().filter(|&pid| pid != 0),
+      // systemd prints u64::MAX (or "[not set]") for unavailable accounting values
+      "MemoryCurrent" => info.memory_current = value.parse().ok().filter(|&v| v != u64::MAX),
+      "TasksCurrent" => info.tasks_current = value.parse().ok().filter(|&v| v != u64::MAX),
+      "NRestarts" => info.n_restarts = value.parse().ok(),
+      "CPUUsageNSec" => info.cpu_usage_nsec = value.parse().ok().filter(|&v| v != u64::MAX),
+      "ActiveEnterTimestamp" => info.active_enter_timestamp = non_empty(value),
+      "InactiveEnterTimestamp" => info.inactive_enter_timestamp = non_empty(value),
+      "Result" => info.result = non_empty(value),
+      "ExecMainStatus" => info.exec_main_status = value.parse().ok(),
+      "NextElapseUSecRealtime" => info.next_elapse = non_empty(value),
+      _ => {},
+    }
+  }
+
+  Ok(info)
 }
 
 pub async fn start_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
