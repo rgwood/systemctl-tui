@@ -74,6 +74,10 @@ impl UnitStatus {
 
   const NONE: [UnitStatus; 0] = [];
 
+  /// Hidden by default on first run: not-found units are dangling references
+  /// that can't be started, and masked units are deliberately disabled.
+  const DEFAULT_HIDDEN: [UnitStatus; 2] = [UnitStatus::Masked, UnitStatus::NotFound];
+
   fn label(&self) -> &'static str {
     match self {
       UnitStatus::Active => "active",
@@ -217,6 +221,9 @@ pub struct Home {
   pub fuzzy_matcher: SkimMatcherV2,
   pub filtered_statuses: HashSet<UnitStatus>,
   pub filter_cursor: usize,
+  /// Number of units excluded by the status filter (before fuzzy search),
+  /// shown in the services panel title.
+  pub status_hidden_count: usize,
   /// Inner (border-excluded) area of the logs panel, as of the most recent render.
   pub logs_panel_inner: Rect,
   /// Area of the services list panel, as of the most recent render.
@@ -344,7 +351,7 @@ impl<T> StatefulList<T> {
 impl Home {
   pub fn new(scope: Scope, limit_units: &[String]) -> Self {
     let limit_units = limit_units.to_vec();
-    let filtered_statuses = UnitStatus::ALL.into_iter().collect();
+    let filtered_statuses = UnitStatus::ALL.into_iter().filter(|s| !UnitStatus::DEFAULT_HIDDEN.contains(s)).collect();
     Self { scope, limit_units, filtered_statuses, filter_cursor: 0, ..Default::default() }
   }
 
@@ -526,30 +533,36 @@ impl Home {
   pub fn refresh_filtered_units(&mut self) {
     let previously_selected = self.selected_service();
     let search_value = self.input.value();
-    let status_filtered_units = self.all_units.values().filter(|u| {
-      let passes_activation = self.filtered_statuses.contains(&UnitStatus::activation_bucket(&u.activation_state));
+    let status_filtered_units: Vec<_> = self
+      .all_units
+      .values()
+      .filter(|u| {
+        let passes_activation = self.filtered_statuses.contains(&UnitStatus::activation_bucket(&u.activation_state));
 
-      let passes_enablement = match u.enablement_state.as_deref() {
-        // Enablement state not loaded yet — don't filter on it
-        None => true,
-        Some(state) => match UnitStatus::enablement_bucket(state) {
-          // Unknown state — don't filter on it
+        let passes_enablement = match u.enablement_state.as_deref() {
+          // Enablement state not loaded yet — don't filter on it
           None => true,
-          Some(bucket) => self.filtered_statuses.contains(&bucket),
-        },
-      };
+          Some(state) => match UnitStatus::enablement_bucket(state) {
+            // Unknown state — don't filter on it
+            None => true,
+            Some(bucket) => self.filtered_statuses.contains(&bucket),
+          },
+        };
 
-      let passes_load = self.filtered_statuses.contains(&UnitStatus::load_bucket(&u.load_state));
+        let passes_load = self.filtered_statuses.contains(&UnitStatus::load_bucket(&u.load_state));
 
-      passes_activation && passes_enablement && passes_load
-    });
+        passes_activation && passes_enablement && passes_load
+      })
+      .collect();
+    self.status_hidden_count = self.all_units.len() - status_filtered_units.len();
 
     let matching: Vec<MatchedUnit> = if search_value.is_empty() {
       // No search - return all units without highlighting
-      status_filtered_units.map(|u| MatchedUnit { unit: u.clone(), match_indices: vec![] }).collect()
+      status_filtered_units.into_iter().map(|u| MatchedUnit { unit: u.clone(), match_indices: vec![] }).collect()
     } else {
       // Fuzzy match with indices for highlighting
       let mut scored: Vec<(i64, MatchedUnit)> = status_filtered_units
+        .into_iter()
         .filter_map(|u| {
           self
             .fuzzy_matcher
@@ -1543,7 +1556,11 @@ impl Component for Home {
           } else {
             Style::default()
           })
-          .title(if self.is_status_filter_active() { "─Services (filtered)" } else { "─Services" }),
+          .title(if self.is_status_filter_active() {
+            format!("─Services ({} hidden)", self.status_hidden_count)
+          } else {
+            "─Services".to_string()
+          }),
       )
       .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
 
