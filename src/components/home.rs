@@ -240,6 +240,11 @@ pub struct Home {
   pub filter_item_rects: Vec<(Rect, usize)>,
   /// Area of the status filter popup, as of the most recent render.
   pub filter_popup_rect: Rect,
+  /// Screen rects of each item line in the action/signal menu popup, paired with the item
+  /// index they correspond to, as of the most recent render. Empty when the popup isn't shown.
+  pub menu_item_rects: Vec<(Rect, usize)>,
+  /// Area of the action/signal menu popup, as of the most recent render.
+  pub menu_popup_rect: Rect,
 }
 
 pub struct MenuItem {
@@ -467,7 +472,10 @@ impl Home {
   }
 
   fn copy_with_toast(&mut self, text: &str) {
+    // Belt and suspenders: OSC 52 works over SSH but not in all terminals; the native clipboard
+    // works in all terminals but not over SSH.
     crate::utils::copy_to_clipboard_osc52(text);
+    let _ = clipboard_anywhere::set_clipboard(text);
     let n = text.chars().count();
     self.show_toast(&format!("Copied {n} chars via OSC 52"));
   }
@@ -1028,11 +1036,64 @@ impl Component for Home {
 
   fn handle_mouse_events(&mut self, mouse: MouseEvent) -> Vec<Action> {
     // In modal/transient modes, mouse events shouldn't affect selection or scrolling.
-    if matches!(self.mode, Mode::Help | Mode::ActionMenu | Mode::SignalMenu | Mode::Processing | Mode::Error) {
+    if matches!(self.mode, Mode::Processing) {
       return vec![];
     }
 
     let pos = Position::new(mouse.column, mouse.row);
+
+    if self.mode == Mode::Help {
+      return match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => vec![Action::ToggleHelp],
+        _ => vec![],
+      };
+    }
+
+    if self.mode == Mode::Error {
+      return match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => vec![Action::EnterMode(Mode::ServiceList)],
+        _ => vec![],
+      };
+    }
+
+    if self.mode == Mode::ActionMenu || self.mode == Mode::SignalMenu {
+      let hovered_item = self.menu_item_rects.iter().find(|(rect, _)| rect.contains(pos)).map(|(_, idx)| *idx);
+
+      return match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+          if let Some(idx) = hovered_item {
+            self.menu_items.state.select(Some(idx));
+            match self.menu_items.selected() {
+              Some(i) => vec![i.action.clone()],
+              None => vec![Action::EnterMode(Mode::ServiceList)],
+            }
+          } else if !self.menu_popup_rect.contains(pos) {
+            // Clicked outside the popup: close it, same as Escape.
+            vec![Action::EnterMode(Mode::ServiceList)]
+          } else {
+            vec![]
+          }
+        },
+        MouseEventKind::Moved => {
+          if let Some(idx) = hovered_item {
+            if Some(idx) != self.menu_items.state.selected() {
+              self.menu_items.state.select(Some(idx));
+              return vec![Action::Render];
+            }
+          }
+          vec![]
+        },
+        MouseEventKind::ScrollDown => {
+          self.menu_items.next();
+          vec![Action::Render]
+        },
+        MouseEventKind::ScrollUp => {
+          self.menu_items.previous();
+          vec![Action::Render]
+        },
+        _ => vec![],
+      };
+    }
 
     if self.mode == Mode::StatusFilter {
       let hovered_item = self.filter_item_rects.iter().find(|(rect, _)| rect.contains(pos)).map(|(_, idx)| *idx);
@@ -1265,10 +1326,9 @@ impl Component for Home {
       Action::CopyUnitFilePath => {
         if let Some(selected) = self.filtered_units.selected() {
           if let Some(Ok(file_path)) = &selected.unit.file_path {
-            match clipboard_anywhere::set_clipboard(file_path) {
-              Ok(_) => return Some(Action::EnterMode(Mode::ServiceList)),
-              Err(e) => return Some(Action::EnterError(format!("Error copying to clipboard: {e}"))),
-            }
+            let file_path = file_path.clone();
+            self.copy_with_toast(&file_path);
+            return Some(Action::EnterMode(Mode::ServiceList));
           } else {
             return Some(Action::EnterError("No unit file path available".into()));
           }
@@ -1891,6 +1951,7 @@ impl Component for Home {
     let popup_width = min_width.min(f.area().width);
 
     self.filter_item_rects.clear();
+    self.menu_item_rects.clear();
     if self.mode == Mode::StatusFilter {
       // Custom grouped layout for the status filter popup
       let mut lines: Vec<Line> = Vec::new();
@@ -1956,6 +2017,7 @@ impl Component for Home {
       };
       let height = self.menu_items.items.len() as u16 + 2;
       let popup = f.area().centered(Constraint::Length(popup_width), Constraint::Length(height));
+      self.menu_popup_rect = popup;
 
       let items: Vec<ListItem> = self
         .menu_items
@@ -1976,6 +2038,19 @@ impl Component for Home {
             .title(title),
         )
         .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
+
+      let offset = self.menu_items.state.offset();
+      for i in offset..self.menu_items.items.len() {
+        let rect = Rect {
+          x: popup.x + 1,
+          y: popup.y + 1 + (i - offset) as u16,
+          width: popup.width.saturating_sub(2),
+          height: 1,
+        };
+        if popup.height > 2 && rect.y < popup.y + popup.height - 1 {
+          self.menu_item_rects.push((rect, i));
+        }
+      }
 
       f.render_widget(Clear, popup);
       f.render_stateful_widget(items, popup, &mut self.menu_items.state);
