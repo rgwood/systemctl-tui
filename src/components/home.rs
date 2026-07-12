@@ -1082,11 +1082,8 @@ impl Component for Home {
         self.logs_scroll_offset = 0;
       },
       Action::ScrollToBottom => {
-        // TODO: this is partially broken, figure out a better way to scroll to end
-        // problem: we don't actually know the height of the paragraph before it's rendered
-        // because it's wrapped based on the width of the widget
-        // A proper fix might need to wait until ratatui improves scrolling: https://github.com/ratatui-org/ratatui/issues/174
-        self.logs_scroll_offset = self.logs.len() as u16;
+        // Clamped to the actual wrapped height at render time (see `render`).
+        self.logs_scroll_offset = u16::MAX;
       },
 
       Action::StartService(service_name) => self.start_service(service_name),
@@ -1437,8 +1434,16 @@ impl Component for Home {
     let paragraph = Paragraph::new(log_lines)
       .block(Block::default().title("─Service Logs").borders(Borders::ALL).border_type(BorderType::Rounded))
       .style(Style::default())
-      .wrap(Wrap { trim: true })
-      .scroll((self.logs_scroll_offset, 0));
+      .wrap(Wrap { trim: true });
+
+    // line_count wraps at the given width but includes the block's border rows in its count,
+    // so wrap at the inner width and compare against the full panel height.
+    let inner_width = logs_panel.width.saturating_sub(2);
+    let total_lines = u16::try_from(paragraph.line_count(inner_width)).unwrap_or(u16::MAX);
+    let max_offset = total_lines.saturating_sub(logs_panel.height);
+    self.logs_scroll_offset = self.logs_scroll_offset.min(max_offset);
+
+    let paragraph = paragraph.scroll((self.logs_scroll_offset, 0));
     f.render_widget(paragraph, logs_panel);
 
     let width = search_panel.width.max(3) - 3; // keep 2 for borders and 1 for cursor
