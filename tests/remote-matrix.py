@@ -12,9 +12,9 @@ the app under test and integration-test.py at the right port/key/known_hosts, so
 rest of the test harness doesn't need to know it's talking to a container.
 
 Usage:
-    ./scripts/remote-matrix.py                          # run the whole matrix
-    ./scripts/remote-matrix.py --distro ubuntu-24.04     # just one distro
-    ./scripts/remote-matrix.py --keep                    # leave failed containers up for debugging
+    ./tests/remote-matrix.py                          # run the whole matrix
+    ./tests/remote-matrix.py --distro ubuntu-24.04     # just one distro
+    ./tests/remote-matrix.py --keep                    # leave failed containers up for debugging
 """
 
 import argparse
@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MATRIX_DIR = REPO_ROOT / "scripts" / "remote-matrix"
+MATRIX_DIR = REPO_ROOT / "tests" / "remote-matrix"
 KEY_DIR = Path.home() / ".cache" / "sctui-remote-matrix"
 KEY_PATH = KEY_DIR / "id_ed25519"
 
@@ -221,7 +221,7 @@ def run_distro(engine: str, distro: str, base_image: str, binary: str, keep: boo
       print(f"[{distro}] running integration tests...")
       test_result = run(
         [
-          str(REPO_ROOT / "scripts" / "integration-test.py"),
+          str(REPO_ROOT / "tests" / "integration-test.py"),
           "--host",
           "testuser@127.0.0.1",
           "--remote-suite",

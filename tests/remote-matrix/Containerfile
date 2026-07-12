@@ -1,5 +1,5 @@
 # A throwaway systemd + sshd container for testing systemctl-tui's remote mode
-# against a specific systemd version. Built/run by scripts/remote-matrix.py.
+# against a specific systemd version. Built/run by tests/remote-matrix.py.
 #
 # Parameterized by base image, e.g.:
 #   --build-arg BASE_IMAGE=ubuntu:24.04     (systemd 255)

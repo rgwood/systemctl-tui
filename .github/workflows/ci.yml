@@ -66,13 +66,13 @@ jobs:
       run: cargo build
 
     - name: Run integration tests (local)
-      run: ./scripts/integration-test.py
+      run: ./tests/integration-test.py
 
     - name: Run integration tests (remote via ssh localhost)
-      run: ./scripts/integration-test.py --host localhost
+      run: ./tests/integration-test.py --host localhost
 
   # Remote mode against real systemd versions (239→current) running as PID 1 in
-  # containers. See scripts/remote-matrix.py; runs locally too.
+  # containers. See tests/remote-matrix.py; runs locally too.
   systemd-matrix:
     runs-on: ubuntu-latest
     strategy:
@@ -99,4 +99,4 @@ jobs:
       run: cargo build
 
     - name: Run systemd matrix tests
-      run: ./scripts/remote-matrix.py --distro ${{ matrix.distro }}
+      run: ./tests/remote-matrix.py --distro ${{ matrix.distro }}
