@@ -49,22 +49,24 @@ pub enum UnitStatus {
   // Enablement state
   Enabled,
   Disabled,
+  Static,
   Masked,
   // Load state
   Loaded,
-  NotLoaded,
+  NotFound,
 }
 
 impl UnitStatus {
-  const ALL: [UnitStatus; 8] = [
+  const ALL: [UnitStatus; 9] = [
     UnitStatus::Active,
     UnitStatus::Inactive,
     UnitStatus::Failed,
     UnitStatus::Enabled,
     UnitStatus::Disabled,
+    UnitStatus::Static,
     UnitStatus::Masked,
     UnitStatus::Loaded,
-    UnitStatus::NotLoaded,
+    UnitStatus::NotFound,
   ];
 
   const NONE: [UnitStatus; 0] = [];
@@ -76,9 +78,10 @@ impl UnitStatus {
       UnitStatus::Failed => "failed",
       UnitStatus::Enabled => "enabled",
       UnitStatus::Disabled => "disabled",
+      UnitStatus::Static => "static",
       UnitStatus::Masked => "masked",
       UnitStatus::Loaded => "loaded",
-      UnitStatus::NotLoaded => "not-loaded",
+      UnitStatus::NotFound => "not-found",
     }
   }
 
@@ -89,46 +92,55 @@ impl UnitStatus {
       UnitStatus::Failed => KeyCode::Char('f'),
       UnitStatus::Enabled => KeyCode::Char('e'),
       UnitStatus::Disabled => KeyCode::Char('d'),
+      UnitStatus::Static => KeyCode::Char('s'),
       UnitStatus::Masked => KeyCode::Char('m'),
       UnitStatus::Loaded => KeyCode::Char('l'),
-      UnitStatus::NotLoaded => KeyCode::Char('u'),
+      UnitStatus::NotFound => KeyCode::Char('u'),
     }
   }
 
-  /// Whether a unit's activation state matches this filter
-  fn matches_activation(&self, state: &str) -> bool {
-    match self {
-      UnitStatus::Active => state == "active",
-      UnitStatus::Failed => state == "failed",
-      UnitStatus::Inactive => state != "active" && state != "failed",
-      _ => false,
+  /// Map a unit's ActiveState to a filter bucket. Transitional states
+  /// (activating/deactivating) are momentary, so they get lumped into the
+  /// nearest stable bucket rather than getting their own checkboxes.
+  fn activation_bucket(state: &str) -> UnitStatus {
+    match state {
+      "active" | "reloading" => UnitStatus::Active,
+      "failed" => UnitStatus::Failed,
+      // inactive, activating, deactivating, maintenance
+      _ => UnitStatus::Inactive,
     }
   }
 
-  /// Whether a unit's enablement state matches this filter
-  fn matches_enablement(&self, state: &str) -> bool {
-    match self {
-      UnitStatus::Disabled => state == "disabled",
-      UnitStatus::Masked => state == "masked",
-      UnitStatus::Enabled => state != "disabled" && state != "masked",
-      _ => false,
+  /// Map a unit's UnitFileState to a filter bucket. Unknown or future states
+  /// return None, meaning the unit is never filtered out on enablement.
+  fn enablement_bucket(state: &str) -> Option<UnitStatus> {
+    match state {
+      // alias/indirect/linked follow another unit's enablement, so "enabled"
+      // is the closest fit
+      "enabled" | "enabled-runtime" | "alias" | "indirect" | "linked" | "linked-runtime" => Some(UnitStatus::Enabled),
+      // no [Install] section / not user-managed
+      "static" | "generated" | "transient" => Some(UnitStatus::Static),
+      "disabled" => Some(UnitStatus::Disabled),
+      "masked" | "masked-runtime" => Some(UnitStatus::Masked),
+      _ => None,
     }
   }
 
-  /// Whether a unit's load state matches this filter
-  fn matches_load(&self, state: &str) -> bool {
-    match self {
-      UnitStatus::Loaded => state == "loaded",
-      UnitStatus::NotLoaded => state != "loaded",
-      _ => false,
+  /// Map a unit's LoadState to a filter bucket. A "masked" load state counts
+  /// as loaded here; visibility of masked units is governed by the Masked
+  /// enablement filter instead.
+  fn load_bucket(state: &str) -> UnitStatus {
+    match state {
+      "not-found" | "bad-setting" | "error" => UnitStatus::NotFound,
+      _ => UnitStatus::Loaded,
     }
   }
 }
 
 const STATUS_CATEGORIES: &[(&str, &[UnitStatus])] = &[
   ("Activation", &[UnitStatus::Active, UnitStatus::Inactive, UnitStatus::Failed]),
-  ("Enablement", &[UnitStatus::Enabled, UnitStatus::Disabled, UnitStatus::Masked]),
-  ("Load", &[UnitStatus::Loaded, UnitStatus::NotLoaded]),
+  ("Enablement", &[UnitStatus::Enabled, UnitStatus::Disabled, UnitStatus::Static, UnitStatus::Masked]),
+  ("Load", &[UnitStatus::Loaded, UnitStatus::NotFound]),
 ];
 
 #[derive(Clone, Copy)]
@@ -428,32 +440,30 @@ impl Home {
   pub fn refresh_filtered_units(&mut self) {
     let previously_selected = self.selected_service();
     let search_value = self.input.value();
-    let status_filtered_units: Vec<UnitWithStatus> = self
-      .all_units
-      .values()
-      .filter(|u| {
-        let passes_activation = self.filtered_statuses.iter().any(|f| f.matches_activation(&u.activation_state));
+    let status_filtered_units = self.all_units.values().filter(|u| {
+      let passes_activation = self.filtered_statuses.contains(&UnitStatus::activation_bucket(&u.activation_state));
 
-        let passes_enablement = match u.enablement_state.as_deref() {
-          // Enablement state not loaded yet — don't filter on it
+      let passes_enablement = match u.enablement_state.as_deref() {
+        // Enablement state not loaded yet — don't filter on it
+        None => true,
+        Some(state) => match UnitStatus::enablement_bucket(state) {
+          // Unknown state — don't filter on it
           None => true,
-          Some(state) => self.filtered_statuses.iter().any(|f| f.matches_enablement(state)),
-        };
+          Some(bucket) => self.filtered_statuses.contains(&bucket),
+        },
+      };
 
-        let passes_load = self.filtered_statuses.iter().any(|f| f.matches_load(&u.load_state));
+      let passes_load = self.filtered_statuses.contains(&UnitStatus::load_bucket(&u.load_state));
 
-        passes_activation && passes_enablement && passes_load
-      })
-      .cloned()
-      .collect();
+      passes_activation && passes_enablement && passes_load
+    });
 
     let matching: Vec<MatchedUnit> = if search_value.is_empty() {
       // No search - return all units without highlighting
-      status_filtered_units.into_iter().map(|u| MatchedUnit { unit: u.clone(), match_indices: vec![] }).collect()
+      status_filtered_units.map(|u| MatchedUnit { unit: u.clone(), match_indices: vec![] }).collect()
     } else {
       // Fuzzy match with indices for highlighting
       let mut scored: Vec<(i64, MatchedUnit)> = status_filtered_units
-        .into_iter()
         .filter_map(|u| {
           self
             .fuzzy_matcher
@@ -525,6 +535,10 @@ impl Home {
     let cancel_token = CancellationToken::new();
     let future = systemd::disable_service(service.clone(), cancel_token.clone());
     self.service_action(service, "Disable".into(), cancel_token, future, true);
+  }
+
+  fn is_status_filter_active(&self) -> bool {
+    self.filtered_statuses.len() != UnitStatus::ALL.len()
   }
 
   fn toggle_filtered_status(&mut self, status: UnitStatus) {
@@ -1211,7 +1225,7 @@ impl Component for Home {
           } else {
             Style::default()
           })
-          .title("─Services"),
+          .title(if self.is_status_filter_active() { "─Services (filtered)" } else { "─Services" }),
       )
       .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
 
@@ -1380,6 +1394,7 @@ impl Component for Home {
         Line::from(vec![primary("PageUp"), Span::raw(" / "), primary("PageDown"), Span::raw(" scroll the logs")]),
         Line::from(vec![primary("Home"), Span::raw(" / "), primary("End"), Span::raw(" scroll to top/bottom")]),
         Line::from(vec![primary("Enter"), Span::raw(" or "), primary("Space"), Span::raw(" open the action menu")]),
+        Line::from(vec![primary("f"), Span::raw(" filter services by status")]),
         Line::from(vec![primary("?"), Span::raw(" / "), primary("F1"), Span::raw(" open this help pane")]),
         Line::from(""),
         Line::from(Span::styled("Vim Style Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
@@ -1436,10 +1451,15 @@ impl Component for Home {
 
     let help_line = match self.mode {
       Mode::Search => Line::from(span("Show actions: <enter>", theme.primary)),
-      Mode::ServiceList => Line::from(span(
-        "Show actions: <enter> | Open logs in pager: o | Edit unit file: e | Filter: f | Quit: q",
-        theme.primary,
-      )),
+      Mode::ServiceList => {
+        let mut spans =
+          vec![span("Show actions: <enter> | Open logs in pager: o | Edit unit file: e | Filter: f", theme.primary)];
+        if self.is_status_filter_active() {
+          spans.push(Span::styled(" ●", Style::default().fg(theme.accent)));
+        }
+        spans.push(span(" | Quit: q", theme.primary));
+        Line::from(spans)
+      },
       Mode::Help => Line::from(span("Close menu: <esc>", theme.primary)),
       Mode::ActionMenu => Line::from(span("Execute action: <enter> | Close menu: <esc>", theme.primary)),
       Mode::Processing => Line::from(span("Cancel task: <esc>", theme.primary)),
