@@ -235,6 +235,11 @@ pub struct Home {
   pub search_panel: Rect,
   /// A transient toast message and when it was shown.
   pub toast: Option<(String, std::time::Instant)>,
+  /// Screen rects of each filter item line in the status filter popup, paired with the filter
+  /// index they correspond to, as of the most recent render. Empty when the popup isn't shown.
+  pub filter_item_rects: Vec<(Rect, usize)>,
+  /// Area of the status filter popup, as of the most recent render.
+  pub filter_popup_rect: Rect,
 }
 
 pub struct MenuItem {
@@ -1028,6 +1033,52 @@ impl Component for Home {
     }
 
     let pos = Position::new(mouse.column, mouse.row);
+
+    if self.mode == Mode::StatusFilter {
+      let hovered_item = self.filter_item_rects.iter().find(|(rect, _)| rect.contains(pos)).map(|(_, idx)| *idx);
+
+      return match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+          if let Some(idx) = hovered_item {
+            self.filter_cursor = idx;
+            self.toggle_filtered_status(UnitStatus::ALL[idx]);
+            vec![Action::RefreshStatusFilterMenu]
+          } else if !self.filter_popup_rect.contains(pos) {
+            // Clicked outside the popup: close it, same as Escape.
+            vec![Action::EnterMode(Mode::ServiceList)]
+          } else {
+            // Clicked inside the popup but not on an item (e.g. a category header).
+            vec![]
+          }
+        },
+        MouseEventKind::Moved => {
+          if let Some(idx) = hovered_item {
+            if idx != self.filter_cursor {
+              self.filter_cursor = idx;
+              return vec![Action::RefreshStatusFilterMenu];
+            }
+          }
+          vec![]
+        },
+        MouseEventKind::ScrollDown => {
+          if self.filter_cursor < UnitStatus::ALL.len() - 1 {
+            self.filter_cursor += 1;
+          } else {
+            self.filter_cursor = 0;
+          }
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        MouseEventKind::ScrollUp => {
+          if self.filter_cursor > 0 {
+            self.filter_cursor -= 1;
+          } else {
+            self.filter_cursor = UnitStatus::ALL.len() - 1;
+          }
+          vec![Action::RefreshStatusFilterMenu]
+        },
+        _ => vec![],
+      };
+    }
 
     fn clamp_into(rect: Rect, pos: Position) -> Position {
       if rect.width == 0 || rect.height == 0 {
@@ -1839,15 +1890,18 @@ impl Component for Home {
 
     let popup_width = min_width.min(f.area().width);
 
+    self.filter_item_rects.clear();
     if self.mode == Mode::StatusFilter {
       // Custom grouped layout for the status filter popup
       let mut lines: Vec<Line> = Vec::new();
+      let mut line_item_indices: Vec<Option<usize>> = Vec::new();
       let mut idx = 0;
       for (category_name, filters) in STATUS_CATEGORIES {
         lines.push(Line::from(Span::styled(
           *category_name,
           Style::default().fg(theme.muted).add_modifier(Modifier::BOLD),
         )));
+        line_item_indices.push(None);
         for filter in *filters {
           let is_checked = self.filtered_statuses.contains(filter);
           let is_selected = idx == self.filter_cursor;
@@ -1864,6 +1918,7 @@ impl Component for Home {
           } else {
             lines.push(Line::from(line_spans));
           }
+          line_item_indices.push(Some(idx));
           idx += 1;
         }
       }
@@ -1871,6 +1926,15 @@ impl Component for Home {
       let filter_popup_width = 20u16.min(f.area().width);
       let height = lines.len() as u16 + 2;
       let popup = f.area().centered(Constraint::Length(filter_popup_width), Constraint::Length(height));
+      self.filter_popup_rect = popup;
+
+      for (i, item_idx) in line_item_indices.iter().enumerate() {
+        if let Some(item_idx) = item_idx {
+          let rect =
+            Rect { x: popup.x + 1, y: popup.y + 1 + i as u16, width: popup.width.saturating_sub(2), height: 1 };
+          self.filter_item_rects.push((rect, *item_idx));
+        }
+      }
 
       let paragraph = Paragraph::new(lines).block(
         Block::default()
