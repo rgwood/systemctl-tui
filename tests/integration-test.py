@@ -209,16 +209,28 @@ def test_mouse(binary: str, host: str | None) -> None:
                 rows.append(i)
         return rows
 
-    # 1. click selects a service
+    # 1. click selects a service. Compare the *name* under the highlight rather than the row
+    # number: in remote mode units are still arriving and the list can re-sort between the click
+    # and the assertion, moving the (correctly) selected unit to a different row.
+    def name_at(row: int) -> str:
+        lines = capture().splitlines()
+        return lines[row][1:29].strip() if row < len(lines) else ""
+
     rows = service_rows()
     before = highlighted_row(capture_esc())
     target = next((r for r in rows if r != before), rows[0] if rows else None)
     check("found a clickable service row", target is not None)
     if target is not None:
+        target_name = name_at(target)
         click(10, target + 1)
         time.sleep(0.4)
         after = highlighted_row(capture_esc())
-        check("click selects a service", after == target, f"before={before} target={target} after={after}")
+        selected_name = name_at(after) if after is not None else ""
+        check(
+            "click selects a service",
+            after == target or selected_name == target_name,
+            f"before={before} target={target} ({target_name!r}) after={after} ({selected_name!r})",
+        )
 
     # For the rest of this test we want a unit with a guaranteed non-empty description and
     # plenty of log history to scroll/select, so the click/wheel/drag checks below aren't at the
