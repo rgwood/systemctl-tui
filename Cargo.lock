@@ -2109,6 +2109,7 @@ name = "systemctl-tui"
 version = "0.5.2"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "better-panic",
  "chrono",
  "clap",
