@@ -228,11 +228,23 @@ def test_mouse(binary: str, host: str | None) -> None:
     time.sleep(0.2)
     type_text("systemd-journald")
     time.sleep(0.3)
-    send_keys("Down")
-    time.sleep(0.5)
     send_keys("Escape")
     time.sleep(0.3)
-    check("selected systemd-journald.service for the remaining checks", "systemd-journald" in capture(), capture())
+    # Click the exact "systemd-journald" row rather than taking the first fuzzy match: the list
+    # also contains the systemd-journald@ template unit (empty description, no logs), and fuzzy
+    # ranking put it first on some distros, breaking every check below.
+    screen_lines = capture().splitlines()
+    exact_row = next((r for r in service_rows() if screen_lines[r][1:29].strip() == "systemd-journald"), None)
+    check("found the systemd-journald row", exact_row is not None, capture())
+    if exact_row is not None:
+        click(10, exact_row + 1)
+    # journald log lines always contain "systemd-journald[<pid>]:", so this also guarantees the
+    # unit under test has real logs for the wheel/drag checks below
+    check(
+        "selected systemd-journald.service for the remaining checks",
+        wait_for(lambda: "systemd-journald[" in capture()),
+        capture(),
+    )
 
     # 2. click on a details field copies the value and shows a toast
     desc_line = next((i for i, l in enumerate(capture().splitlines()) if "Description:" in l), None)
@@ -246,13 +258,26 @@ def test_mouse(binary: str, host: str | None) -> None:
         check("click on details field copies + shows toast", wait_for(lambda: re.search(r"Copied \d+ chars", capture()) is not None), capture())
         time.sleep(2.1)  # let the toast expire before the next assertion that checks for its absence
 
-    # 3. wheel scrolls logs
+    # 3. wheel scrolls logs. If the unit's logs fit entirely in the pane there is nothing to
+    # scroll (the offset is clamped to 0), so in that case assert that End can't scroll either
+    # instead of failing on unchanged content.
     logs_before = capture()
     for _ in range(3):
         send_mouse("wheel_down", 70, 20)
         time.sleep(0.3)
     logs_after = capture()
-    check("wheel scrolls logs", logs_after != logs_before, f"before:\n{logs_before}\nafter:\n{logs_after}")
+    if logs_after != logs_before:
+        check("wheel scrolls logs", True)
+    else:
+        send_keys("End")
+        time.sleep(0.5)
+        check(
+            "wheel scrolls logs (logs fit on screen; End can't scroll either)",
+            capture() == logs_before,
+            f"wheel did nothing but End scrolled:\n{capture()}",
+        )
+        send_keys("Home")
+        time.sleep(0.3)
 
     # 4. drag-selecting log text copies it and shows a toast
     send_mouse("press", 40, 11)
