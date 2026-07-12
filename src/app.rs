@@ -65,7 +65,7 @@ impl App {
     let units = get_all_services(self.scope, &self.limit_units)
       .await
       .context("Unable to get services. Check that systemd is running and try running this tool with sudo.")?;
-    self.home.lock().await.set_units(units);
+    self.home.lock().await.set_units(units.units);
 
     // Fetch unit files (includes enablement state and disabled units not returned by ListUnits)
     action_tx.send(Action::RefreshUnitFiles)?;

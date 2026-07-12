@@ -1,0 +1,74 @@
+# A throwaway systemd + sshd container for testing systemctl-tui's remote mode
+# against a specific systemd version. Built/run by scripts/remote-matrix.py.
+#
+# Parameterized by base image, e.g.:
+#   --build-arg BASE_IMAGE=ubuntu:24.04     (systemd 255)
+#   --build-arg BASE_IMAGE=rockylinux:8     (systemd 239)
+ARG BASE_IMAGE=ubuntu:24.04
+FROM ${BASE_IMAGE}
+
+# The test harness generates an ephemeral keypair per run and passes the pubkey in
+ARG SSH_PUBKEY
+
+# Install systemd, sshd, and systemd-stdio-bridge. Package layout differs by family:
+# deb-family ships the bridge in systemd-container; rpm-family ships it in systemd itself.
+# libpam-systemd is required for a lingering user manager to start at all: pam_systemd.so
+# is what sets $XDG_RUNTIME_DIR and registers the logind session; without it `user@<uid>.service`
+# fails immediately with "Trying to run as user instance, but $XDG_RUNTIME_DIR is not set."
+# dbus-user-session provides the user-scope dbus.socket unit that creates /run/user/<uid>/bus;
+# without it there's no user D-Bus to bridge to at all (systemd-stdio-bridge EOFs immediately).
+RUN if command -v apt-get >/dev/null; then \
+      apt-get update \
+      && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+         systemd systemd-container systemd-sysv dbus openssh-server libpam-systemd dbus-user-session \
+      && rm -rf /var/lib/apt/lists/*; \
+    else \
+      dnf install -y systemd openssh-server dbus-daemon && dnf clean all \
+      # rockylinux:8 ships with systemd-logind masked; lingering user managers need it
+      && systemctl unmask systemd-logind \
+      # On fedora the pam_unix account check aborts in containers ("read unix_chkpwd
+      # output error"), which kills user@<uid>.service at the PAM step and makes sshd
+      # reject all logins ("Access denied ... by PAM account configuration"). A
+      # permissive account stack is fine in a throwaway test container.
+      && printf 'account sufficient pam_permit.so\nsession optional pam_keyinit.so force revoke\nsession optional pam_systemd.so\n' > /etc/pam.d/systemd-user \
+      && sed -i '1a account sufficient pam_permit.so' /etc/pam.d/sshd; \
+    fi
+
+# Test users:
+#  - root: system-scope actions succeed (no polkit involved)
+#  - testuser: can read the journal, has a lingering user manager + a user-scope dummy unit
+#  - nojournal: in no journal groups, for testing the "no access to logs" diagnostic
+RUN useradd -m -s /bin/bash testuser \
+    && useradd -m -s /bin/bash nojournal \
+    && usermod -aG systemd-journal testuser \
+    && mkdir -p /var/lib/systemd/linger \
+    && touch /var/lib/systemd/linger/testuser
+
+RUN mkdir -p /root/.ssh /home/testuser/.ssh /home/nojournal/.ssh \
+    && echo "$SSH_PUBKEY" | tee /root/.ssh/authorized_keys /home/testuser/.ssh/authorized_keys /home/nojournal/.ssh/authorized_keys >/dev/null \
+    && chmod 700 /root/.ssh /home/testuser/.ssh /home/nojournal/.ssh \
+    && chmod 600 /root/.ssh/authorized_keys /home/testuser/.ssh/authorized_keys /home/nojournal/.ssh/authorized_keys \
+    && chown -R testuser:testuser /home/testuser/.ssh \
+    && chown -R nojournal:nojournal /home/nojournal/.ssh \
+    && ssh-keygen -A \
+    && sed -i 's/#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config \
+    && mkdir -p /run/sshd
+
+# Dummy unit at system scope: something safe for the tests to start/stop/restart
+COPY sctui-test.service /etc/systemd/system/sctui-test.service
+
+# User-scope dummy unit for testuser. Deliberately a *different* name from the system
+# unit: it only shows up if the user-bus bridge really connects to the user bus, which
+# makes the "bridge silently served the system bus" regression unambiguous to detect.
+RUN mkdir -p /home/testuser/.config/systemd/user \
+    && cp /etc/systemd/system/sctui-test.service /home/testuser/.config/systemd/user/sctui-user-test.service \
+    && chown -R testuser:testuser /home/testuser/.config
+
+# Oneshot that writes a known journal marker at boot (for log-rendering assertions)
+# and enables everything. sshd's unit is named differently across families.
+COPY sctui-marker.service /etc/systemd/system/sctui-marker.service
+RUN systemctl enable sctui-marker.service \
+    && (systemctl enable ssh 2>/dev/null || systemctl enable sshd)
+
+# Boot systemd. journald logs to the journal normally; no need for rsyslog etc.
+CMD ["/sbin/init"]

@@ -254,14 +254,28 @@ impl Home {
   // This is inefficient but it's fast enough
   // (on gen 13 i7: ~100 microseconds to update, ~100 microseconds to filter)
   // revisit if needed
-  pub fn update_units(&mut self, units: Vec<UnitWithStatus>) {
+  pub fn update_units(&mut self, service_list: systemd::ServiceList) {
     let now = std::time::Instant::now();
 
-    for unit in units {
+    let refreshed_ids: std::collections::HashSet<UnitId> = service_list.units.iter().map(|u| u.id()).collect();
+
+    for unit in service_list.units {
       if let Some(existing) = self.all_units.get_mut(&unit.id()) {
         existing.update(unit);
       } else {
         self.all_units.insert(unit.id(), unit);
+      }
+    }
+
+    // ListUnits only returns *loaded* units. A unit missing from a scope we successfully
+    // refreshed has been unloaded (e.g. a disabled unit unloads when it stops), so reset it
+    // to the same state merge_unit_files uses for not-loaded units instead of showing its
+    // last-known (stale) state forever.
+    for (id, unit) in self.all_units.iter_mut() {
+      if service_list.refreshed_scopes.contains(&unit.scope) && !refreshed_ids.contains(id) {
+        unit.load_state = "not-loaded".into();
+        unit.activation_state = "inactive".into();
+        unit.sub_state = "dead".into();
       }
     }
     info!("Updated units in {:?}", now.elapsed());

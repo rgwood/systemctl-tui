@@ -18,11 +18,15 @@ passwordless ssh to the target.
 """
 
 import argparse
+import os
+import re
 import subprocess
 import sys
 import time
 
-SESSION = "sctui-integration-test"
+# unique per run so concurrent invocations (e.g. remote-matrix.py against several
+# containers) don't clobber each other's tmux sessions
+SESSION = f"sctui-integration-test-{os.getpid()}"
 
 passed: list[str] = []
 failed: list[str] = []
@@ -52,6 +56,9 @@ def start_app(binary: str, host: str | None, extra_args: list[str] | None = None
     host_args = ["--host", host] if host else []
     args = [binary, *host_args, *(extra_args or [])]
     cmd = " ".join(f"'{a}'" for a in args)
+    # tmux's server may have started before a shim was prepended to PATH (e.g. by
+    # remote-matrix.py); wrap with `env` so the pane picks up the current PATH.
+    cmd = f"env 'PATH={os.environ.get('PATH', '')}' {cmd}"
     tmux("new-session", "-d", "-s", SESSION, "-x", "120", "-y", "40", cmd)
 
 
@@ -123,14 +130,17 @@ def test_startup_and_browse(binary: str, host: str | None) -> None:
 def test_logs(binary: str, host: str | None) -> None:
     """Logs should either render, or show an actionable diagnostic - never a crash."""
     print("logs:")
-    # dbus.service exists and has run on any systemd machine
-    start_app(binary, host, ["--limit-units", "dbus.service"])
+    # systemd-journald.service exists as a real (non-alias) unit and has logged on any
+    # systemd machine; dbus.service is only an alias on dbus-broker distros like Fedora,
+    # and aliases don't match unit patterns
+    start_app(binary, host, ["--limit-units", "systemd-journald.service"])
     wait_for(lambda: "Details" in capture())
     send_keys("Down")
 
     def logs_or_diagnostic() -> bool:
         screen = capture()
-        rendered_logs = "systemd[1]" in screen or "dbus" in screen.lower()
+        # match log-line shapes, not the unit name (which is always on screen)
+        rendered_logs = "systemd[1]" in screen or "systemd-journald[" in screen or "Journal started" in screen
         diagnostic = "No access to system logs" in screen or "No logs" in screen
         return rendered_logs or diagnostic
 
@@ -173,6 +183,165 @@ def test_clean_exit(binary: str, host: str | None) -> None:
     check("q exits the app", wait_for(lambda: not app_alive(), timeout=10))
 
 
+def addr_of(host: str) -> str:
+    """Strip the user@ prefix off a --host value, e.g. 'testuser@127.0.0.1' -> '127.0.0.1'."""
+    return host.split("@", 1)[1] if "@" in host else host
+
+
+def type_text(text: str) -> None:
+    send_keys(*list(text))
+
+
+def test_user_bus_is_user_bus(binary: str, host: str) -> None:
+    """Regression: systemd-stdio-bridge --user can silently serve the system bus."""
+    print("user bus scope:")
+    start_app(binary, host, ["--scope", "all", "--limit-units", "sctui-*"])
+    # the services column truncates long names, so match on the visible prefix rather
+    # than the full ".service" suffix
+    screen = wait_for(lambda: "sctui-test" in capture() and "sctui-user-test" in capture())
+    check("both sctui units listed", screen, capture())
+
+    type_text("user")
+    time.sleep(1)
+    send_keys("Down")
+    time.sleep(1)
+    result_screen = capture()
+    check("sctui-user-test.service selected", "sctui-user-test.service" in result_screen, result_screen)
+    check("scope shows User", "User" in result_screen, result_screen)
+
+
+def test_root_action_round_trip(binary: str, root_host: str) -> None:
+    print("root action round-trip:")
+    # make the test idempotent: earlier tests/runs may have left the unit running
+    run(["ssh", root_host, "systemctl", "stop", "sctui-test.service"])
+    start_app(binary, root_host, ["--scope", "global", "--limit-units", "sctui-test.service"])
+    wait_for(lambda: "Description:" in capture())
+    send_keys("Down")
+    check("starts inactive", wait_for(lambda: "inactive" in capture()), capture())
+
+    send_keys("Enter")
+    check("actions menu opens", wait_for(lambda: "Actions for" in capture()), capture())
+    send_keys("s")
+    check("start succeeds", wait_for(lambda: "active (running)" in capture(), timeout=20), capture())
+
+    send_keys("Enter")
+    check("actions menu opens again", wait_for(lambda: "Actions for" in capture()), capture())
+    send_keys("t")
+    check("stop succeeds", wait_for(lambda: "inactive (dead)" in capture(), timeout=20), capture())
+
+
+def test_polkit_rejection(binary: str, host: str) -> None:
+    print("polkit/permission rejection:")
+    start_app(binary, host, ["--scope", "global", "--limit-units", "sctui-test.service"])
+    wait_for(lambda: "Description:" in capture())
+    send_keys("Down")
+    send_keys("Enter")
+    wait_for(lambda: "Actions for" in capture())
+    send_keys("s")
+
+    def error_shown() -> bool:
+        screen = capture().lower()
+        return any(term in screen for term in ("authentication", "denied", "failed", "error"))
+
+    check("error surfaces instead of hanging", wait_for(error_shown, timeout=20), capture())
+    check("app still alive", app_alive())
+    check("unit did not become active", "active (running)" not in capture(), capture())
+    send_keys("Escape")
+
+
+def test_user_scope_action_succeeds(binary: str, host: str) -> None:
+    print("user-scope action without root:")
+    start_app(binary, host, ["--scope", "user", "--limit-units", "sctui-user-test.service"])
+    wait_for(lambda: "Description:" in capture())
+    send_keys("Down")
+    send_keys("Enter")
+    wait_for(lambda: "Actions for" in capture())
+    send_keys("r")
+    check("restart succeeds as user", wait_for(lambda: "active (running)" in capture(), timeout=20), capture())
+
+
+def test_log_rendering(binary: str, host: str) -> None:
+    print("log rendering:")
+    start_app(binary, host, ["--limit-units", "sctui-marker.service", "--scope", "global"])
+    wait_for(lambda: "Description:" in capture())
+    send_keys("Down")
+    check("boot marker appears in logs", wait_for(lambda: "sctui-boot-marker" in capture()), capture())
+
+
+def run_markers(screen: str) -> set[str]:
+    """Extract the unique per-start markers the dummy unit logs (sctui-run-<nanos>)."""
+    return set(re.findall(r"sctui-run-\d+", screen))
+
+
+def test_follow_mode_streams(binary: str, root_host: str) -> None:
+    print("follow mode streaming:")
+    run(["ssh", root_host, "systemctl", "start", "sctui-test.service"])
+    start_app(binary, root_host, ["--limit-units", "sctui-test.service", "--scope", "global"])
+    wait_for(lambda: "Description:" in capture())
+    send_keys("Down")
+    wait_for(lambda: run_markers(capture()), timeout=15)
+    # the app attaches `journalctl --follow` only after the batch fetch returns; give it a
+    # moment so the restart's log lines aren't dropped in the gap between the two
+    time.sleep(3)
+    seen = run_markers(capture())
+
+    # restarting logs a fresh marker; it must stream in live via `journalctl --follow`
+    run(["ssh", root_host, "systemctl", "restart", "sctui-test.service"])
+    check(
+        "new log lines stream in over follow",
+        wait_for(lambda: run_markers(capture()) - seen, timeout=20),
+        capture(),
+    )
+    # don't leave the unit running for later tests / reruns
+    run(["ssh", root_host, "systemctl", "stop", "sctui-test.service"])
+
+
+def test_journal_access_diagnostic(binary: str, nojournal_host: str) -> None:
+    print("journal-access diagnostic:")
+    # sctui-marker.service is a real system-scope unit with boot logs; reading them
+    # requires systemd-journal group membership, which nojournal lacks. (dbus.service
+    # doesn't work here: it's only an alias on dbus-broker distros like Fedora.)
+    start_app(binary, nojournal_host, ["--scope", "global", "--limit-units", "sctui-marker.service"])
+    wait_for(lambda: "Description:" in capture())
+    send_keys("Down")
+    check(
+        "no-access diagnostic shown",
+        wait_for(lambda: "No access to system logs" in capture() or "No logs" in capture()),
+        capture(),
+    )
+
+
+def test_missing_bridge_error_path(binary: str, root_host: str) -> None:
+    """Must run last: it temporarily breaks systemd-stdio-bridge on the remote host."""
+    print("missing-bridge error path:")
+    which = run(["ssh", root_host, "command", "-v", "systemd-stdio-bridge"])
+    bridge_path = which.stdout.strip()
+    if which.returncode != 0 or not bridge_path:
+        check("systemd-stdio-bridge locatable on remote host", False, which.stdout + which.stderr)
+        return
+
+    moved = run(["ssh", root_host, "mv", bridge_path, "/root/bridge.bak"])
+    if moved.returncode != 0:
+        check("moved systemd-stdio-bridge out of the way", False, moved.stderr)
+        return
+
+    try:
+        result = subprocess.run(
+            [binary, "--host", root_host],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        check("nonzero exit when bridge is missing", result.returncode != 0, f"exit={result.returncode}")
+        check(
+            "clear error message in stderr",
+            "systemd-stdio-bridge not found" in result.stderr,
+            result.stderr,
+        )
+    finally:
+        run(["ssh", root_host, "mv", "/root/bridge.bak", bridge_path])
+
+
 def check_prerequisites(binary: str, host: str | None) -> str | None:
     if run(["which", "tmux"]).returncode != 0:
         return "tmux is not installed"
@@ -189,7 +358,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default=None, help="ssh target for remote mode (default: test locally)")
     parser.add_argument("--binary", default="./target/debug/systemctl-tui")
+    parser.add_argument(
+        "--remote-suite",
+        action="store_true",
+        help="also run the remote-mode regression suite (requires --host)",
+    )
     args = parser.parse_args()
+
+    if args.remote_suite and not args.host:
+        print("SKIP: --remote-suite requires --host")
+        return 2
 
     problem = check_prerequisites(args.binary, args.host)
     if problem:
@@ -200,8 +378,24 @@ def main() -> int:
     try:
         test_startup_and_browse(args.binary, args.host)
         test_logs(args.binary, args.host)
-        test_no_dropped_keystrokes(args.binary, args.host)
+        if not args.remote_suite:
+            test_no_dropped_keystrokes(args.binary, args.host)
         test_clean_exit(args.binary, args.host)
+
+        if args.remote_suite:
+            addr = addr_of(args.host)
+            root_host = f"root@{addr}"
+            nojournal_host = f"nojournal@{addr}"
+
+            test_user_bus_is_user_bus(args.binary, args.host)
+            test_root_action_round_trip(args.binary, root_host)
+            test_polkit_rejection(args.binary, args.host)
+            test_user_scope_action_succeeds(args.binary, args.host)
+            test_log_rendering(args.binary, args.host)
+            test_follow_mode_streams(args.binary, root_host)
+            test_journal_access_diagnostic(args.binary, nojournal_host)
+            # last: this one breaks systemd-stdio-bridge on the remote host
+            test_missing_bridge_error_path(args.binary, root_host)
     finally:
         stop_app()
 

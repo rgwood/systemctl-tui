@@ -1,0 +1,11 @@
+[Unit]
+Description=systemctl-tui integration test dummy unit
+
+[Service]
+# Log a unique marker on each start so the follow-mode test can tell fresh log
+# lines from ones already on screen (the logs pane holds ~26 lines and fills up
+# with identical Started/Stopped lines as restarts accumulate in the journal)
+ExecStart=/bin/sh -c 'echo "sctui-run-$(date +%%s%%N)"; exec sleep infinity'
+
+[Install]
+WantedBy=multi-user.target default.target

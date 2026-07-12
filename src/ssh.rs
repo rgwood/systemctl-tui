@@ -80,8 +80,12 @@ impl SshHost {
     args.push(OsString::from(&self.host));
     match scope {
       UnitScope::Global => {
+        // Not `--system`: that flag doesn't exist in older systemd (245 rejects it, 249 has
+        // it), but `-p` with the (documented, stable) default system bus path works on every
+        // version back to at least 239. Found by the container matrix on rocky-8/ubuntu-20.04.
         args.push("systemd-stdio-bridge".into());
-        args.push("--system".into());
+        args.push("-p".into());
+        args.push("unix:path=/run/dbus/system_bus_socket".into());
       },
       UnitScope::User => {
         // `systemd-stdio-bridge --user` is unreliable in non-interactive SSH sessions (it can
@@ -240,7 +244,9 @@ mod tests {
         "--",
         "user@example",
         "systemd-stdio-bridge",
-        "--system",
+        "-p",
+        // not --system, which old systemd versions (e.g. 245) don't support
+        "unix:path=/run/dbus/system_bus_socket",
       ]
     );
   }
