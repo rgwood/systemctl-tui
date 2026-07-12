@@ -1,0 +1,10 @@
+[Unit]
+Description=Writes a known journal marker at boot for log assertions
+
+[Service]
+Type=oneshot
+# stdout goes to the journal attributed to this unit, so `journalctl -u` finds it
+ExecStart=/bin/echo sctui-boot-marker
+
+[Install]
+WantedBy=multi-user.target

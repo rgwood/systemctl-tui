@@ -1,6 +1,6 @@
 use crate::{
   components::home::Mode,
-  systemd::{UnitFile, UnitId, UnitWithStatus},
+  systemd::{ServiceList, UnitFile, UnitId},
 };
 
 #[derive(Debug, Clone)]
@@ -15,7 +15,7 @@ pub enum Action {
   ToggleShowLogger,
   RefreshServices,
   RefreshUnitFiles,
-  SetServices(Vec<UnitWithStatus>),
+  SetServices(ServiceList),
   SetUnitFiles(Vec<UnitFile>),
   EnterMode(Mode),
   EnterError(String),
