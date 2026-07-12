@@ -185,6 +185,11 @@ impl Theme {
   }
 }
 
+/// Whether `pos` falls within `rect`.
+fn contains(rect: Rect, pos: Position) -> bool {
+  pos.x >= rect.x && pos.x < rect.x + rect.width && pos.y >= rect.y && pos.y < rect.y + rect.height
+}
+
 /// A unit with fuzzy match indices for highlighting
 #[derive(Clone)]
 pub struct MatchedUnit {
@@ -226,6 +231,12 @@ pub struct Home {
   pub logs_selection: Option<(Position, Position)>,
   /// Text extracted from the current `logs_selection`, computed at render time.
   pub selected_log_text: String,
+  /// Most recent mouse position, in absolute screen coordinates.
+  pub mouse_position: Position,
+  /// Area of the unit file path line in the details pane, as of the most recent render.
+  pub file_path_rect: Rect,
+  /// A transient toast message and when it was shown.
+  pub toast: Option<(String, std::time::Instant)>,
 }
 
 pub struct MenuItem {
@@ -446,6 +457,16 @@ impl Home {
   fn clear_logs_selection(&mut self) {
     self.logs_selection = None;
     self.selected_log_text.clear();
+  }
+
+  fn show_toast(&mut self, msg: &str) {
+    self.toast = Some((msg.to_string(), std::time::Instant::now()));
+    if let Some(tx) = self.action_tx.clone() {
+      tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+        let _ = tx.send(Action::Render);
+      });
+    }
   }
 
   pub fn selected_service(&self) -> Option<UnitId> {
@@ -974,10 +995,6 @@ impl Component for Home {
   fn handle_mouse_events(&mut self, mouse: MouseEvent) -> Vec<Action> {
     let pos = Position::new(mouse.column, mouse.row);
 
-    fn contains(rect: Rect, pos: Position) -> bool {
-      pos.x >= rect.x && pos.x < rect.x + rect.width && pos.y >= rect.y && pos.y < rect.y + rect.height
-    }
-
     fn clamp_into(rect: Rect, pos: Position) -> Position {
       if rect.width == 0 || rect.height == 0 {
         return Position::new(rect.x, rect.y);
@@ -988,7 +1005,18 @@ impl Component for Home {
     }
 
     match mouse.kind {
+      MouseEventKind::Moved => {
+        let was_hovering = contains(self.file_path_rect, self.mouse_position);
+        self.mouse_position = pos;
+        let is_hovering = contains(self.file_path_rect, pos);
+        if was_hovering != is_hovering {
+          vec![Action::Render]
+        } else {
+          vec![]
+        }
+      },
       MouseEventKind::ScrollUp => {
+        self.mouse_position = pos;
         self.clear_logs_selection();
         if contains(self.services_panel, pos) {
           if self.filtered_units.state.selected() == Some(0) {
@@ -1001,6 +1029,7 @@ impl Component for Home {
         }
       },
       MouseEventKind::ScrollDown => {
+        self.mouse_position = pos;
         self.clear_logs_selection();
         if contains(self.services_panel, pos) {
           self.next();
@@ -1010,6 +1039,16 @@ impl Component for Home {
         }
       },
       MouseEventKind::Down(MouseButton::Left) => {
+        self.mouse_position = pos;
+        if contains(self.file_path_rect, pos) {
+          if let Some(m) = self.filtered_units.selected() {
+            if let Some(Ok(path)) = &m.unit.file_path {
+              crate::utils::copy_to_clipboard_osc52(path);
+              self.show_toast("Copied to clipboard");
+              return vec![Action::Render];
+            }
+          }
+        }
         if contains(self.logs_panel_inner, pos) {
           self.logs_selection = Some((pos, pos));
         } else {
@@ -1018,6 +1057,7 @@ impl Component for Home {
         vec![Action::Render]
       },
       MouseEventKind::Drag(MouseButton::Left) => {
+        self.mouse_position = pos;
         if let Some((anchor, _)) = self.logs_selection {
           let clamped = clamp_into(self.logs_panel_inner, pos);
           self.logs_selection = Some((anchor, clamped));
@@ -1025,9 +1065,11 @@ impl Component for Home {
         vec![Action::Render]
       },
       MouseEventKind::Up(MouseButton::Left) => {
+        self.mouse_position = pos;
         if let Some((anchor, cursor)) = self.logs_selection {
           if anchor != cursor && !self.selected_log_text.is_empty() {
             crate::utils::copy_to_clipboard_osc52(&self.selected_log_text);
+            self.show_toast("Copied to clipboard");
           } else {
             self.clear_logs_selection();
           }
@@ -1355,6 +1397,8 @@ impl Component for Home {
     let dim = Style::default().add_modifier(Modifier::DIM);
     let mut rows: Vec<(&str, Line)> = vec![];
     let mut stat_rows: Vec<(&str, Line)> = vec![];
+    // Row index and display width of the unit file path, if shown; used for mouse hit-testing.
+    let mut file_path_row: Option<(usize, u16)> = None;
 
     if let Some(m) = selected_item {
       rows.push(("Description", Line::from(m.unit.description.as_str())));
@@ -1413,11 +1457,21 @@ impl Component for Home {
       }
       rows.push(("Enablement", Line::from(state_spans)));
 
+      // Hover state is tested against the previous frame's rect; the rect itself is updated
+      // below once the details layout is known.
+      let file_path_style = if contains(self.file_path_rect, self.mouse_position) {
+        Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+      } else {
+        Style::default()
+      };
+      if let Some(Ok(file_path)) = &m.unit.file_path {
+        file_path_row = Some((rows.len(), file_path.len() as u16));
+      }
       rows.push((
         "Unit file",
         match &m.unit.file_path {
-          Some(Ok(file_path)) => Line::from(file_path.as_str()),
-          Some(Err(e)) => colored_line(e, Color::Red),
+          Some(Ok(file_path)) => Line::from(Span::styled(file_path.as_str(), file_path_style)),
+          Some(Err(e)) => Line::from(Span::styled(e.as_str(), Style::default().fg(Color::Red))),
           None => Line::from(""),
         },
       ));
@@ -1499,6 +1553,13 @@ impl Component for Home {
     let (labels, values) = split_labels_values(rows);
     f.render_widget(Paragraph::new(labels).alignment(ratatui::layout::Alignment::Right), panes[0]);
     f.render_widget(Paragraph::new(values), panes[1]);
+
+    self.file_path_rect = match file_path_row {
+      Some((idx, width)) if (idx as u16) < panes[1].height => {
+        Rect { x: panes[1].x, y: panes[1].y + idx as u16, width: width.min(panes[1].width), height: 1 }
+      },
+      _ => Rect::ZERO,
+    };
 
     if two_columns {
       let (stat_labels, stat_values) = split_labels_values(stat_rows);
@@ -1683,6 +1744,25 @@ impl Component for Home {
 
       f.render_widget(Clear, popup);
       f.render_widget(paragraph, popup);
+    }
+
+    if let Some((msg, shown_at)) = &self.toast {
+      let elapsed = shown_at.elapsed();
+      if elapsed < std::time::Duration::from_secs(2) {
+        let area = f.area();
+        let width = msg.len() as u16 + 2;
+        if area.width > width + 1 && area.height > 2 {
+          let toast_rect =
+            Rect { x: area.right().saturating_sub(width + 1), y: area.bottom().saturating_sub(2), width, height: 1 };
+          let toast_text = format!(" {msg} ");
+          let paragraph = Paragraph::new(Line::from(toast_text))
+            .style(Style::default().fg(theme.accent).add_modifier(Modifier::REVERSED));
+          f.render_widget(Clear, toast_rect);
+          f.render_widget(paragraph, toast_rect);
+        }
+      } else {
+        self.toast = None;
+      }
     }
 
     let selected_unit_name = match self.filtered_units.selected() {
