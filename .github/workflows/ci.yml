@@ -78,7 +78,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        distro: [rocky-8, ubuntu-20.04, ubuntu-22.04, debian-12, ubuntu-24.04, fedora-latest]
+        # real systemd versions, plus hostile hosts where remote mode must fail gracefully
+        distro: [rocky-8, ubuntu-20.04, ubuntu-22.04, debian-12, ubuntu-24.04, fedora-latest, no-systemd, dead-systemd]
 
     steps:
     - uses: actions/checkout@v4
