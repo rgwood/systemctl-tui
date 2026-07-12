@@ -24,7 +24,10 @@ use std::{collections::HashSet, process::Stdio, time::Duration};
 use super::{logger::Logger, Component, Frame};
 use crate::{
   action::Action,
-  systemd::{self, diagnose_missing_logs, parse_journalctl_error, Scope, UnitFile, UnitId, UnitScope, UnitWithStatus},
+  systemd::{
+    self, diagnose_missing_logs, parse_journalctl_error, Scope, UnitFile, UnitId, UnitRuntimeInfo, UnitScope,
+    UnitWithStatus,
+  },
 };
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
@@ -200,6 +203,8 @@ pub struct Home {
   pub filtered_units: StatefulList<MatchedUnit>,
   pub logs: Vec<String>,
   pub logs_scroll_offset: u16,
+  /// Runtime info for the currently selected unit, fetched lazily after selection
+  pub runtime_info: Option<UnitRuntimeInfo>,
   pub mode: Mode,
   pub previous_mode: Option<Mode>,
   pub input: Input,
@@ -394,6 +399,7 @@ impl Home {
 
   pub fn next(&mut self) {
     self.logs = vec![];
+    self.runtime_info = None;
     self.filtered_units.next();
     self.get_logs();
     self.logs_scroll_offset = 0;
@@ -401,6 +407,7 @@ impl Home {
 
   pub fn previous(&mut self) {
     self.logs = vec![];
+    self.runtime_info = None;
     self.filtered_units.previous();
     self.get_logs();
     self.logs_scroll_offset = 0;
@@ -409,6 +416,7 @@ impl Home {
   pub fn select(&mut self, index: Option<usize>, refresh_logs: bool) {
     if refresh_logs {
       self.logs = vec![];
+      self.runtime_info = None;
     }
     self.filtered_units.select(index);
     if refresh_logs {
@@ -419,6 +427,7 @@ impl Home {
 
   pub fn unselect(&mut self) {
     self.logs = vec![];
+    self.runtime_info = None;
     self.filtered_units.unselect();
   }
 
@@ -647,10 +656,16 @@ impl Component for Home {
         // lazy debounce to avoid spamming journalctl on slow connections/systems
         std::thread::sleep(Duration::from_millis(100));
 
-        // get the unit file path
-        match systemd::get_unit_file_location(&unit) {
-          Ok(path) => {
-            let _ = tx.send(Action::SetUnitFilePath { unit: unit.clone(), path: Ok(path) });
+        // get the unit file path + runtime info (one systemctl call for both)
+        match systemd::get_unit_runtime_info(&unit) {
+          Ok(info) => {
+            let path = if info.fragment_path.is_empty() {
+              Err("could not be determined".into())
+            } else {
+              Ok(info.fragment_path.clone())
+            };
+            let _ = tx.send(Action::SetUnitFilePath { unit: unit.clone(), path });
+            let _ = tx.send(Action::SetUnitRuntimeInfo { unit: unit.clone(), info: Box::new(info) });
             let _ = tx.send(Action::Render);
           },
           Err(e) => {
@@ -658,7 +673,7 @@ impl Component for Home {
             let _ =
               tx.send(Action::SetUnitFilePath { unit: unit.clone(), path: Err("could not be determined".into()) });
             let _ = tx.send(Action::Render);
-            error!("Error getting unit file path for {}: {}", unit.name, e);
+            error!("Error getting unit info for {}: {}", unit.name, e);
           },
         }
 
@@ -1034,6 +1049,13 @@ impl Component for Home {
         }
         self.refresh_filtered_units(); // copy the updated unit file path to the filtered list
       },
+      Action::SetUnitRuntimeInfo { unit, info } => {
+        if let Some(selected) = self.filtered_units.selected() {
+          if selected.unit.id() == unit {
+            self.runtime_info = Some(*info);
+          }
+        }
+      },
       Action::SetLogs { unit, logs } => {
         if let Some(selected) = self.filtered_units.selected() {
           if selected.unit.id() == unit {
@@ -1237,52 +1259,44 @@ impl Component for Home {
 
     let selected_item = self.filtered_units.selected();
 
-    let right_panel =
-      Layout::new(Direction::Vertical, [Constraint::Min(8), Constraint::Percentage(100)]).split(right_panel);
-    let details_panel = right_panel[0];
-    let logs_panel = right_panel[1];
+    // Details rows: base unit facts on the left, runtime stats (fetched lazily on selection)
+    // in a second column on wide terminals, or folded into a single "Runtime" row otherwise.
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let mut rows: Vec<(&str, Line)> = vec![];
+    let mut stat_rows: Vec<(&str, Line)> = vec![];
 
-    let details_block = Block::default().title("─Details").borders(Borders::ALL).border_type(BorderType::Rounded);
-    let details_panel_panes = Layout::new(Direction::Horizontal, [Constraint::Min(14), Constraint::Percentage(100)])
-      .split(details_block.inner(details_panel));
-    let props_pane = details_panel_panes[0];
-    let values_pane = details_panel_panes[1];
-
-    let props_lines = vec![
-      Line::from("Description: "),
-      Line::from("Enablement: "),
-      Line::from("Scope: "),
-      Line::from("Loaded: "),
-      Line::from("Active: "),
-      Line::from("Unit file: "),
-    ];
-
-    let details_text = if let Some(m) = selected_item {
-      fn line_color_string<'a>(value: String, color: Color) -> Line<'a> {
-        Line::from(vec![Span::styled(value, Style::default().fg(color))])
-      }
-
-      let load_color = match m.unit.load_state.as_str() {
-        "loaded" => Color::Green,
-        "not-found" => Color::Yellow,
-        "error" => Color::Red,
-        _ => Color::Reset,
-      };
+    if let Some(m) = selected_item {
+      rows.push(("Description", Line::from(m.unit.description.as_str())));
 
       let active_color = match m.unit.activation_state.as_str() {
         "active" => Color::Green,
-        "inactive" => Color::Reset,
         "failed" => Color::Red,
         _ => Color::Reset,
       };
+      let mut active_spans = vec![Span::styled(
+        format!("{} ({})", m.unit.activation_state, m.unit.sub_state),
+        Style::default().fg(active_color),
+      )];
+      if let Some(info) = &self.runtime_info {
+        if m.unit.activation_state == "failed" {
+          if let Some(result) = info.result.as_deref().filter(|r| *r != "success") {
+            let status = info.exec_main_status.filter(|&s| s != 0).map(|s| format!(", status={s}")).unwrap_or_default();
+            active_spans.push(Span::styled(format!(" ({result}{status})"), Style::default().fg(Color::Red)));
+          }
+        }
+        let since = if m.unit.activation_state == "active" {
+          info.active_enter_timestamp.as_deref()
+        } else {
+          info.inactive_enter_timestamp.as_deref()
+        };
+        if let Some((absolute, relative)) = since.and_then(format_systemd_timestamp) {
+          let relative = relative.map(|r| format!(" ({r})")).unwrap_or_default();
+          active_spans.push(Span::styled(format!(" since {absolute}{relative}"), dim));
+        }
+      }
+      rows.push(("Active", Line::from(active_spans)));
 
-      let active_state_value = format!("{} ({})", m.unit.activation_state, m.unit.sub_state);
-
-      let scope = match m.unit.scope {
-        UnitScope::Global => "Global",
-        UnitScope::User => "User",
-      };
-
+      // Enablement, scope, and any load problem share a line
       let enablement_state = m.unit.enablement_state.as_deref().unwrap_or("");
       let enablement_color = match enablement_state {
         "enabled" => Color::Green,
@@ -1290,32 +1304,116 @@ impl Component for Home {
         "masked" => Color::Red,
         _ => Color::Reset,
       };
+      let scope = match m.unit.scope {
+        UnitScope::Global => "global",
+        UnitScope::User => "user",
+      };
+      let mut state_spans = vec![
+        Span::styled(enablement_state, Style::default().fg(enablement_color)),
+        Span::styled(format!(" · {scope}"), dim),
+      ];
+      if m.unit.load_state != "loaded" {
+        let load_color = match m.unit.load_state.as_str() {
+          "not-found" => Color::Yellow,
+          "error" | "masked" | "bad-setting" => Color::Red,
+          _ => Color::Reset,
+        };
+        state_spans.push(Span::styled(format!(" · {}", m.unit.load_state), Style::default().fg(load_color)));
+      }
+      rows.push(("Enablement", Line::from(state_spans)));
 
-      let lines = vec![
-        colored_line(&m.unit.description, Color::Reset),
-        colored_line(enablement_state, enablement_color),
-        colored_line(scope, Color::Reset),
-        colored_line(&m.unit.load_state, load_color),
-        line_color_string(active_state_value, active_color),
+      rows.push((
+        "Unit file",
         match &m.unit.file_path {
           Some(Ok(file_path)) => Line::from(file_path.as_str()),
           Some(Err(e)) => colored_line(e, Color::Red),
           None => Line::from(""),
         },
-      ];
+      ));
 
-      lines
+      if let Some(info) = &self.runtime_info {
+        if let Some(pid) = info.main_pid {
+          stat_rows.push(("PID", Line::from(pid.to_string())));
+        }
+        if let Some(memory) = info.memory_current {
+          stat_rows.push(("Memory", Line::from(format_bytes(memory))));
+        }
+        if let Some(tasks) = info.tasks_current {
+          stat_rows.push(("Tasks", Line::from(tasks.to_string())));
+        }
+        if let Some(cpu) = info.cpu_usage_nsec.filter(|&n| n > 0) {
+          stat_rows.push(("CPU", Line::from(format_cpu_nsec(cpu))));
+        }
+        if let Some(restarts) = info.n_restarts.filter(|&n| n > 0) {
+          stat_rows
+            .push(("Restarts", Line::from(Span::styled(restarts.to_string(), Style::default().fg(Color::Yellow)))));
+        }
+        if let Some((absolute, relative)) = info.next_elapse.as_deref().and_then(format_systemd_timestamp) {
+          let relative = relative.map(|r| format!(" ({r})")).unwrap_or_default();
+          stat_rows.push(("Next run", Line::from(format!("{absolute}{relative}"))));
+        }
+      }
+    }
+
+    let two_columns = right_panel.width >= 90 && !stat_rows.is_empty();
+    if !two_columns && !stat_rows.is_empty() {
+      // Narrow terminal: fold the stats into one line to save vertical space
+      let mut spans: Vec<Span> = vec![];
+      for (i, (label, line)) in stat_rows.drain(..).enumerate() {
+        if i > 0 {
+          spans.push(Span::styled(" · ", dim));
+        }
+        spans.push(Span::styled(format!("{label} "), dim));
+        spans.extend(line.spans);
+      }
+      rows.push(("Runtime", Line::from(spans)));
+    }
+
+    // Size the details panel to its content instead of a fixed height
+    let details_content_height = rows.len().max(stat_rows.len()).max(1) as u16;
+    let right_panel =
+      Layout::new(Direction::Vertical, [Constraint::Length(details_content_height + 2), Constraint::Percentage(100)])
+        .split(right_panel);
+    let details_panel = right_panel[0];
+    let logs_panel = right_panel[1];
+
+    let details_block = Block::default().title("─Details").borders(Borders::ALL).border_type(BorderType::Rounded);
+    let details_inner = details_block.inner(details_panel);
+    f.render_widget(details_block, details_panel);
+
+    fn label_width(rows: &[(&str, Line)]) -> u16 {
+      rows.iter().map(|(label, _)| label.len() + 2).max().unwrap_or(0) as u16
+    }
+
+    fn split_labels_values<'a>(rows: Vec<(&'a str, Line<'a>)>) -> (Vec<Line<'a>>, Vec<Line<'a>>) {
+      rows.into_iter().map(|(label, value)| (Line::from(format!("{label}: ")), value)).unzip()
+    }
+
+    let panes = if two_columns {
+      Layout::new(
+        Direction::Horizontal,
+        [
+          Constraint::Length(label_width(&rows)),
+          Constraint::Fill(2),
+          Constraint::Length(label_width(&stat_rows) + 1),
+          Constraint::Fill(1),
+        ],
+      )
+      .split(details_inner)
     } else {
-      vec![]
+      Layout::new(Direction::Horizontal, [Constraint::Length(label_width(&rows)), Constraint::Fill(1)])
+        .split(details_inner)
     };
 
-    let paragraph = Paragraph::new(details_text).style(Style::default());
+    let (labels, values) = split_labels_values(rows);
+    f.render_widget(Paragraph::new(labels).alignment(ratatui::layout::Alignment::Right), panes[0]);
+    f.render_widget(Paragraph::new(values), panes[1]);
 
-    let props_widget = Paragraph::new(props_lines).alignment(ratatui::layout::Alignment::Right);
-    f.render_widget(props_widget, props_pane);
-
-    f.render_widget(paragraph, values_pane);
-    f.render_widget(details_block, details_panel);
+    if two_columns {
+      let (stat_labels, stat_values) = split_labels_values(stat_rows);
+      f.render_widget(Paragraph::new(stat_labels).alignment(ratatui::layout::Alignment::Right), panes[2]);
+      f.render_widget(Paragraph::new(stat_values), panes[3]);
+    }
 
     let log_lines = self
       .logs
@@ -1584,6 +1682,58 @@ impl Component for Home {
 ///
 /// systemd v255 changed the timestamp format from `-0700` to `-07:00` (RFC 3339).
 /// See: https://github.com/systemd/systemd/pull/29134
+/// Parses a systemd "show" timestamp like "Wed 2026-07-08 10:00:00 PDT" into a compact
+/// absolute form ("2026-07-08 10:00") and a relative one ("2d 4h ago" or "in 2d 4h").
+/// The relative part assumes the host clock/timezone roughly match ours, which can be
+/// slightly off in remote mode — good enough for a human-scale "how long ago".
+fn format_systemd_timestamp(timestamp: &str) -> Option<(String, Option<String>)> {
+  let mut parts = timestamp.split_whitespace();
+  let _weekday = parts.next()?;
+  let date = parts.next()?;
+  let time = parts.next()?;
+  let naive = chrono::NaiveDateTime::parse_from_str(&format!("{date} {time}"), "%Y-%m-%d %H:%M:%S").ok()?;
+  let absolute = naive.format("%Y-%m-%d %H:%M").to_string();
+  let seconds = chrono::Local::now().naive_local().signed_duration_since(naive).num_seconds();
+  let relative = if seconds >= 0 {
+    format!("{} ago", format_duration(seconds as u64))
+  } else {
+    format!("in {}", format_duration(seconds.unsigned_abs()))
+  };
+  Some((absolute, Some(relative)))
+}
+
+fn format_duration(seconds: u64) -> String {
+  match seconds {
+    s if s < 60 => format!("{s}s"),
+    s if s < 3600 => format!("{}m {}s", s / 60, s % 60),
+    s if s < 86400 => format!("{}h {}m", s / 3600, (s % 3600) / 60),
+    s => format!("{}d {}h", s / 86400, (s % 86400) / 3600),
+  }
+}
+
+fn format_bytes(bytes: u64) -> String {
+  const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
+  let mut value = bytes as f64;
+  let mut unit = 0;
+  while value >= 1024.0 && unit < UNITS.len() - 1 {
+    value /= 1024.0;
+    unit += 1;
+  }
+  if unit == 0 {
+    format!("{bytes}B")
+  } else {
+    format!("{value:.1}{}", UNITS[unit])
+  }
+}
+
+fn format_cpu_nsec(nsec: u64) -> String {
+  if nsec < 1_000_000_000 {
+    format!("{}ms", nsec / 1_000_000)
+  } else {
+    format_duration(nsec / 1_000_000_000)
+  }
+}
+
 fn parse_journalctl_timestamp(timestamp: &str) -> Option<String> {
   // %z accepts both "-0700" (systemd <v255) and "-07:00" (systemd >=v255)
   DateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S%z").ok().map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
