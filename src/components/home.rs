@@ -487,6 +487,11 @@ impl Home {
     };
 
     self.filtered_units.items = matching;
+    // Reset the visible-window offset whenever the items list is rebuilt.
+    // Without this, a stale offset from a larger list can leave items above the
+    // viewport hidden when the list shrinks (e.g. typing a query, clearing it,
+    // and retyping it can leave the first matches scrolled out of view).
+    *self.filtered_units.state.offset_mut() = 0;
 
     // try to select the same item we had selected before
     if let Some(previously_selected) = previously_selected {
