@@ -472,12 +472,9 @@ impl Home {
   }
 
   fn copy_with_toast(&mut self, text: &str) {
-    // Belt and suspenders: OSC 52 works over SSH but not in all terminals; the native clipboard
-    // works in all terminals but not over SSH.
-    crate::utils::copy_to_clipboard_osc52(text);
-    let _ = clipboard_anywhere::set_clipboard(text);
+    crate::utils::copy_to_clipboard(text);
     let n = text.chars().count();
-    self.show_toast(&format!("Copied {n} chars via OSC 52"));
+    self.show_toast(&format!("Copied {n} chars"));
   }
 
   fn show_toast(&mut self, msg: &str) {
