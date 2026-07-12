@@ -197,10 +197,21 @@ pub async fn get_unit_files(scope: Scope, services: &[String]) -> Result<Vec<Uni
 }
 
 // this takes like 5-10 ms on 13th gen Intel i7 (scope=all)
-pub async fn get_all_services(scope: Scope, services: &[String]) -> Result<Vec<UnitWithStatus>> {
+/// The result of fetching units. `refreshed_scopes` lists the scopes that were fetched
+/// successfully: a previously-seen unit that's absent from a refreshed scope is genuinely
+/// no longer loaded (e.g. a disabled unit gets unloaded when it stops), as opposed to a
+/// scope we couldn't query (e.g. user units when running as root).
+#[derive(Debug, Clone)]
+pub struct ServiceList {
+  pub units: Vec<UnitWithStatus>,
+  pub refreshed_scopes: Vec<UnitScope>,
+}
+
+pub async fn get_all_services(scope: Scope, services: &[String]) -> Result<ServiceList> {
   let start = std::time::Instant::now();
 
   let mut units = vec![];
+  let mut refreshed_scopes = vec![];
 
   let is_root = nix::unistd::geteuid().is_root();
 
@@ -208,20 +219,26 @@ pub async fn get_all_services(scope: Scope, services: &[String]) -> Result<Vec<U
     Scope::Global => {
       let system_units = get_services(UnitScope::Global, services).await?;
       units.extend(system_units);
+      refreshed_scopes.push(UnitScope::Global);
     },
     Scope::User => {
       let user_units = get_services(UnitScope::User, services).await?;
       units.extend(user_units);
+      refreshed_scopes.push(UnitScope::User);
     },
     Scope::All => {
       let (system_units, user_units) =
         tokio::join!(get_services(UnitScope::Global, services), get_services(UnitScope::User, services));
       units.extend(system_units?);
+      refreshed_scopes.push(UnitScope::Global);
 
       // Should always be able to get user units, but it may fail when running as root
       // or when the remote host has no running user manager
       match user_units {
-        Ok(user_units) => units.extend(user_units),
+        Ok(user_units) => {
+          units.extend(user_units);
+          refreshed_scopes.push(UnitScope::User);
+        },
         Err(e) if is_root => error!("Failed to get user units, ignoring because we're running as root: {e:?}"),
         Err(e) if ssh::remote_host().is_some() => {
           error!(
@@ -239,7 +256,7 @@ pub async fn get_all_services(scope: Scope, services: &[String]) -> Result<Vec<U
 
   info!("Loaded systemd services in {:?}", start.elapsed());
 
-  Ok(units)
+  Ok(ServiceList { units, refreshed_scopes })
 }
 
 async fn get_services(scope: UnitScope, services: &[String]) -> Result<Vec<UnitWithStatus>, anyhow::Error> {
@@ -798,7 +815,11 @@ pub fn journalctl_warns_about_limited_access(stderr: &str) -> bool {
 pub fn parse_journalctl_error(stderr: &str) -> LogDiagnostic {
   let stderr_lower = stderr.to_lowercase();
 
-  if stderr_lower.contains("permission denied") || stderr_lower.contains("access denied") {
+  if stderr_lower.contains("insufficient permissions") {
+    // older systemd (e.g. 239 on EL8): journalctl exits nonzero with "No journal files
+    // were opened due to insufficient permissions" instead of succeeding with a warning
+    LogDiagnostic::LimitedJournalAccess
+  } else if stderr_lower.contains("permission denied") || stderr_lower.contains("access denied") {
     LogDiagnostic::PermissionDenied { error: stderr.trim().to_string() }
   } else if stderr_lower.contains("no such file") || stderr_lower.contains("failed to open") {
     LogDiagnostic::JournalInaccessible { error: stderr.trim().to_string() }
@@ -860,6 +881,14 @@ mod tests {
     assert!(journalctl_warns_about_limited_access(stderr));
     assert!(!journalctl_warns_about_limited_access("-- No entries --"));
     assert!(!journalctl_warns_about_limited_access(""));
+  }
+
+  #[test]
+  fn test_parse_journalctl_error_old_systemd_insufficient_permissions() {
+    // real journalctl output from a user in no journal groups on systemd 239 (EL8),
+    // which exits nonzero instead of succeeding with a hint like newer versions
+    let diagnostic = parse_journalctl_error("No journal files were opened due to insufficient permissions.");
+    assert!(matches!(diagnostic, LogDiagnostic::LimitedJournalAccess));
   }
 
   #[test]

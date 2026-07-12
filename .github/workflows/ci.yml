@@ -66,7 +66,37 @@ jobs:
       run: cargo build
 
     - name: Run integration tests (local)
-      run: ./scripts/integration-test.py
+      run: ./tests/integration-test.py
 
     - name: Run integration tests (remote via ssh localhost)
-      run: ./scripts/integration-test.py --host localhost
+      run: ./tests/integration-test.py --host localhost
+
+  # Remote mode against real systemd versions (239→current) running as PID 1 in
+  # containers. See tests/remote-matrix.py; runs locally too.
+  systemd-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # real systemd versions, plus hostile hosts where remote mode must fail gracefully
+        distro: [rocky-8, ubuntu-20.04, ubuntu-22.04, debian-12, ubuntu-24.04, fedora-latest, no-systemd, dead-systemd]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache dependencies
+      uses: Swatinem/rust-cache@v2
+
+    - name: Install tmux and uv
+      run: |
+        sudo apt-get update && sudo apt-get install -y tmux
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+
+    - name: Build
+      run: cargo build
+
+    - name: Run systemd matrix tests
+      run: ./tests/remote-matrix.py --distro ${{ matrix.distro }}
