@@ -554,23 +554,23 @@ pub async fn kill_service(service: UnitId, signal: String, cancel_token: Cancell
 )]
 pub trait Manager {
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#StartUnit()) Call interface method `StartUnit`.
-  #[zbus(name = "StartUnit")]
+  #[zbus(name = "StartUnit", allow_interactive_auth)]
   fn start_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#StopUnit()) Call interface method `StopUnit`.
-  #[zbus(name = "StopUnit")]
+  #[zbus(name = "StopUnit", allow_interactive_auth)]
   fn stop_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#ReloadUnit()) Call interface method `ReloadUnit`.
-  #[zbus(name = "ReloadUnit")]
+  #[zbus(name = "ReloadUnit", allow_interactive_auth)]
   fn reload_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#RestartUnit()) Call interface method `RestartUnit`.
-  #[zbus(name = "RestartUnit")]
+  #[zbus(name = "RestartUnit", allow_interactive_auth)]
   fn restart_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#EnableUnitFiles()) Call interface method `EnableUnitFiles`.
-  #[zbus(name = "EnableUnitFiles")]
+  #[zbus(name = "EnableUnitFiles", allow_interactive_auth)]
   fn enable_unit_files(
     &self,
     files: Vec<String>,
@@ -579,7 +579,7 @@ pub trait Manager {
   ) -> zbus::Result<(bool, Vec<(String, String, String)>)>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#DisableUnitFiles()) Call interface method `DisableUnitFiles`.
-  #[zbus(name = "DisableUnitFiles")]
+  #[zbus(name = "DisableUnitFiles", allow_interactive_auth)]
   fn disable_unit_files(&self, files: Vec<String>, runtime: bool) -> zbus::Result<Vec<(String, String, String)>>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#ListUnits()) Call interface method `ListUnits`.
@@ -623,7 +623,7 @@ pub trait Manager {
   >;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#Reload()) Call interface method `Reload`.
-  #[zbus(name = "Reload")]
+  #[zbus(name = "Reload", allow_interactive_auth)]
   fn reload(&self) -> zbus::Result<()>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/latest/systemd.directives.html#ListUnitFilesByPatterns()) Call interface method `ListUnitFilesByPatterns`.
