@@ -10,6 +10,13 @@ use zbus::{proxy, zvariant, Connection};
 
 use crate::ssh;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnitKind {
+  Service,
+  Timer,
+  Other,
+}
+
 #[derive(Debug, Clone)]
 pub struct UnitWithStatus {
   pub name: String,                              // The primary unit name as string
@@ -50,6 +57,16 @@ pub struct UnitId {
 }
 
 impl UnitWithStatus {
+  pub fn kind(&self) -> UnitKind {
+    if self.name.ends_with(".service") {
+      UnitKind::Service
+    } else if self.name.ends_with(".timer") {
+      UnitKind::Timer
+    } else {
+      UnitKind::Other
+    }
+  }
+
   pub fn is_active(&self) -> bool {
     self.activation_state == "active"
   }
@@ -69,6 +86,8 @@ impl UnitWithStatus {
   pub fn short_name(&self) -> &str {
     if self.name.ends_with(".service") {
       &self.name[..self.name.len() - 8]
+    } else if self.name.ends_with(".timer") {
+      &self.name[..self.name.len() - 6]
     } else {
       &self.name
     }
@@ -283,6 +302,23 @@ pub struct UnitRuntimeInfo {
   pub result: Option<String>,
   pub exec_main_status: Option<i32>,
   pub next_elapse: Option<String>,
+  pub last_trigger: Option<String>,
+  pub triggered_unit: Option<String>,
+  pub timer_schedules: Vec<String>,
+  pub persistent: Option<bool>,
+  pub randomized_delay: Option<String>,
+  pub accuracy: Option<String>,
+}
+
+fn parse_timer_schedules(value: &str) -> Vec<String> {
+  value
+    .split(" }")
+    .filter_map(|entry| {
+      let entry = entry.trim().trim_start_matches('{').trim();
+      let schedule = entry.split("; next_elapse=").next()?.trim();
+      (!schedule.is_empty()).then(|| schedule.to_string())
+    })
+    .collect()
 }
 
 /// Fetches runtime properties (including the unit file path) for a unit in a single
@@ -290,7 +326,8 @@ pub struct UnitRuntimeInfo {
 /// Properties that don't apply to the unit type are simply omitted from the output.
 pub fn get_unit_runtime_info(service: &UnitId) -> Result<UnitRuntimeInfo> {
   const PROPERTIES: &str = "FragmentPath,MainPID,MemoryCurrent,TasksCurrent,NRestarts,CPUUsageNSec,\
-                            ActiveEnterTimestamp,InactiveEnterTimestamp,Result,ExecMainStatus,NextElapseUSecRealtime";
+                            ActiveEnterTimestamp,InactiveEnterTimestamp,Result,ExecMainStatus,NextElapseUSecRealtime,\
+                            LastTriggerUSec,Unit,TimersCalendar,TimersMonotonic,Persistent,RandomizedDelayUSec,AccuracyUSec";
   let mut args = vec!["--quiet", "show", "-p", PROPERTIES];
   args.push(&service.name);
 
@@ -329,6 +366,20 @@ pub fn get_unit_runtime_info(service: &UnitId) -> Result<UnitRuntimeInfo> {
       "Result" => info.result = non_empty(value),
       "ExecMainStatus" => info.exec_main_status = value.parse().ok(),
       "NextElapseUSecRealtime" => info.next_elapse = non_empty(value),
+      "LastTriggerUSec" => info.last_trigger = non_empty(value),
+      "Unit" => info.triggered_unit = non_empty(value),
+      "TimersCalendar" | "TimersMonotonic" => {
+        info.timer_schedules.extend(parse_timer_schedules(value));
+      },
+      "Persistent" => {
+        info.persistent = match value {
+          "yes" => Some(true),
+          "no" => Some(false),
+          _ => None,
+        }
+      },
+      "RandomizedDelayUSec" => info.randomized_delay = non_empty(value),
+      "AccuracyUSec" => info.accuracy = non_empty(value),
       _ => {},
     }
   }
@@ -904,6 +955,41 @@ mod tests {
   fn test_encode_as_dbus_object_path() {
     assert_eq!(encode_as_dbus_object_path("test.service"), "test_2eservice");
     assert_eq!(encode_as_dbus_object_path("test-with-hyphen.service"), "test_2dwith_2dhyphen_2eservice");
+  }
+
+  #[test]
+  fn unit_kind_and_short_name_follow_suffix() {
+    let mut unit = UnitWithStatus {
+      name: "backup.timer".into(),
+      scope: UnitScope::Global,
+      description: String::new(),
+      file_path: None,
+      load_state: "loaded".into(),
+      activation_state: "active".into(),
+      sub_state: "waiting".into(),
+      enablement_state: None,
+    };
+    assert_eq!(unit.kind(), UnitKind::Timer);
+    assert_eq!(unit.short_name(), "backup");
+
+    unit.name = "backup.service".into();
+    assert_eq!(unit.kind(), UnitKind::Service);
+    assert_eq!(unit.short_name(), "backup");
+  }
+
+  #[test]
+  fn parses_systemctl_timer_schedule_properties() {
+    assert_eq!(
+      parse_timer_schedules("{ OnCalendar=*-*-* 07..23:30:00 ; next_elapse=Sun 2026-07-12 13:30:00 PDT }"),
+      vec!["OnCalendar=*-*-* 07..23:30:00"]
+    );
+    assert_eq!(
+      parse_timer_schedules(
+        "{ OnBootSec=15min ; next_elapse=Sun 2026-07-12 13:30:00 PDT } { OnUnitActiveSec=1h ; next_elapse=Sun 2026-07-12 14:30:00 PDT }"
+      ),
+      vec!["OnBootSec=15min", "OnUnitActiveSec=1h"]
+    );
+    assert!(parse_timer_schedules("").is_empty());
   }
 
   #[test]

@@ -28,7 +28,7 @@ use crate::{
   action::Action,
   journal::{parse_json_log_line, LogEntry},
   systemd::{
-    self, diagnose_missing_logs, parse_journalctl_error, Scope, UnitFile, UnitId, UnitRuntimeInfo, UnitScope,
+    self, diagnose_missing_logs, parse_journalctl_error, Scope, UnitFile, UnitId, UnitKind, UnitRuntimeInfo, UnitScope,
     UnitWithStatus,
   },
 };
@@ -56,6 +56,9 @@ pub enum LogOrder {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum UnitStatus {
+  // Unit type
+  Service,
+  Timer,
   // Activation state
   Active,
   Inactive,
@@ -71,7 +74,9 @@ pub enum UnitStatus {
 }
 
 impl UnitStatus {
-  const ALL: [UnitStatus; 9] = [
+  const ALL: [UnitStatus; 11] = [
+    UnitStatus::Service,
+    UnitStatus::Timer,
     UnitStatus::Active,
     UnitStatus::Inactive,
     UnitStatus::Failed,
@@ -91,6 +96,8 @@ impl UnitStatus {
 
   fn label(&self) -> &'static str {
     match self {
+      UnitStatus::Service => "services",
+      UnitStatus::Timer => "timers",
       UnitStatus::Active => "active",
       UnitStatus::Inactive => "inactive",
       UnitStatus::Failed => "failed",
@@ -105,6 +112,8 @@ impl UnitStatus {
 
   fn shortcut_key(&self) -> KeyCode {
     match self {
+      UnitStatus::Service => KeyCode::Char('v'),
+      UnitStatus::Timer => KeyCode::Char('t'),
       UnitStatus::Active => KeyCode::Char('c'),
       UnitStatus::Inactive => KeyCode::Char('i'),
       UnitStatus::Failed => KeyCode::Char('f'),
@@ -114,6 +123,14 @@ impl UnitStatus {
       UnitStatus::Masked => KeyCode::Char('m'),
       UnitStatus::Loaded => KeyCode::Char('l'),
       UnitStatus::NotFound => KeyCode::Char('u'),
+    }
+  }
+
+  fn unit_kind_bucket(kind: UnitKind) -> Option<UnitStatus> {
+    match kind {
+      UnitKind::Service => Some(UnitStatus::Service),
+      UnitKind::Timer => Some(UnitStatus::Timer),
+      UnitKind::Other => None,
     }
   }
 
@@ -156,6 +173,7 @@ impl UnitStatus {
 }
 
 const STATUS_CATEGORIES: &[(&str, &[UnitStatus])] = &[
+  ("Type", &[UnitStatus::Service, UnitStatus::Timer]),
   ("Activation", &[UnitStatus::Active, UnitStatus::Inactive, UnitStatus::Failed]),
   ("Enablement", &[UnitStatus::Enabled, UnitStatus::Disabled, UnitStatus::Static, UnitStatus::Masked]),
   ("Load", &[UnitStatus::Loaded, UnitStatus::NotFound]),
@@ -570,6 +588,8 @@ impl Home {
       .all_units
       .values()
       .filter(|u| {
+        let passes_type =
+          UnitStatus::unit_kind_bucket(u.kind()).is_none_or(|kind| self.filtered_statuses.contains(&kind));
         let passes_activation = self.filtered_statuses.contains(&UnitStatus::activation_bucket(&u.activation_state));
 
         let passes_enablement = match u.enablement_state.as_deref() {
@@ -584,7 +604,7 @@ impl Home {
 
         let passes_load = self.filtered_statuses.contains(&UnitStatus::load_bucket(&u.load_state));
 
-        passes_activation && passes_enablement && passes_load
+        passes_type && passes_activation && passes_enablement && passes_load
       })
       .collect();
     self.status_hidden_count = self.all_units.len() - status_filtered_units.len();
@@ -918,6 +938,10 @@ impl Component for Home {
 
     if matches!(key.code, KeyCode::Char('?')) || matches!(key.code, KeyCode::F(1)) {
       return vec![Action::ToggleHelp, Action::Render];
+    }
+
+    if matches!(key.code, KeyCode::F(2)) {
+      return vec![Action::EnterMode(Mode::StatusFilter)];
     }
 
     match key.code {
@@ -1351,6 +1375,17 @@ impl Component for Home {
               ),
             ];
 
+            if selected.unit.kind() == UnitKind::Timer {
+              if let Some(target) = self.runtime_info.as_ref().and_then(|info| info.triggered_unit.as_ref()) {
+                let label = format!("Start {target} now");
+                menu_items.push(MenuItem::new(
+                  &label,
+                  Action::StartService(UnitId { name: target.clone(), scope: selected.unit.scope }),
+                  Some(KeyCode::Char('g')),
+                ));
+              }
+            }
+
             if let Some(Ok(file_path)) = &selected.unit.file_path {
               menu_items.push(MenuItem::new("Copy unit file path", Action::CopyUnitFilePath, Some(KeyCode::Char('c'))));
               menu_items.push(MenuItem::new(
@@ -1550,10 +1585,6 @@ impl Component for Home {
       Span::styled(s, Style::default().fg(color))
     }
 
-    fn colored_line(value: &str, color: Color) -> Line<'_> {
-      Line::from(vec![Span::styled(value, Style::default().fg(color))])
-    }
-
     let rect = if self.show_logger {
       let chunks = Layout::new(Direction::Vertical, Constraint::from_percentages([50, 50])).split(rect);
 
@@ -1597,9 +1628,16 @@ impl Component for Home {
       .map(|m| {
         let color = unit_color(&m.unit);
         let name = m.unit.short_name();
+        let kind = match m.unit.kind() {
+          UnitKind::Timer => " timer",
+          UnitKind::Service | UnitKind::Other => "",
+        };
 
         if m.match_indices.is_empty() {
-          ListItem::new(colored_line(name, color))
+          ListItem::new(Line::from(vec![
+            Span::styled(name, Style::default().fg(color)),
+            Span::styled(kind, Style::default().fg(theme.muted).add_modifier(Modifier::DIM)),
+          ]))
         } else {
           // Build spans with highlighted matched characters
           let mut spans = Vec::new();
@@ -1624,6 +1662,7 @@ impl Component for Home {
           if last_end < name.len() {
             spans.push(Span::styled(&name[last_end..], Style::default().fg(color)));
           }
+          spans.push(Span::styled(kind, Style::default().fg(theme.muted).add_modifier(Modifier::DIM)));
 
           ListItem::new(Line::from(spans))
         }
@@ -1642,9 +1681,9 @@ impl Component for Home {
             Style::default()
           })
           .title(if self.is_status_filter_active() {
-            format!("─Services ({} hidden)", self.status_hidden_count)
+            format!("─Units ({} hidden)", self.status_hidden_count)
           } else {
-            "─Services".to_string()
+            "─Units".to_string()
           }),
       )
       .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
@@ -1754,21 +1793,55 @@ impl Component for Home {
           let relative = relative.map(|r| format!(" ({r})")).unwrap_or_default();
           stat_rows.push(("Next run", Line::from(format!("{absolute}{relative}"))));
         }
+        if m.unit.kind() == UnitKind::Timer {
+          if let Some((absolute, relative)) = info.last_trigger.as_deref().and_then(format_systemd_timestamp) {
+            let relative = relative.map(|r| format!(" ({r})")).unwrap_or_default();
+            stat_rows.push(("Last run", Line::from(format!("{absolute}{relative}"))));
+          }
+          if let Some(unit) = &info.triggered_unit {
+            stat_rows.push(("Activates", Line::from(unit.as_str())));
+          }
+          for schedule in &info.timer_schedules {
+            stat_rows.push(("Schedule", Line::from(schedule.as_str())));
+          }
+          let mut policy = Vec::new();
+          if info.persistent == Some(true) {
+            policy.push("persistent".to_string());
+          }
+          if let Some(delay) = &info.randomized_delay {
+            if delay != "0" {
+              policy.push(format!("random delay {delay}"));
+            }
+          }
+          if let Some(accuracy) = &info.accuracy {
+            policy.push(format!("accuracy {accuracy}"));
+          }
+          if !policy.is_empty() {
+            stat_rows.push(("Timing", Line::from(policy.join(" · "))));
+          }
+        }
       }
     }
 
+    let timer_details = selected_item.is_some_and(|m| m.unit.kind() == UnitKind::Timer);
     let two_columns = right_panel.width >= 90 && !stat_rows.is_empty();
     if !two_columns && !stat_rows.is_empty() {
-      // Narrow terminal: fold the stats into one line to save vertical space
-      let mut spans: Vec<Span> = vec![];
-      for (i, (label, line)) in stat_rows.drain(..).enumerate() {
-        if i > 0 {
-          spans.push(Span::styled(" · ", dim));
+      if timer_details {
+        // Timer metadata is the main reason to select a timer. Keep it readable on
+        // narrow terminals instead of folding the whole schedule into one clipped line.
+        rows.append(&mut stat_rows);
+      } else {
+        // Narrow terminal: fold service stats into one line to save vertical space.
+        let mut spans: Vec<Span> = vec![];
+        for (i, (label, line)) in stat_rows.drain(..).enumerate() {
+          if i > 0 {
+            spans.push(Span::styled(" · ", dim));
+          }
+          spans.push(Span::styled(format!("{label} "), dim));
+          spans.extend(line.spans);
         }
-        spans.push(Span::styled(format!("{label} "), dim));
-        spans.extend(line.spans);
+        rows.push(("Runtime", Line::from(spans)));
       }
-      rows.push(("Runtime", Line::from(spans)));
     }
 
     fn label_width(rows: &[(&str, Line)]) -> u16 {
@@ -1939,7 +2012,7 @@ impl Component for Home {
     let paragraph = Paragraph::new(log_lines)
       .block(
         Block::default()
-          .title(format!("─Service Logs [{order_label}; ctrl+r to reverse]"))
+          .title(format!("─Unit Logs [{order_label}; ctrl+r to reverse]"))
           .borders(Borders::ALL)
           .border_type(BorderType::Rounded),
       )
@@ -2073,14 +2146,14 @@ impl Component for Home {
         Line::from(vec![primary("PageUp"), Span::raw(" / "), primary("PageDown"), Span::raw(" scroll the logs")]),
         Line::from(vec![primary("Home"), Span::raw(" / "), primary("End"), Span::raw(" scroll to top/bottom")]),
         Line::from(vec![primary("Enter"), Span::raw(" or "), primary("Space"), Span::raw(" open the action menu")]),
-        Line::from(vec![primary("f"), Span::raw(" filter services by status")]),
+        Line::from(vec![primary("f"), Span::raw(" / "), primary("F2"), Span::raw(" filter units")]),
         Line::from(vec![primary("?"), Span::raw(" / "), primary("F1"), Span::raw(" open this help pane")]),
         Line::from(vec![primary("mouse"), Span::raw(": drag to select+copy logs, wheel to scroll")]),
         Line::from(""),
         Line::from(Span::styled("Vim Style Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
         Line::from(""),
         Line::from(vec![primary("j"), Span::raw(" / "), primary("k"), Span::raw(" navigate down/up")]),
-        Line::from(vec![primary("g"), Span::raw(" / "), primary("G"), Span::raw(" jump to first/last service")]),
+        Line::from(vec![primary("g"), Span::raw(" / "), primary("G"), Span::raw(" jump to first/last unit")]),
         Line::from(vec![primary("ctrl+U"), Span::raw(" / "), primary("ctrl+D"), Span::raw(" scroll the logs")]),
       ];
 
@@ -2168,10 +2241,9 @@ impl Component for Home {
     let version_rect = help_line_rects[1];
 
     let help_line = match self.mode {
-      Mode::Search => Line::from(span("Show actions: <enter>", theme.primary)),
+      Mode::Search => Line::from(span("Actions: enter | Filter: F2 | Navigate: tab", theme.primary)),
       Mode::ServiceList => {
-        let mut spans =
-          vec![span("Show actions: <enter> | Open logs in pager: o | Edit unit file: e | Filter: f", theme.primary)];
+        let mut spans = vec![span("Actions: enter | Logs: o | Edit: e | Filter: f/F2", theme.primary)];
         if self.is_status_filter_active() {
           spans.push(Span::styled(" ●", Style::default().fg(theme.accent)));
         }
@@ -2192,7 +2264,8 @@ impl Component for Home {
 
     let title = format!("Actions for {}", selected_unit_name);
     let mut min_width = title.len() as u16 + 2; // title plus corners
-    min_width = min_width.max(24); // hack: the width of the longest action name + 2
+    let item_width = self.menu_items.items.iter().map(|item| item.name.chars().count() as u16 + 5).max().unwrap_or(0);
+    min_width = min_width.max(item_width);
 
     let popup_width = min_width.min(f.area().width);
 
@@ -2248,7 +2321,7 @@ impl Component for Home {
           .borders(Borders::ALL)
           .border_type(BorderType::Rounded)
           .border_style(Style::default().fg(theme.accent))
-          .title("─Status filter"),
+          .title("─Unit filters"),
       );
 
       f.render_widget(Clear, popup);
