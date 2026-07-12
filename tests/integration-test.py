@@ -207,7 +207,8 @@ def test_user_bus_is_user_bus(binary: str, host: str) -> None:
     time.sleep(1)
     result_screen = capture()
     check("sctui-user-test.service selected", "sctui-user-test.service" in result_screen, result_screen)
-    check("scope shows User", "User" in result_screen, result_screen)
+    # scope is shown on the Enablement line, e.g. "disabled · user"
+    check("scope shows user", "· user" in result_screen, result_screen)
 
 
 def test_root_action_round_trip(binary: str, root_host: str) -> None:
