@@ -57,7 +57,6 @@ LOCAL_ONLY = {
     "reitunez.service",
     "systemctl-tui-polkit-test.service",
     "test-dummy.service",
-    "ttyd.service",
 }
 
 
