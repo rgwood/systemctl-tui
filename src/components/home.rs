@@ -1768,6 +1768,7 @@ impl Component for Home {
 
     let (labels, mut values) = split_labels_values(rows);
     self.explanation_button_rect = None;
+    let mut explanation_description = None;
     if explanation.is_some() && !values.is_empty() && panes[1].width > 0 {
       let (separator, hint) = match panes[1].width {
         1 => ("", "?"),
@@ -1776,7 +1777,7 @@ impl Component for Home {
       };
       let hint_width = Line::from(format!("{separator}{hint}")).width() as u16;
       let description_width = panes[1].width.saturating_sub(hint_width);
-      let description = values[0].spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+      let full_description = values[0].spans.iter().map(|s| s.content.as_ref()).collect::<String>();
 
       fn truncate_to_width(text: &str, width: u16) -> String {
         if width == 0 {
@@ -1799,9 +1800,12 @@ impl Component for Home {
         truncated
       }
 
-      let description = truncate_to_width(&description, description_width);
-      let button_width = (Line::from(format!("{description}{separator}{hint}")).width() as u16).min(panes[1].width);
-      let button_rect = Rect { x: panes[1].x, y: panes[1].y, width: button_width, height: 1 };
+      let description = truncate_to_width(&full_description, description_width);
+      let description_width = Line::from(description.as_str()).width() as u16;
+      let separator_width = Line::from(separator).width() as u16;
+      let hint_width = Line::from(hint).width() as u16;
+      let button_rect =
+        Rect { x: panes[1].x + description_width + separator_width, y: panes[1].y, width: hint_width, height: 1 };
       let hovered = button_rect.contains(self.mouse_position);
       let mut hint_style = Style::default().fg(theme.accent).add_modifier(Modifier::UNDERLINED);
       if hovered {
@@ -1809,9 +1813,19 @@ impl Component for Home {
       }
       values[0] = Line::from(vec![Span::raw(description), Span::raw(separator), Span::styled(hint, hint_style)]);
       self.explanation_button_rect = Some(button_rect);
+      explanation_description = Some((full_description, description_width));
     }
 
     let explanation_row = self.explanation_button_rect.map(|_| 0);
+    if let Some((description, width)) = explanation_description {
+      if width > 0 {
+        let rect = Rect { x: panes[1].x, y: panes[1].y, width, height: 1 };
+        if rect.contains(self.mouse_position) {
+          values[0].spans[0].style = values[0].spans[0].style.add_modifier(Modifier::BOLD);
+        }
+        self.copyable_fields.push((rect, description));
+      }
+    }
     register_copyable_fields(&mut values, panes[1], self.mouse_position, explanation_row, &mut self.copyable_fields);
     f.render_widget(Paragraph::new(labels).alignment(ratatui::layout::Alignment::Right), panes[0]);
     f.render_widget(Paragraph::new(values), panes[1]);
