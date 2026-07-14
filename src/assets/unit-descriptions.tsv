@@ -1,0 +1,455 @@
+# Baked-in plain-English explanations of common systemd units.
+# Format: unit-name<TAB>scope<TAB>description. Scope is system, user, or both.
+# Templated units use the template name (foo@.service).
+# Generated with LLM assistance; regenerate/extend via scripts/harvest-units.py.
+-.slice	both	The root of systemd's control-group hierarchy. Every process managed by systemd belongs to this slice or one beneath it.
+ModemManager.service	system	Manages mobile-broadband modems and provides a D-Bus API for configuring cellular connections. Network managers use it to discover modems, unlock SIMs, and establish data connections.
+NetworkManager-dispatcher.service	system	Runs dispatcher scripts when NetworkManager reports events such as an interface connecting or disconnecting. Administrators and packages use these hooks to react to network state changes.
+NetworkManager-wait-online.service	system	Waits until NetworkManager reports that startup networking is complete, then allows units ordered after `network-online.target` to proceed. It delays those units when required connections are still activating.
+NetworkManager.service	system	Manages Ethernet, Wi-Fi, mobile-broadband, and VPN connections. Desktop settings, `nmcli`, and other clients control connections through its D-Bus API.
+accounts-daemon.service	system	Provides user-account information such as names, avatars, and login history through the AccountsService D-Bus API. Login screens and settings panels use it to display and manage local users.
+acpid.service	system	Handles ACPI events from the kernel, such as power-button presses and laptop-lid changes. It runs actions configured for matching hardware events.
+acpid.socket	system	Accepts ACPI event connections and activates `acpid.service` when they arrive.
+alsa-restore.service	system	Restores saved ALSA sound-card mixer settings during boot. This preserves volume, mute, and other hardware controls across restarts.
+alsa-state.service	system	Runs the ALSA state daemon to save and restore sound-card mixer settings as hardware appears and disappears. It preserves controls such as volume and mute across restarts.
+anacron.service	system	Runs periodic jobs that became due while the computer was powered off. It reads the system anacrontab and records completion timestamps to avoid running a job more often than configured.
+anacron.timer	system	Checks periodically for overdue jobs and starts `anacron.service`.
+apache2.service	system	Runs the Apache HTTP server under its Debian and Ubuntu unit name. It serves configured websites and can proxy requests to application servers.
+app.slice	user	Groups a user's application processes so systemd can account for and manage their resources separately. Desktop session managers commonly place launched applications beneath this slice.
+apparmor.service	system	Loads AppArmor security profiles that restrict which files, capabilities, and other resources programs may access. It prepares the kernel policy used to confine profiled processes.
+apport-autoreport.path	system	Watches for pending Ubuntu crash reports and starts `apport-autoreport.service` when they appear. This lets reports be processed as soon as they are written to the crash directory.
+apport-autoreport.service	system	Processes pending Ubuntu crash reports through Apport's automatic reporting workflow. It reads reports collected after crashes and submits eligible diagnostic data to Ubuntu's error tracker.
+apport-autoreport.timer	system	Periodically starts automatic processing of pending Ubuntu crash reports.
+apport.service	system	Collects diagnostic information when a program crashes and prepares an Ubuntu crash report. The report combines the crash data with package, process, and system details used for diagnosis.
+apt-daily-upgrade.service	system	Installs available updates and performs package cleanup through APT's unattended-upgrade machinery. It is normally started by `apt-daily-upgrade.timer` and uses the same APT configuration as manually initiated upgrades.
+apt-daily-upgrade.timer	system	Schedules the daily APT unattended-upgrade and cleanup job.
+apt-daily.service	system	Refreshes APT package metadata and downloads package updates in the background. It is normally started by `apt-daily.timer`, making current repository information available to other package-management tools.
+apt-daily.timer	system	Schedules the daily APT package download job.
+at-spi-dbus-bus.service	user	Provides the D-Bus accessibility bus used by assistive technologies and desktop applications. Screen readers and other accessibility tools use it to inspect and interact with application interfaces.
+atd.service	system	Runs jobs queued by the `at` and `batch` commands at their requested times. Unlike cron jobs, these are one-time commands stored in the system's `at` queue.
+auditd.service	system	Receives Linux Audit events from the kernel and writes them to the audit log. Audit rules determine which security-relevant system calls, file accesses, and account events it records.
+auth-rpcgss-module.service	system	Loads the kernel module used for Kerberos-authenticated NFS and other RPCSEC_GSS traffic. NFS setup orders this unit before services that require GSS-authenticated RPC.
+autovt@.service	system	Starts a text login prompt on a virtual terminal when that terminal is first accessed. Each instance is tied to a console such as `tty2` and launches a getty there.
+avahi-daemon.service	system	Implements multicast DNS and DNS service discovery on the local network. Applications use it to advertise and find devices and services such as printers without conventional DNS configuration.
+avahi-daemon.socket	system	Receives local Avahi client connections and activates the Avahi daemon on demand.
+background.slice	user	Groups low-priority background services in a user's systemd manager for resource management. Desktop components can place non-interactive work here so it receives different scheduling and memory policy from foreground applications.
+basic.target	both	Marks the point in startup when basic services, sockets, paths, and timers are available.
+binfmt-support.service	system	Registers handlers that let the kernel launch additional executable formats through `binfmt_misc`. Configured interpreters can then handle files such as foreign binaries or bytecode when they are executed directly.
+blockdev@.target	system	Provides an ordering point for preparation of the block device named by the unit instance.
+bluetooth.service	system	Runs the BlueZ daemon, which manages Bluetooth adapters, pairing, devices, and connections. Desktop settings and applications control Bluetooth through its D-Bus interfaces.
+bluetooth.target	both	Groups units needed to provide Bluetooth support.
+bolt.service	system	Manages authorization and enrollment of Thunderbolt devices such as docks and external GPUs. Desktop settings use its D-Bus API to approve devices on systems with Thunderbolt security enabled.
+boot-complete.target	system	Marks a boot as successfully completed after any configured boot-health checks have passed.
+chrony-wait.service	system	Waits for chronyd to synchronize the system clock before allowing time-dependent units to proceed. Units that require an accurate clock can order themselves after it.
+chrony.service	system	Runs chronyd to synchronize the system clock with NTP servers. Chronyd continuously estimates clock drift and corrects the local time while the machine is running.
+chronyd.service	system	Runs chronyd to synchronize the system clock with NTP servers and, when configured, provide time to other machines. It continuously estimates clock drift and corrects the local time.
+cloud-config.service	system	Runs cloud-init's configuration stage after networking is available. Its modules handle settings such as locale, package sources, and SSH configuration supplied by the cloud data source.
+cloud-config.target	system	Marks cloud-init's configuration stage as available to dependent units.
+cloud-final.service	system	Runs cloud-init's final modules after networking and most system services are available. These include package installation, configuration-management integrations, and user-provided startup scripts.
+cloud-init-local.service	system	Runs cloud-init's early local stage before networking is configured. It discovers the instance data source and can apply network configuration needed for later stages.
+cloud-init.service	system	Runs cloud-init modules that require configured networking and consume network-provided instance metadata. It applies the instance's main initialization configuration before the final cloud-init stage.
+cloud-init.target	system	Groups the cloud-init stages so other units can order themselves after instance initialization.
+colord-session.service	user	Provides color-management services to applications in a desktop user session. It connects session applications with colord's device profiles and color transformations.
+colord.service	system	Stores color profiles and associates them with displays, printers, scanners, and cameras. Desktop applications use its D-Bus API to apply consistent color calibration across devices.
+configure-printer@.service	system	Configures a newly discovered printer for use through CUPS. Each instance creates or updates the local queue for one detected printer.
+connman.service	system	Manages wired, Wi-Fi, and mobile network connections through the ConnMan daemon. Clients configure and monitor connections through its D-Bus API.
+console-getty.service	system	Provides a text login prompt on a container or system console. It attaches a getty to `/dev/console` when that console is suitable for interactive login.
+console-setup.service	system	Applies the configured keyboard layout and font to Linux virtual consoles. This determines how keys and characters behave outside the graphical desktop.
+container-getty@.service	system	Provides a text login prompt on an additional terminal exposed by a container manager. Each instance attaches a getty to one container pseudo-terminal.
+containerd.service	system	Runs the containerd runtime, which manages container images, storage, lifecycle, and low-level runtimes. Higher-level tools such as Docker and Kubernetes ask it to create containers, manage snapshots, and invoke an OCI runtime such as `runc`.
+cron.service	system	Runs commands at scheduled times from system and user crontabs. It wakes at the configured minute, hour, day, and month fields and launches matching jobs.
+crond.service	system	Runs commands at scheduled times from system and user crontabs under Fedora and RHEL-family distributions. It wakes at the configured time fields and launches matching jobs.
+cryptsetup-pre.target	system	Provides an ordering point before local encrypted volumes are unlocked.
+cryptsetup.target	system	Groups local encrypted block devices that must be unlocked during startup.
+ctrl-alt-del.target	system	Handles a Ctrl+Alt+Delete request, normally by starting a system reboot. Systemd activates this target when it receives the corresponding key sequence or signal.
+cups-browsed.service	system	Discovers shared and driverless IPP printers on the network. It creates and removes local CUPS queues as advertised printers appear and disappear.
+cups.path	system	Watches CUPS's scheduler state file and starts `cups.service` when that file exists. This lets saved scheduler state reactivate the print service through systemd path activation.
+cups.service	system	Runs the CUPS print server, managing print queues and communicating with local and network printers. Applications submit jobs and query printer status through its IPP interface.
+cups.socket	system	Listens for CUPS client connections and activates the print scheduler on demand.
+dbus-broker.service	both	Runs the D-Bus message broker used by services and applications in the corresponding system or user manager. It routes method calls, replies, and signals between processes and starts D-Bus-activated services when first requested.
+dbus-broker.socket	both	Listens for D-Bus connections and activates `dbus-broker.service` in the corresponding system or user manager.
+dbus.service	both	Runs the D-Bus message bus used by services and applications in the corresponding system or user manager. It routes method calls, replies, and signals between processes and starts D-Bus-activated services when first requested.
+dbus.socket	both	Listens for D-Bus connections and activates the configured message-bus service in the corresponding system or user manager.
+dconf.service	user	Provides the dconf settings database used by GNOME and other desktop applications. Applications access shared preferences through this service and are notified when settings change.
+debug-shell.service	system	Starts a root shell on a dedicated virtual terminal for early-boot debugging. Systemd places the unauthenticated shell on the configured debug TTY so startup problems can be inspected directly.
+default.target	both	Names the default collection of units started by a system or user systemd manager.
+dirmngr.service	user	Handles certificate revocation checks and retrieves keys and certificates from network servers for GnuPG. GnuPG clients use it for keyserver, LDAP, OCSP, and certificate revocation list access.
+dirmngr.socket	user	Accepts GnuPG network-helper requests and activates `dirmngr.service`.
+display-manager.service	system	Starts the configured graphical login manager, such as GDM, SDDM, or LightDM. The manager presents the login screen and launches the selected desktop session after authentication.
+dnf-makecache.service	system	Refreshes cached package and repository metadata used by DNF. Its timer starts it periodically so package searches and update checks can use current repository information.
+dnf-makecache.timer	system	Schedules periodic refreshes of DNF package and repository metadata.
+docker.service	system	Runs the Docker daemon, which builds images and creates and manages containers. The Docker CLI and API clients send it requests over its Unix socket or configured network endpoints.
+docker.socket	system	Listens for Docker API requests and activates the Docker daemon on demand.
+dpkg-db-backup.service	system	Creates a backup of the Debian package database. Its timer runs it periodically so package status and metadata can be recovered after database corruption.
+dpkg-db-backup.timer	system	Schedules regular backups of the Debian package database.
+e2scrub@.service	system	Checks an ext-family filesystem's metadata while it remains mounted, using an LVM snapshot when required. Each instance examines one filesystem and reports problems without modifying the live filesystem.
+e2scrub_all.service	system	Starts online metadata checks for all eligible ext-family filesystems. It discovers suitable mounts and invokes the per-filesystem scrub operation for each one.
+e2scrub_all.timer	system	Periodically schedules online metadata checks for eligible ext-family filesystems.
+e2scrub_fail@.service	system	Reports a failed ext4 online metadata check for the filesystem named by the unit instance. It records the scrub failure so an administrator can investigate and perform an offline repair if needed.
+e2scrub_reap.service	system	Removes stale LVM snapshots left by interrupted ext4 online metadata checks. This reclaims snapshot storage after a scrub fails or is terminated before cleanup.
+emergency.service	system	Starts the minimal emergency shell used to repair a system when normal startup cannot continue. It runs with very few filesystems or supporting services available.
+emergency.target	system	Provides the most minimal recovery environment, with an emergency shell and few other services.
+evolution-addressbook-factory.service	user	Provides contacts and address books to Evolution and other applications using Evolution Data Server. It creates backend processes for local and remote address-book sources requested by clients.
+evolution-calendar-factory.service	user	Provides calendars, tasks, and memos to Evolution and other applications using Evolution Data Server. It creates backend processes for configured local and remote calendar sources.
+evolution-source-registry.service	user	Tracks the accounts and data sources used by Evolution Data Server for mail, calendars, and contacts. Other Evolution Data Server components query it to find each source and its configuration.
+exit.target	both	Stops a user systemd manager or container when reached.
+filter-chain.service	user	Runs PipeWire's filter-chain daemon for configured audio-processing filters. It creates audio nodes from filter graphs such as equalizers, mixers, and channel converters.
+final.target	system	Provides a late shutdown ordering point for services that must run immediately before systemd exits.
+firewalld.service	system	Manages firewall rules and network zones dynamically through nftables or iptables backends. Network managers and administration tools use its D-Bus API to adjust rules without rebuilding the entire firewall.
+first-boot-complete.target	system	Marks completion of first-boot provisioning and machine initialization.
+flatpak-portal.service	user	Mediates Flatpak requests to desktop portals and manages access to portal interfaces. Sandboxed applications reach desktop capabilities such as file choosers and notifications through this service.
+flatpak-session-helper.service	user	Provides Flatpak session services such as application monitoring and permission integration. It tracks sandboxed applications in the desktop session and connects them with Flatpak's permission machinery.
+flatpak-system-helper.service	system	Performs privileged Flatpak installation and repository operations requested by unprivileged clients. The user-facing Flatpak process calls it over D-Bus when changing system-wide installations.
+fprintd.service	system	Provides fingerprint-reader enrollment and verification through a D-Bus API. Login managers, authentication modules, and desktop settings use it to work with supported readers.
+fstrim.service	system	Sends discard requests for unused blocks on mounted filesystems listed for periodic trimming. This informs supporting SSDs and thin-provisioned storage which blocks no longer contain live data.
+fstrim.timer	system	Schedules a periodic trim of unused filesystem blocks on supporting storage devices.
+fwupd-refresh.service	system	Downloads current firmware metadata from configured fwupd remotes and refreshes the available-update cache. Desktop software centers and `fwupdmgr` use that cache when showing firmware updates.
+fwupd-refresh.timer	system	Schedules periodic refreshes of firmware metadata.
+fwupd.service	system	Detects supported hardware and stages or installs firmware updates supplied through LVFS and other configured remotes. Desktop software centers and `fwupdmgr` communicate with it over D-Bus to inspect devices and apply updates.
+gcr-ssh-agent.service	user	Provides an SSH agent backed by GCR so desktop keyring credentials can be used for SSH authentication. SSH clients contact it through the agent socket when they need a key to sign an authentication request.
+gcr-ssh-agent.socket	user	Listens for SSH-agent clients and activates the GCR-backed SSH agent. The socket path can be used as `SSH_AUTH_SOCK` by programs in the desktop session.
+gdm.service	system	Runs the GNOME Display Manager, which presents the graphical login screen and starts desktop sessions. It authenticates users and launches the selected GNOME or other installed session.
+gdm3.service	system	Runs the Debian and Ubuntu packaging of GNOME Display Manager for graphical logins and desktop sessions. It authenticates users and launches the desktop session selected at the login screen.
+geoclue.service	system	Provides applications with location estimates from configured network and hardware location sources. Desktop applications request location data through its D-Bus API, subject to the configured access policy.
+getty-pre.target	system	Provides an ordering point before text login prompts are started.
+getty-static.service	system	Starts fallback text login prompts on tty2 through tty6 when D-Bus and systemd-logind are unavailable.
+getty.target	system	Groups the system's local text login prompts.
+getty@.service	system	Provides a text login prompt on a Linux virtual console, with one instance for each console. It runs `agetty`, which reads the login name and hands authentication to the system login program.
+gnome-initial-setup-first-login.service	user	Runs GNOME's first-login setup assistant for an existing user account. It guides the user through initial desktop settings such as language, privacy, and online accounts.
+gnome-keyring-daemon.service	user	Stores passwords, keys, and other secrets for a GNOME user session and performs cryptographic operations with them. Applications use its Secret Service and related interfaces to retrieve credentials without storing them directly.
+gnome-keyring-daemon.socket	user	Accepts requests for GNOME Keyring and activates its daemon in the user session. Clients use this socket to reach the keyring's secret-storage and cryptographic services.
+gnome-remote-desktop-headless.service	user	Runs GNOME Remote Desktop without a local graphical session, providing remote access to a headless desktop. It creates a desktop that can be reached remotely rather than sharing a session already visible on a monitor.
+gnome-remote-desktop.service	both	Provides GNOME screen sharing, remote control, or remote login using RDP or VNC. GNOME's sharing settings configure it, and remote clients connect to the enabled protocol endpoint.
+gnome-session-manager@.service	user	Runs the GNOME session manager for a named session, starting and monitoring its desktop components. It coordinates session startup, tracks required processes, and shuts the session down when the user logs out.
+gnome-session-pre.target	user	Groups tasks that must finish before a GNOME graphical session starts.
+gnome-session-shutdown.target	user	Coordinates the shutdown of services belonging to a GNOME session.
+gnome-session-wayland.target	user	Groups the components of the current GNOME Wayland session.
+gnome-session-x11.target	user	Groups the components of the current GNOME X11 session.
+gnome-session.target	user	Groups services belonging to the current GNOME desktop session.
+gnome-session@.target	user	Groups the components of a named GNOME desktop session.
+gnome-terminal-server.service	user	Runs the per-user server process that creates and manages GNOME Terminal windows. New terminal invocations ask this shared process to create windows, tabs, and their child shells.
+gpg-agent-browser.socket	user	Accepts GnuPG agent requests from web browsers through the agent's browser protocol. It gives browser integrations a deliberately limited route to supported cryptographic operations.
+gpg-agent-extra.socket	user	Provides a restricted secondary socket for forwarding GnuPG agent operations into another environment. It is commonly forwarded into containers or remote sessions that need access to keys held on the host.
+gpg-agent-ssh.socket	user	Provides GnuPG's SSH-agent-compatible socket for SSH authentication with managed keys. SSH clients can use it as `SSH_AUTH_SOCK` to sign authentication requests with keys known to GnuPG.
+gpg-agent.service	user	Manages GnuPG private-key operations and caches passphrases for the user session. GnuPG tools delegate signing, decryption, and smart-card access to this process so secret keys remain centralized.
+gpg-agent.socket	user	Accepts standard GnuPG agent requests and activates `gpg-agent.service`. GnuPG clients connect here when they need private-key or passphrase operations.
+graphical-session-pre.target	user	Groups user services that must start before the graphical session is considered available.
+graphical-session.target	user	Marks the lifetime of the current graphical user session and groups services tied to it. Session services can bind themselves to this target so they stop together at logout.
+graphical.target	system	Starts a multi-user system together with its configured graphical login manager. It is the usual boot target for machines that present a graphical login screen.
+gssproxy.service	system	Provides Kerberos credential and GSS-API services to applications such as NFS without exposing keytabs directly. Privileged services ask it to perform authentication operations through a controlled local interface.
+gvfs-afc-volume-monitor.service	user	Detects Apple mobile devices accessible through the Apple File Conduit protocol for GVFS applications. This lets GNOME file managers show and browse compatible iPhones and iPads connected over USB.
+gvfs-daemon.service	user	Provides GNOME's virtual filesystem layer for accessing network shares, phones, trash, and other non-local locations. Applications use GVFS mounts through GIO and see them alongside ordinary local files.
+gvfs-goa-volume-monitor.service	user	Exposes storage from GNOME Online Accounts to GVFS applications. This makes configured online services appear as browseable locations in GNOME file pickers and file managers.
+gvfs-gphoto2-volume-monitor.service	user	Detects cameras accessible through gPhoto2 and exposes them to GVFS applications. GNOME file managers and photo tools use it to browse or import images from connected cameras.
+gvfs-metadata.service	user	Stores per-file metadata such as custom icons and file-manager attributes for GVFS clients. Nautilus and other GIO applications use this database for information that is not stored in the file itself.
+gvfs-mtp-volume-monitor.service	user	Detects phones and media players using the Media Transfer Protocol and exposes them to GVFS applications. This lets GNOME file managers browse and transfer files on compatible USB devices.
+gvfs-udisks2-volume-monitor.service	user	Tracks disks and removable media through UDisks and exposes them to GVFS applications. This is how GNOME file managers notice newly connected drives and present actions such as mounting and ejecting them.
+halt.target	system	Coordinates shutdown and stops the operating system without powering off the machine.
+hibernate.target	system	Coordinates services that prepare for and resume from system hibernation.
+httpd.service	system	Runs the Apache HTTP server under its Fedora and RHEL unit name, serving websites and forwarding configured application requests. It listens on configured HTTP and HTTPS endpoints and dispatches requests through Apache modules and virtual hosts.
+hybrid-sleep.target	system	Coordinates a sleep operation that both suspends to RAM and writes the system state to disk.
+iio-sensor-proxy.service	system	Reads accelerometers and ambient-light sensors and exposes their data to desktop applications. Desktop environments use its D-Bus interface for features such as automatic screen rotation and brightness adjustment.
+initrd-cleanup.service	system	Stops services in the initial RAM disk after the real root filesystem is ready. This clears initrd-only processes before control is fully transferred to the installed system.
+initrd-fs.target	system	Groups filesystems mounted by the initial RAM disk before switching to the real root.
+initrd-parse-etc.service	system	Reads mount configuration from the real root filesystem while still running in the initial RAM disk. It uses that configuration to generate the filesystem and swap units needed before switching root.
+initrd-root-device.target	system	Marks the root block device as available inside the initial RAM disk.
+initrd-root-fs.target	system	Marks the real root filesystem as mounted and ready inside the initial RAM disk.
+initrd-switch-root.service	system	Switches from the initial RAM disk to the real root filesystem and starts its system manager. This is the handoff from the temporary early-boot environment to the installed operating system.
+initrd-switch-root.target	system	Coordinates the transition from the initial RAM disk to the real root filesystem.
+initrd-udevadm-cleanup-db.service	system	Removes udev database state that should not be carried from the initial RAM disk into the real system. The real system's udev manager can then rebuild device state for its own runtime environment.
+initrd-usr-fs.target	system	Marks a separate `/usr` filesystem as available during initial-RAM-disk startup.
+initrd.target	system	Groups the normal startup units used within the initial RAM disk.
+ipp-usb.service	system	Exposes compatible USB printers as network-style IPP devices for driverless printing. Print clients discover the locally proxied device and communicate with it using the same IPP protocols used by network printers.
+irqbalance.service	system	Distributes hardware interrupt handling across processors to balance CPU load. It periodically adjusts IRQ affinities so interrupt-heavy devices do not unnecessarily concentrate work on one CPU.
+iscsid.service	system	Maintains iSCSI sessions and handles authentication and connection recovery for network block devices. iSCSI management tools use it to log in to remote storage targets and keep their connections alive.
+iscsid.socket	system	Accepts iSCSI management requests and activates the iSCSI daemon. Local iSCSI tools connect to this socket when they need session-management work from `iscsid.service`.
+kerneloops.service	system	Collects kernel oops reports from the system log and submits them to kerneloops.org. These reports describe recoverable kernel faults and help kernel developers identify recurring failures.
+kexec.target	system	Coordinates shutdown before booting directly into another kernel with `kexec`.
+keyboxd.service	user	Stores and searches GnuPG public keys on behalf of GnuPG clients. It centralizes access to the user's key database for operations such as importing keys and finding encryption recipients.
+keyboxd.socket	user	Accepts GnuPG public-key database requests and activates `keyboxd.service`. GnuPG clients connect here to query or update the shared key database.
+kmod-static-nodes.service	system	Creates static device nodes required by installed kernel modules early in boot. It derives the list from module metadata before dynamic device discovery is fully available.
+ldconfig.service	system	Rebuilds the dynamic linker's shared-library cache after system files change. The cache maps library names to installed files so dynamically linked programs can locate their dependencies efficiently.
+libvirtd.service	system	Runs the libvirt daemon, which manages virtual machines and their networks and storage. Tools such as `virsh` and graphical virtualization managers use its API to define, start, and inspect guests.
+libvirtd.socket	system	Accepts local libvirt management connections and activates the daemon. Libvirt clients connect to this socket to manage virtual machines, networks, and storage pools.
+lightdm.service	system	Runs the LightDM graphical login screen and starts desktop sessions. It authenticates users and launches the desktop environment selected at login.
+local-fs-pre.target	system	Provides an ordering point before local filesystems are checked and mounted.
+local-fs.target	system	Groups local filesystems that must be mounted during startup.
+logrotate.service	system	Rotates, compresses, and removes old log files according to logrotate configuration. Rotation keeps actively written logs bounded while retaining the configured number of older copies.
+logrotate.timer	system	Schedules regular log-file rotation. Each activation starts `logrotate.service` to process the system's configured log policies.
+machine.slice	system	Groups virtual machines and containers registered with systemd for resource accounting and control. Resource limits applied to this slice affect the machine workloads beneath it.
+machines.target	system	Groups services that manage local virtual machines and system containers. Machine-management services can join this target so their startup and shutdown are coordinated.
+man-db.service	system	Updates the index used by `man -k` and `apropos` to search installed manual pages. It scans installed manuals and records their names and short descriptions in the search database.
+man-db.timer	system	Schedules regular updates of the manual-page search index. Each activation starts `man-db.service` so newly installed or removed manuals are reflected in searches.
+modprobe@.service	system	Loads the kernel module named by the unit instance. Other units can depend on an instance when they require a particular kernel driver or subsystem.
+motd-news.service	system	Retrieves the news snippets included in Ubuntu's message of the day. The cached content is displayed by the login-time MOTD machinery in terminal sessions.
+motd-news.timer	system	Schedules retrieval of the news snippets included in Ubuntu's message of the day. Each activation refreshes the cache used when terminal logins assemble the MOTD.
+multi-user.target	system	Starts the non-graphical multi-user system, including normal system and network services. It represents a fully started system that can support multiple logins without requiring a graphical display manager.
+netplan-ovs-cleanup.service	system	Removes stale Open vSwitch interfaces before Netplan applies current network configuration. This prevents obsolete virtual interfaces from conflicting with the topology described by the current Netplan files.
+network-online.target	system	Marks the point when the configured network manager considers networking usable. Services that require configured connectivity can order themselves after this target rather than merely after the network stack starts.
+network-pre.target	system	Provides an ordering point for services that must run before network interfaces are configured.
+network.target	system	Marks that the network-management stack has started, without guaranteeing connectivity. Services use it to order themselves relative to network setup and teardown.
+networkd-dispatcher.service	system	Runs scripts in response to interface state changes reported by systemd-networkd. Administrators and packages place hooks in its state directories to react when links become routable, configured, or unavailable.
+networking.service	system	Configures network interfaces using the distribution's traditional ifupdown networking scripts. It applies `/etc/network/interfaces` during startup and tears those interfaces down during shutdown.
+nfs-client.target	system	Groups services required for mounting and using NFS filesystems as a client. NFS mount units can pull it in to ensure client-side name mapping and RPC support are available.
+nfs-idmapd.service	system	Maps NFSv4 user and group names between textual identities and local numeric IDs. This lets NFS clients and servers preserve file ownership across machines with compatible identity domains.
+nfs-server.service	system	Starts the kernel NFS server and exports configured filesystems to network clients. It coordinates the kernel server with the RPC and name-mapping services needed to handle client requests.
+nfs-utils.service	system	Acts as a common restart point for NFS client and server daemons from the nfs-utils package. Restarting it also restarts the active NFS services grouped beneath it.
+nftables.service	system	Loads the system's nftables firewall rules into the kernel. It applies the configured ruleset during startup so packets are filtered, translated, or classified as specified.
+nginx.service	system	Runs the nginx web server and reverse proxy. It listens on configured HTTP and HTTPS endpoints and either serves files directly or forwards requests to application servers.
+nmbd.service	system	Provides NetBIOS name service and network browsing for Samba clients and servers. It answers legacy NetBIOS name queries and advertises browse information on local networks.
+nscd.service	system	Caches name-service lookups for users, groups, hosts, and other NSS databases. Programs using the system Name Service Switch can reuse cached answers instead of repeatedly querying files or network identity sources.
+nss-lookup.target	system	Groups services that provide host and network-name lookup through the Name Service Switch.
+nss-user-lookup.target	system	Groups services that provide user and group lookup through the Name Service Switch.
+ntp.service	system	Synchronizes the system clock with network time servers using the ntpd daemon. It exchanges NTP packets with the servers and peers configured in `ntp.conf`.
+ntpd.service	system	Synchronizes the system clock with network time servers and can serve time to other machines. It exchanges NTP packets with the servers, peers, and clients allowed by its configuration.
+obex.service	user	Provides Bluetooth file transfer and object exchange through the BlueZ OBEX daemon. Desktop Bluetooth tools use it to send, receive, and browse files on paired devices.
+openvpn-client@.service	system	Starts an OpenVPN client connection from a named client configuration. Each instance creates and maintains the encrypted tunnel described by its configuration file.
+openvpn-server@.service	system	Starts an OpenVPN server from a named server configuration. Each instance accepts configured VPN clients and routes their traffic through an encrypted tunnel.
+openvpn.service	system	Acts as a grouping and reload point for OpenVPN tunnel instances. Starting or reloading it applies the operation to the tunnels managed by the distribution's OpenVPN unit setup.
+openvpn@.service	system	Starts an OpenVPN tunnel from a named configuration file. The instance may act as a client or server according to that file.
+org.freedesktop.IBus.session.GNOME.service	user	Runs the IBus input-method framework with GNOME integration for multilingual and complex text input. GNOME applications use it to switch input engines and compose characters that a keyboard layout does not provide directly.
+org.gnome.SettingsDaemon.Color.service	user	Applies monitor and device color profiles for the GNOME session. It works with the system color-management service so applications and displays use the selected calibration data.
+org.gnome.SettingsDaemon.Housekeeping.service	user	Removes expired temporary files and handles low-disk-space housekeeping for the GNOME session. It also produces the desktop's low-storage warnings when configured thresholds are reached.
+org.gnome.SettingsDaemon.Keyboard.service	user	Applies keyboard layout and input settings for the GNOME session. It keeps desktop preferences such as repeat behavior and accessibility options in sync with input devices.
+org.gnome.SettingsDaemon.MediaKeys.service	user	Handles GNOME media keys and desktop keyboard shortcuts. It translates key presses such as volume, brightness, and playback controls into actions for the desktop or media applications.
+org.gnome.SettingsDaemon.Power.service	user	Implements GNOME session power behavior such as idle dimming, suspend, and lid actions. It monitors session activity and power state, then requests the configured action through system power-management services.
+org.gnome.SettingsDaemon.PrintNotifications.service	user	Shows GNOME notifications for printer state, queued jobs, and printing problems. It watches the print service and reports events such as completed jobs, low supplies, or printer errors to the logged-in user.
+org.gnome.SettingsDaemon.Rfkill.service	user	Connects GNOME's airplane-mode controls to the kernel's Wi-Fi and Bluetooth radio switches. It keeps the desktop setting synchronized with hardware and software radio blocks.
+org.gnome.SettingsDaemon.ScreensaverProxy.service	user	Provides the GNOME interface applications use to inhibit the screensaver or idle actions. Media players and other applications call it when activity should keep the session awake.
+org.gnome.SettingsDaemon.Sharing.service	user	Starts and stops GNOME sharing services according to the current network and desktop settings. It controls facilities such as media sharing or remote login as the active network changes.
+org.gnome.SettingsDaemon.Smartcard.service	user	Monitors smart cards for the GNOME session and handles configured removal actions. It can lock the session or log the user out when an authentication card is removed.
+org.gnome.SettingsDaemon.Sound.service	user	Caches and plays desktop event sounds for the GNOME session. Other desktop components ask it to produce feedback for alerts and interface events.
+org.gnome.SettingsDaemon.UsbProtection.service	user	Enforces GNOME's policy for newly connected USB devices while the session is locked. It uses USBGuard to allow or reject devices according to the desktop's protection settings.
+org.gnome.SettingsDaemon.Wacom.service	user	Applies GNOME settings for Wacom tablets, styli, and pad buttons. It configures mappings, pressure behavior, and button actions as supported devices appear.
+org.gnome.SettingsDaemon.XSettings.service	user	Publishes GNOME appearance and toolkit settings to X11 applications through XSettings. This keeps themes, fonts, scaling, and related preferences consistent with the GNOME session.
+org.gnome.Shell@.service	user	Runs GNOME Shell, the desktop shell and Wayland compositor, for a named session. It draws the desktop interface, manages windows, and coordinates session features such as notifications and the overview.
+packagekit-offline-update.service	system	Applies package updates in a dedicated offline boot environment before the normal system starts. PackageKit stages the transaction beforehand, and this service records its result for the desktop update tool.
+packagekit.service	system	Provides a distribution-neutral package-management API used by graphical software and update tools. It translates requests to the system's native package manager and reports transaction progress over D-Bus.
+pam_namespace.service	system	Creates per-user or per-session filesystem namespaces configured through PAM. Login sessions use these namespaces to give users private views of selected directories.
+paths.target	both	Groups path-watching units active in the current systemd manager.
+pipewire-media-session.service	user	Runs PipeWire's original session manager, configuring devices and connecting audio and video streams. It applies policy when applications request streams or audio and video hardware appears.
+pipewire-pulse.service	user	Provides a PulseAudio-compatible server backed by PipeWire for applications using the PulseAudio protocol. Existing PulseAudio clients connect to it while PipeWire performs the underlying routing and device access.
+pipewire-pulse.socket	user	Listens for PulseAudio client connections and activates PipeWire's compatibility server.
+pipewire.service	user	Runs the per-user PipeWire media server that routes audio and video streams between applications and devices. A session manager such as WirePlumber supplies policy, while clients use PipeWire for low-latency media and screen capture.
+pipewire.socket	user	Listens for PipeWire client connections and activates the per-user media server.
+plasma-kded.service	user	Runs KDE's per-user service daemon, loading desktop modules for device, settings, and session integration. Its modules provide background features such as removable-device handling and reacting to configuration changes.
+plymouth-quit-wait.service	system	Waits for the graphical boot splash to finish before the display manager starts. This prevents the login screen from competing with Plymouth while it releases the display.
+plymouth-quit.service	system	Stops the Plymouth graphical boot splash when startup is complete. It returns control of the display to the login screen or console.
+plymouth-start.service	system	Starts the Plymouth graphical splash and prompts during boot. Boot services use Plymouth to display progress and request input such as disk-encryption passwords.
+podman.service	system	Provides the Podman API used to create and manage containers, images, and pods. Docker-compatible and Podman clients communicate with this service through its Unix socket.
+podman.socket	system	Listens for Podman API clients and activates the Podman service on demand.
+polkit.service	system	Evaluates authorization rules for privileged operations and coordinates authentication prompts for applications. System services consult it over D-Bus when an unprivileged user requests an action that needs additional authority.
+power-profiles-daemon.service	system	Exposes power-saver, balanced, and performance profiles and applies the selected platform power settings. Desktop power controls use its D-Bus API to show and change the active profile.
+poweroff.target	system	Coordinates shutdown and powers off the machine.
+printer.target	both	Groups units associated with printer hardware and printing services.
+proc-sys-fs-binfmt_misc.automount	system	Mounts the kernel's `binfmt_misc` interface on first access so executable-format handlers can be registered.
+pulseaudio.service	user	Runs the per-user PulseAudio sound server, routing audio streams between applications and devices. It mixes playback, captures microphone input, and exposes per-application volume controls to the desktop.
+pulseaudio.socket	user	Listens for PulseAudio client connections and activates the per-user sound server.
+qemu-guest-agent.service	system	Exchanges status and control messages between a QEMU virtual machine and its host. Management software uses the agent to query guest state and request operations such as filesystem freezing or orderly shutdown.
+qemu-kvm.service	system	Prepares kernel modules and host settings used to run QEMU virtual machines with KVM acceleration. Virtualization tools rely on that kernel support to execute guest code using hardware virtualization.
+quotaon.service	system	Enables configured filesystem disk quotas during boot. Once active, the kernel tracks and enforces the user, group, or project limits stored on each filesystem.
+rc-local.service	system	Runs commands from `/etc/rc.local` late in boot for compatibility with older startup setups. It provides a systemd entry point for locally configured commands written for the traditional rc.local mechanism.
+reboot.target	system	Coordinates shutdown and reboots the machine.
+remote-cryptsetup.target	system	Groups encrypted block devices required by remote filesystems.
+remote-fs-pre.target	system	Provides an ordering point before remote filesystems are mounted.
+remote-fs.target	system	Groups network and other remote filesystems mounted during startup.
+remote-veritysetup.target	system	Groups integrity-verified block devices required by remote filesystems.
+rescue.service	system	Starts a single-user recovery shell with the basic local filesystems mounted. An administrator can use the shell to repair configuration or storage problems without starting the normal service set.
+rescue.target	system	Provides a single-user recovery environment with basic system services and local filesystems. It brings up `rescue.service` and the minimal dependencies needed for an administrative shell.
+rpc-gssd.service	system	Handles Kerberos authentication for NFS clients using RPCSEC_GSS. It obtains credentials and creates the security contexts used to authenticate requests to protected NFS exports.
+rpc-statd-notify.service	system	Notifies NFS peers after a reboot so interrupted file locks can be recovered. It sends the local host's new status-monitor state to machines recorded before shutdown or failure.
+rpc-statd.service	system	Tracks NFSv2 and NFSv3 file locks and coordinates lock recovery after crashes. NFS locking services register peers with it so both sides can reclaim locks after either machine restarts.
+rpc-svcgssd.service	system	Handles Kerberos authentication for the NFS server using RPCSEC_GSS. It establishes security contexts that let the server verify clients accessing Kerberos-protected exports.
+rpcbind.service	system	Maps ONC RPC program numbers to the network ports used by services such as NFS. RPC clients query it to discover where a requested server program is listening.
+rpcbind.socket	system	Listens for RPC port-mapping requests and activates `rpcbind.service`.
+rpcbind.target	system	Groups the RPC port-mapping service and its dependencies.
+rsync.service	system	Runs rsync as a network daemon for configured file-transfer modules. Remote clients connect to those named modules to list, upload, or download files according to their access rules.
+rsyslog.service	system	Collects syslog messages and routes them to text files, remote log servers, or other configured destinations. It receives records from local applications and sockets, then filters and formats them according to `rsyslog.conf`.
+rtkit-daemon.service	system	Grants controlled real-time scheduling priority to audio and other latency-sensitive user processes. Clients such as sound servers request priority over D-Bus, and RTKit applies policy and resource limits before granting it.
+runlevel0.target	system	Provides the SysV-compatible alias for the target that halts or powers off the system.
+runlevel1.target	system	Provides the SysV-compatible alias for the single-user rescue target.
+runlevel2.target	system	Provides a SysV-compatible alias for a distribution-defined multi-user target.
+runlevel3.target	system	Provides the SysV-compatible alias for the non-graphical multi-user target.
+runlevel4.target	system	Provides a SysV-compatible alias for a distribution-defined multi-user target.
+runlevel5.target	system	Provides the SysV-compatible alias for the graphical target.
+runlevel6.target	system	Provides the SysV-compatible alias for the reboot target.
+samba-ad-dc.service	system	Runs Samba as an Active Directory domain controller, providing directory, authentication, DNS, and file services. Windows and Samba clients use it to join the domain, authenticate users, and discover domain resources.
+saned.socket	system	Listens for network scanner requests and activates a SANE server instance.
+saned@.service	system	Serves a network scanner client using the SANE scanning interface. A socket-activated instance accesses locally configured scanner hardware and returns image data to the remote client.
+sddm.service	system	Runs the SDDM graphical login screen and starts desktop sessions, commonly for KDE Plasma. It authenticates the selected user and launches the requested X11 or Wayland session.
+serial-getty@.service	system	Provides a login prompt on a serial console, with one instance for each serial device. It lets a user authenticate through a physical serial port or a virtual machine's serial console.
+session.slice	user	Groups the core services of a user's login session for resource management. systemd places these processes in a shared cgroup hierarchy for accounting and resource controls.
+shutdown.target	both	Coordinates the ordered stopping of services and unmounting of filesystems during shutdown.
+sigpwr.target	system	Handles a power-failure signal reported by the kernel or an uninterruptible power supply.
+sleep.target	system	Groups services that prepare for and resume from any system sleep operation.
+slices.target	system	Groups the slice units that define systemd's control-group hierarchy.
+smartcard.target	both	Groups units associated with smart-card hardware and services.
+smb.service	system	Provides SMB file and printer sharing through Samba. Network clients use the SMB protocol to access the shares and printers defined in the Samba configuration.
+smbd.service	system	Serves SMB file and printer shares to Windows, macOS, and Linux clients through Samba. It handles authenticated client sessions and performs file operations against the configured local paths.
+snapd.apparmor.service	system	Loads and updates AppArmor profiles generated for installed snap packages. These profiles enforce the filesystem, device, and interface restrictions declared by each snap.
+snapd.seeded.service	system	Marks completion of snapd's initial installation of preseeded snaps and assertions. Other boot work can use this marker to wait until the image's bundled snap state has been imported.
+snapd.service	system	Installs, updates, removes, and launches snap packages and manages their system integration. The `snap` client and desktop tools send requests to its local API, while snapd handles downloads, mounts, and refresh scheduling.
+snapd.socket	system	Listens for snap client API requests and activates the snapd daemon.
+sockets.target	both	Groups socket-listening units active in the current systemd manager.
+sound.target	both	Groups units associated with detected sound hardware.
+speech-dispatcher.service	both	Provides a shared interface through which applications send text to speech synthesizers. Accessibility tools submit text and speech settings to it, and it routes the request to the configured synthesizer backend.
+speech-dispatcher.socket	user	Listens for speech-synthesis client connections and activates Speech Dispatcher.
+spice-vdagentd.service	system	Coordinates clipboard, display resizing, and other desktop integration between SPICE virtual-machine guests and hosts. It relays messages between the host's SPICE client and the per-session guest agent.
+spice-vdagentd.socket	system	Listens for SPICE guest-agent connections and activates its system daemon.
+ssh-agent.service	user	Holds decrypted SSH private keys and performs authentication operations for the user session. SSH clients ask the agent to sign authentication challenges without reading the private keys themselves.
+ssh.service	system	Runs the OpenSSH server and accepts incoming secure shell and file-transfer connections. It authenticates remote users and starts their shell, command, SFTP, or forwarding session.
+ssh.socket	system	Listens for incoming SSH connections and activates the OpenSSH server on demand.
+sshd-keygen.service	system	Generates missing host keys used by the OpenSSH server to identify the machine. The SSH server presents these persistent keys so clients can recognize the host on later connections.
+sshd-keygen.target	system	Groups the tasks that generate missing OpenSSH server host keys.
+sshd-keygen@.service	system	Generates one type of OpenSSH server host key, selected by the unit instance. Separate instances create algorithms such as RSA, ECDSA, or Ed25519 before the server starts.
+sshd.service	system	Runs the OpenSSH server and accepts incoming secure shell and file-transfer connections. It authenticates remote users and starts their shell, command, SFTP, or forwarding session.
+sshd.socket	system	Listens for incoming SSH connections and activates the OpenSSH server on demand.
+suspend-then-hibernate.target	system	Coordinates a sleep operation that suspends first and hibernates after a configured delay.
+suspend.target	system	Coordinates services that prepare for and resume from suspend-to-RAM.
+swap.target	system	Groups swap devices and swap files activated during startup.
+switcheroo-control.service	system	Exposes GPU information and controls used to launch applications on a selected GPU in hybrid-graphics systems. Desktop environments use its D-Bus API to offer choices such as integrated or discrete graphics when starting an application.
+sysinit.target	system	Groups early system initialization such as mounts, swap, device setup, and kernel configuration. Most ordinary services start only after this foundational boot work has completed.
+syslog.socket	system	Receives local syslog messages and passes them to the configured logging service. Its stable socket path lets applications emit logs before a particular syslog daemon has started.
+sysstat-collect.service	system	Collects a snapshot of system performance counters for sysstat history. It runs `sadc` to append CPU, memory, disk, network, and other activity data to the current daily file.
+sysstat-collect.timer	system	Schedules regular collection of sysstat performance counters. Each timer firing starts `sysstat-collect.service` to add another sample to the daily history.
+sysstat-summary.service	system	Generates a daily summary from collected sysstat performance data. It processes the previous day's activity file into the report used by sysstat's summary tooling.
+sysstat-summary.timer	system	Schedules generation of the daily sysstat summary. It starts `sysstat-summary.service` once per day after the collection period closes.
+system-getty.slice	system	Groups processes belonging to local text-console login prompts. The slice lets systemd account for and limit their resources as a group.
+system-modprobe.slice	system	Groups kernel-module loading jobs started from systemd templates. These short-lived jobs run when another unit requests a particular module.
+system-update-cleanup.service	system	Removes the marker that requested an offline system update after the update finishes. This returns the next boot to the normal default target.
+system-update-pre.target	system	Groups preparation performed immediately before an offline system update. Update implementations can order setup work before this target is reached.
+system-update.target	system	Boots into the restricted environment used to install an offline system update. Package managers redirect a reboot here after staging updates that must run without the normal system active.
+system.slice	system	Groups system services so their resources can be accounted for and controlled separately from users and virtual machines. Most services started by the system manager are placed beneath this cgroup.
+systemd-ask-password-console.path	system	Watches for boot-time password requests that should be displayed on the system console. A request appearing in systemd's password directory activates the corresponding prompt service.
+systemd-ask-password-console.service	system	Prompts for pending boot-time passwords on the system console and returns them to requesting services. It is commonly used for encrypted disks and credentials needed before a graphical session exists.
+systemd-ask-password-plymouth.path	system	Watches for boot-time password requests that should be forwarded to Plymouth. It activates the Plymouth prompt service when a request appears.
+systemd-ask-password-plymouth.service	system	Forwards pending boot-time password prompts to the Plymouth splash screen. This lets encrypted-volume and other early-boot prompts appear in the graphical boot interface.
+systemd-ask-password-wall.path	system	Watches for boot-time password requests that should be broadcast to logged-in terminals. It activates the wall-based prompt helper when a request appears.
+systemd-ask-password-wall.service	system	Broadcasts pending system password prompts to logged-in terminal users. Replies are returned to the service waiting for the credential.
+systemd-backlight@.service	system	Saves and restores the brightness of a display backlight or LED device across boots. Each instance corresponds to one brightness device exposed by the kernel.
+systemd-binfmt.service	system	Registers handlers for additional executable formats with the kernel's `binfmt_misc` interface. Rules from `binfmt.d` can launch interpreters for formats such as foreign binaries or bytecode.
+systemd-bless-boot.service	system	Marks the current boot as successful for systemd-boot's boot-attempt counting. A successful mark prevents the boot loader from falling back after the configured number of failed attempts.
+systemd-boot-check-no-failures.service	system	Checks whether the system booted without failed units before marking the boot successful. It participates in systemd-boot's automatic boot assessment.
+systemd-bsod.service	system	Displays a full-screen emergency message and diagnostic information after a critical boot failure. It gives the user an error summary when the normal interface is unavailable.
+systemd-coredump.socket	system	Receives process core dumps and starts systemd's core-dump handler. The socket allows crashes to be captured without keeping a handler process running continuously.
+systemd-coredump@.service	system	Records and processes one process core dump. Depending on `coredump.conf`, it stores the dump externally or in the journal together with process metadata for tools such as `coredumpctl`.
+systemd-exit.service	both	Instructs a per-user or container systemd manager to exit. It is started as the manager's units are shut down and returns an exit status to the process that launched the manager.
+systemd-firstboot.service	system	Initializes settings such as locale, hostname, machine ID, and root password on a new system image. Image builders and first-boot workflows use it before those settings have been populated.
+systemd-fsck-root.service	system	Checks the root filesystem for errors before it is remounted for normal use. The check follows the filesystem's configured repair policy and can redirect boot into recovery when errors remain.
+systemd-fsck@.service	system	Checks a filesystem for errors before it is mounted, with one instance for each device. Results determine whether mounting can continue or startup must enter recovery.
+systemd-fsckd.service	system	Collects progress reports from filesystem checks and forwards them to the console or boot splash. It combines updates from checks running in parallel into one progress stream.
+systemd-fsckd.socket	system	Receives progress updates from filesystem-checking processes for `systemd-fsckd.service`. Connecting to the socket starts the progress daemon on demand.
+systemd-growfs-root.service	system	Expands the root filesystem to fill its backing block device during boot. This lets a system image automatically consume space added when it is deployed to a larger disk.
+systemd-growfs@.service	system	Expands a configured filesystem to fill its backing block device. Each instance operates on the mount point encoded in its unit name.
+systemd-halt.service	system	Performs the final userspace steps before halting the machine. It hands control to the kernel after services have stopped and filesystems have been unmounted.
+systemd-hibernate-resume.service	system	Restores a saved system image from a hibernation device during early boot. If a valid image is found, the kernel resumes the previous session instead of continuing a fresh boot.
+systemd-hibernate-resume@.service	system	Restores a saved system image from the hibernation device named by the unit instance. It runs in early boot before filesystems and normal services start.
+systemd-hibernate.service	system	Writes system memory to disk and powers down the machine for hibernation. Sleep hooks and device preparation run before systemd asks the kernel to save the image.
+systemd-hostnamed.service	system	Provides a D-Bus API for reading and changing the machine hostname and related metadata. Tools such as `hostnamectl` and desktop settings panels use this service.
+systemd-hwdb-update.service	system	Rebuilds udev's compiled hardware database from installed device metadata. Udev consults the result to attach model names, capabilities, and other properties to detected hardware.
+systemd-hybrid-sleep.service	system	Writes system memory to disk and then suspends the machine to RAM. The machine can resume quickly while retaining the hibernation image if power is lost.
+systemd-importd.service	system	Imports, exports, and downloads disk images used by containers, virtual machines, and portable services. Commands such as `machinectl pull-*` use its D-Bus interface for image transfers.
+systemd-initctl.service	system	Provides compatibility for software using the legacy SysV `initctl` interface. It translates supported requests into corresponding systemd operations.
+systemd-initctl.socket	system	Receives requests on the legacy `initctl` interface and activates its compatibility service. This preserves the named-pipe interface expected by older software.
+systemd-journal-catalog-update.service	system	Rebuilds the journal message catalog used to add explanatory text to structured log messages. It runs after packages install or update catalog files.
+systemd-journal-flush.service	system	Flushes journal records from volatile memory storage to persistent disk storage early in boot. This moves messages collected before persistent filesystems were ready into the on-disk journal.
+systemd-journald-audit.socket	system	Receives Linux Audit messages from the kernel for storage in the system journal. It lets `journalctl` show audit records alongside other system logs.
+systemd-journald-dev-log.socket	system	Receives traditional syslog messages sent to `/dev/log` for storage in the journal. Programs using the syslog API write through this socket.
+systemd-journald-varlink@.socket	system	Receives Varlink requests for the journal namespace named by the unit instance. Clients use it to access namespace-specific journal services.
+systemd-journald.service	system	Collects logs from services, the kernel, and syslog clients and stores them in the system journal. `journalctl` reads these structured records and can filter them by unit, boot, priority, and other metadata.
+systemd-journald.socket	system	Receives native journal messages and standard output streams from services. Socket activation makes the logging endpoint available before the journal daemon itself has started.
+systemd-journald@.service	system	Runs a separate journal namespace for services assigned to that namespace. Namespaces keep selected log streams and retention settings separate from the default system journal.
+systemd-journald@.socket	system	Receives journal messages for the journal namespace named by the unit instance. Connecting services are routed to the matching namespaced journal daemon.
+systemd-kexec.service	system	Performs the final operation that starts a kernel previously loaded with `kexec`. It bypasses firmware initialization and the normal boot loader after shutdown has stopped running services.
+systemd-localed.service	system	Provides a D-Bus API for reading and changing system locale and console keyboard settings. `localectl` and desktop settings panels use it to update the corresponding configuration files.
+systemd-logind.service	system	Tracks users, sessions, and seats and handles power keys, lid switches, and device access for logged-in users. Desktop environments and `loginctl` use its D-Bus API to inspect sessions and request suspend, reboot, or shutdown operations.
+systemd-machine-id-commit.service	system	Commits a temporary machine ID to persistent storage once the root filesystem is writable. This preserves the identity generated earlier when `/etc` was read-only or transient.
+systemd-machined.service	system	Tracks local virtual machines and system containers and exposes them through `machinectl` and D-Bus. It records their names, addresses, resource usage, and lifecycle state for management tools.
+systemd-modules-load.service	system	Loads kernel modules named in `modules-load.d` configuration during boot. Packages and administrators use these files for modules that must be present without waiting for hardware-driven loading.
+systemd-network-generator.service	system	Generates systemd-networkd configuration from network settings supplied on the kernel command line. This is used when an initrd or image must bring up networking before ordinary configuration is available.
+systemd-networkd-wait-online.service	system	Waits until systemd-networkd reports that configured links have reached their required state. It delays `network-online.target` for services that declare they need usable networking at startup.
+systemd-networkd-wait-online@.service	system	Waits for a selected network interface managed by systemd-networkd to become configured. Each instance limits the online check to the interface encoded in its name.
+systemd-networkd.service	system	Configures network links, addresses, routes, and related settings from `.network` and `.netdev` files. It also reports link state to other services through D-Bus and its runtime state files.
+systemd-networkd.socket	system	Listens for kernel notifications about links, addresses, and routes and activates `systemd-networkd.service` when they arrive.
+systemd-nspawn@.service	system	Starts the systemd-nspawn container named by the unit instance. Container settings and the matching filesystem image determine its networking, resources, and startup command.
+systemd-oomd.service	system	Monitors cgroup memory pressure and kills selected processes before memory exhaustion makes the system unresponsive. Units opt into its policy through systemd resource-control settings such as `ManagedOOMMemoryPressure`.
+systemd-oomd.socket	system	Accepts registrations for cgroups managed by `systemd-oomd` and activates the daemon. Systemd managers use it to communicate which cgroups and out-of-memory policies should be monitored.
+systemd-pcrmachine.service	system	Measures the machine ID into a TPM platform configuration register as part of measured boot. This contributes the installation's identity to TPM policies used for protected credentials and secrets.
+systemd-pcrphase-initrd.service	system	Measures the initial-RAM-disk boot phase into a TPM platform configuration register. The marker lets TPM policies distinguish operations performed inside the initrd from later boot phases.
+systemd-pcrphase-sysinit.service	system	Measures the early system-initialization phase into a TPM platform configuration register. TPM policies can use the transition to release secrets only after the real system has begun initialization.
+systemd-pcrphase.service	system	Measures boot-phase transitions into TPM platform configuration registers for measured-boot policies. These markers allow secrets to be bound to particular stages of a trusted boot sequence.
+systemd-portabled.service	system	Attaches and manages portable service images through `portablectl` and D-Bus. It connects an image's unit files to the host while keeping the image's application files self-contained.
+systemd-poweroff.service	system	Performs the final userspace steps before powering off the machine. It hands control to the kernel after services have stopped and filesystems have been unmounted.
+systemd-pstore.service	system	Archives crash and diagnostic records left by firmware or the kernel in persistent platform storage. It moves records from pstore into the journal and filesystem so they survive subsequent reboots for inspection.
+systemd-quotacheck.service	system	Checks filesystem quota metadata before quotas are enabled. It rebuilds inconsistent usage information so per-user and per-group limits start with accurate accounting.
+systemd-random-seed.service	system	Restores an entropy seed during boot and saves a new seed during shutdown for the kernel random-number generator. Carrying the seed across boots helps the generator initialize securely before other entropy sources are available.
+systemd-reboot.service	system	Performs the final userspace steps before rebooting the machine. It asks the kernel to restart after services have stopped and filesystems have been unmounted.
+systemd-remount-fs.service	system	Remounts the root and kernel API filesystems with their configured options early in boot. This applies `/etc/fstab` settings to filesystems mounted earlier by the kernel or initrd.
+systemd-repart.service	system	Creates or grows disk partitions according to repartition configuration, commonly during image-based boot. It lets one generic image adapt its partition layout and filesystems to the disk where it is deployed.
+systemd-resolved.service	system	Provides local DNS resolution, caching, and per-interface DNS routing to applications. Network managers supply DNS servers and search domains, while clients use the stub resolver, NSS, or D-Bus interfaces.
+systemd-rfkill.service	system	Saves and restores the blocked or unblocked state of wireless radios across boots. Each state file corresponds to a kernel rfkill device such as a Wi-Fi or Bluetooth adapter.
+systemd-rfkill.socket	system	Watches the kernel rfkill interface and activates the service that persists radio state. Events arrive when radios appear or their blocked state changes.
+systemd-suspend-then-hibernate.service	system	Suspends the machine to RAM and hibernates it later after a configured delay. This provides quick resume for short sleeps while preserving the session on disk for longer ones.
+systemd-suspend.service	system	Performs the kernel operation that suspends the machine to RAM. It runs configured sleep hooks and freezes user sessions before handing control to the kernel.
+systemd-sysctl.service	system	Applies kernel settings from `sysctl.d` configuration during boot. These settings control networking, virtual memory, security behavior, and other kernel subsystems exposed through `/proc/sys`.
+systemd-sysext.service	system	Merges system-extension images into `/usr` and `/opt` using overlay mounts. Extensions can add version-matched system files without modifying the underlying operating-system image.
+systemd-sysusers.service	system	Creates system users and groups declared in `sysusers.d` configuration. Packages and system images use these declarative records instead of running account-creation scripts.
+systemd-time-wait-sync.service	system	Waits until a time-synchronization service reports that the system clock is synchronized. It delays `time-sync.target` for units that require trustworthy wall-clock time.
+systemd-timedated.service	system	Provides a D-Bus API for changing the system clock, time zone, and network-time settings. `timedatectl` and desktop settings panels use it to update time configuration.
+systemd-timesyncd.service	system	Synchronizes the system clock with network time servers using a lightweight SNTP client. It obtains per-link servers from network configuration and reports synchronization state to systemd.
+systemd-tmpfiles-clean.service	both	Removes aged files and directories according to `tmpfiles.d` cleanup rules. System and user managers run it for temporary data within their respective scopes.
+systemd-tmpfiles-clean.timer	both	Schedules regular cleanup of temporary and volatile files. It starts the matching cleanup service in the system or user manager.
+systemd-tmpfiles-setup-dev.service	system	Creates static device nodes and applies ownership and permissions from `tmpfiles.d` rules. It runs early so required entries under `/dev` exist before dependent services start.
+systemd-tmpfiles-setup.service	both	Creates volatile files and directories and applies ownership and permissions from `tmpfiles.d` rules during manager startup. Packages use these declarations for runtime paths, caches, locks, and other state that may not survive a reboot or logout.
+systemd-tpm2-setup-early.service	system	Creates or loads the TPM2 storage root key early in boot for services that need it. The key becomes the parent for TPM objects created before the normal system is fully initialized.
+systemd-tpm2-setup.service	system	Creates or loads the TPM2 storage root key and records its public information for system services. Other components use this stable key hierarchy when sealing credentials and encryption material to the TPM.
+systemd-udev-settle.service	system	Waits until udev has finished processing the device events currently queued. Storage and older hardware-management services use it when they cannot react to devices asynchronously.
+systemd-udev-trigger.service	system	Replays kernel device events during boot so udev applies rules to hardware already present. This coldplug pass creates device nodes and starts device-dependent units for hardware detected before udev began listening.
+systemd-udevd-control.socket	system	Receives control commands for the systemd-udev device manager. Tools use it to reload rules, adjust logging, and manage the event queue.
+systemd-udevd-kernel.socket	system	Receives kernel device events for processing by the systemd-udev device manager. Events describe hardware being added, removed, or changed.
+systemd-udevd.service	system	Processes hardware events, creates device nodes, applies permissions, and triggers configured device actions. Its rules also attach metadata and start systemd units associated with newly available devices.
+systemd-update-done.service	system	Marks completion of first-boot update tasks after `/etc` and `/var` have been populated. It prevents image-initialization work from being repeated on later boots.
+systemd-update-utmp-runlevel.service	system	Records changes of the SysV-compatible runlevel in the utmp and wtmp login-accounting files. Legacy tools read these records to show transitions between system operating modes.
+systemd-update-utmp.service	system	Records system boot and shutdown events in the utmp and wtmp login-accounting files. Commands such as `who` and `last` use this accounting history.
+systemd-user-sessions.service	system	Allows normal user logins after startup and blocks new logins during shutdown. It does this by creating or removing the system's `nologin` marker at the appropriate point in the boot lifecycle.
+systemd-vconsole-setup.service	system	Applies the configured font and keyboard map to a Linux virtual console. It runs when consoles appear so text login prompts use the system's selected layout and display settings.
+systemd-volatile-root.service	system	Makes the root filesystem transient by placing a writable in-memory layer over a read-only root. Changes made during the boot disappear when the machine restarts.
+thermald.service	system	Monitors Intel thermal sensors and adjusts cooling and power controls to keep hardware within temperature limits. It uses platform thermal data to reduce heat before the kernel must apply more severe throttling.
+time-set.target	system	Marks the point when the system clock has been set from a local source and is approximately correct.
+time-sync.target	system	Marks the point when the system clock has been synchronized with an accurate external source.
+timers.target	both	Groups timer units active in the current systemd manager.
+tlp.service	system	Applies TLP's laptop power-management settings to processors, radios, storage, and other devices. It reapplies the appropriate battery or AC-power profile when the power source changes.
+tmp.mount	system	Mounts the filesystem used for `/tmp` when it is configured as a separate or temporary mount. Other units can order themselves after it before creating temporary files.
+udisks2.service	system	Manages disks and removable media and provides mounting, formatting, and inspection operations to desktop applications. File managers and disk utilities use its D-Bus API to handle drives without performing privileged operations themselves.
+ufw.service	system	Loads firewall rules configured through the Uncomplicated Firewall during boot. It translates the saved UFW policy into the packet-filtering rules enforced by the kernel.
+umount.target	system	Coordinates unmounting filesystems and disabling swap during shutdown.
+unattended-upgrades.service	system	Finishes or shuts down automatic APT package upgrades cleanly during system shutdown. It prevents a poweroff or reboot from interrupting package database changes at an unsafe point.
+upower.service	system	Tracks batteries and other power devices and exposes charge, status, and energy information to desktop applications. Desktop indicators and power settings use its D-Bus API to estimate remaining runtime and respond to low-battery conditions.
+usb-gadget.target	system	Groups services that configure the machine to act as a USB peripheral through the Linux USB gadget framework. Gadget configurations can expose functions such as networking, storage, or a serial port to a connected host.
+usb_modeswitch@.service	system	Switches a USB mobile-broadband device from storage mode into modem mode when it is connected. Each instance sends the device-specific command needed to reveal its communications interfaces.
+usbmuxd.service	system	Multiplexes connections from applications to iPhones and other iOS devices over USB. Tools for synchronization, development, and file access share the device connection through its local socket.
+user-runtime-dir@.service	system	Creates and removes a user's `/run/user/UID` runtime directory around their login sessions. The directory holds sockets, locks, and other per-user state that should not survive a reboot.
+user.slice	system	Groups all logged-in users and their sessions for resource accounting and control. Each user's manager and session scopes are placed beneath this cgroup hierarchy.
+user@.service	system	Runs a per-user systemd manager that starts and supervises the user's session services. Each instance owns units such as PipeWire, desktop portals, and keyring agents for one user and may remain running after logout when lingering is enabled.
+uuidd.service	system	Generates UUIDs for local clients and coordinates time-based UUID generation across processes. Central coordination prevents duplicate timestamp-based UUIDs when many processes request them concurrently.
+uuidd.socket	system	Accepts UUID generation requests and activates `uuidd.service`. Programs using libuuid can connect to this socket when coordinated generation is needed.
+veritysetup-pre.target	system	Provides an ordering point before local dm-verity integrity-protected volumes are activated.
+veritysetup.target	system	Groups local dm-verity integrity-protected block devices activated during startup.
+whoopsie.path	system	Watches Ubuntu's crash-report directory and starts the report uploader when a report appears. This avoids keeping the uploader running while there is nothing to submit.
+whoopsie.service	system	Uploads collected Ubuntu crash reports to Ubuntu's error-tracking service. It reads reports prepared by Apport and submits the diagnostic fields used to group recurring failures.
+wireplumber.service	user	Runs PipeWire's session manager, discovering devices and deciding how media streams and nodes are connected. It applies policy for default devices, audio profiles, permissions, and routing when hardware or applications change.
+wpa_supplicant-nl80211@.service	system	Runs a WPA supplicant instance for a Wi-Fi interface using the kernel's nl80211 driver interface. The instance performs scanning, association, and WPA or 802.1X authentication for that interface.
+wpa_supplicant-wired@.service	system	Runs a WPA supplicant instance for 802.1X authentication on a wired interface. It exchanges EAP credentials with the network before normal traffic is permitted.
+wpa_supplicant.service	system	Handles Wi-Fi authentication and association on behalf of network-management software. NetworkManager and similar clients configure connections through its control or D-Bus interfaces.
+wpa_supplicant@.service	system	Runs a WPA supplicant instance for a named network interface. Each instance handles association and WPA or 802.1X authentication for that interface.
+xdg-desktop-autostart.target	user	Groups desktop applications launched from XDG autostart files for the current user session.
+xdg-desktop-portal-gnome.service	user	Implements desktop portal dialogs and GNOME integration for sandboxed applications. It provides GNOME-native interfaces for choosing files, capturing screens, and other mediated desktop operations.
+xdg-desktop-portal-gtk.service	user	Implements GTK file chooser and other desktop portal interfaces for sandboxed applications. The main portal broker selects it when the current desktop requests the GTK backend.
+xdg-desktop-portal-kde.service	user	Implements desktop portal dialogs and KDE Plasma integration for sandboxed applications. It supplies Plasma-native file choosers, screen sharing, and other mediated desktop operations.
+xdg-desktop-portal.service	user	Brokers controlled access from sandboxed applications to files, screenshots, screen sharing, and other desktop features. It chooses a desktop-specific backend and returns only the resources approved through that interface.
+xdg-document-portal.service	user	Grants sandboxed applications access to individual files selected by the user through a shared document store. It exposes stable paths inside application sandboxes without granting access to the surrounding filesystem.
+xdg-permission-store.service	user	Stores persistent permission decisions made through desktop portal interfaces. Portal backends consult it for choices such as device access, background activity, and previously selected resources.
+zfs-import-cache.service	system	Imports ZFS storage pools listed in the system's pool cache during boot. The cache records the devices that belonged to previously known pools so they can be located without a full scan.
+zfs-import-scan.service	system	Scans available devices and imports discovered ZFS storage pools during boot. It provides a fallback when no usable pool cache is available.
+zfs-mount.service	system	Mounts filesystems from imported ZFS storage pools. Dataset properties determine mount points and which filesystems are mounted automatically.
+zfs.target	system	Groups the services required to import ZFS pools and mount their filesystems. Other units can order themselves after this target when they need ZFS storage ready.
