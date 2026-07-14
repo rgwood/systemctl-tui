@@ -532,6 +532,7 @@ impl Home {
 
   pub fn refresh_filtered_units(&mut self) {
     let previously_selected = self.selected_service();
+    let previous_unit_ids: Vec<_> = self.filtered_units.items.iter().map(|m| m.unit.id()).collect();
     let search_value = self.input.value();
     let status_filtered_units: Vec<_> = self
       .all_units
@@ -576,12 +577,15 @@ impl Home {
       scored.into_iter().map(|(_, m)| m).collect()
     };
 
+    let matching_unit_ids: Vec<_> = matching.iter().map(|m| m.unit.id()).collect();
     self.filtered_units.items = matching;
-    // Reset the visible-window offset whenever the items list is rebuilt.
-    // Without this, a stale offset from a larger list can leave items above the
-    // viewport hidden when the list shrinks (e.g. typing a query, clearing it,
-    // and retyping it can leave the first matches scrolled out of view).
-    *self.filtered_units.state.offset_mut() = 0;
+
+    // Keep the viewport stable when a background refresh only updates unit metadata.
+    // If filtering changed the list itself, reset the offset so a stale offset from a
+    // larger list cannot leave the first matches scrolled out of view.
+    if matching_unit_ids != previous_unit_ids {
+      *self.filtered_units.state.offset_mut() = 0;
+    }
 
     // try to select the same item we had selected before
     if let Some(previously_selected) = previously_selected {
@@ -2166,6 +2170,54 @@ fn parse_journalctl_timestamp(timestamp: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  fn test_unit(name: &str) -> UnitWithStatus {
+    UnitWithStatus {
+      name: name.to_string(),
+      scope: UnitScope::Global,
+      description: String::new(),
+      file_path: None,
+      load_state: "loaded".to_string(),
+      activation_state: "active".to_string(),
+      sub_state: "running".to_string(),
+      enablement_state: None,
+    }
+  }
+
+  #[test]
+  fn refreshing_unchanged_units_preserves_list_offset() {
+    let mut home = Home::new(Scope::All, &[]);
+    let units: Vec<_> = (0..10).map(|i| test_unit(&format!("unit-{i}.service"))).collect();
+
+    for unit in &units {
+      home.all_units.insert(unit.id(), unit.clone());
+    }
+    home.filtered_units.items = units.into_iter().map(|unit| MatchedUnit { unit, match_indices: vec![] }).collect();
+    home.filtered_units.state.select(Some(6));
+    *home.filtered_units.state.offset_mut() = 3;
+
+    home.refresh_filtered_units();
+
+    assert_eq!(home.filtered_units.state.offset(), 3);
+  }
+
+  #[test]
+  fn refreshing_changed_units_resets_list_offset() {
+    let mut home = Home::new(Scope::All, &[]);
+    let units: Vec<_> = (0..10).map(|i| test_unit(&format!("unit-{i}.service"))).collect();
+
+    for unit in &units {
+      home.all_units.insert(unit.id(), unit.clone());
+    }
+    home.filtered_units.items = units.into_iter().map(|unit| MatchedUnit { unit, match_indices: vec![] }).collect();
+    home.filtered_units.state.select(Some(6));
+    *home.filtered_units.state.offset_mut() = 3;
+    home.all_units.shift_remove(&test_unit("unit-0.service").id());
+
+    home.refresh_filtered_units();
+
+    assert_eq!(home.filtered_units.state.offset(), 0);
+  }
 
   #[test]
   fn test_parse_timestamp_systemd_v255_and_later() {
