@@ -41,6 +41,7 @@ pub enum Mode {
   Error,
   SignalMenu,
   StatusFilter,
+  UnitExplanation,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -252,6 +253,9 @@ pub struct Home {
   pub menu_item_rects: Vec<(Rect, usize)>,
   /// Area of the action/signal menu popup, as of the most recent render.
   pub menu_popup_rect: Rect,
+  /// Screen rect of the clickable description in the details pane, as of the most recent render.
+  /// `Some` only when the selected unit has a baked-in explanation.
+  pub explanation_button_rect: Option<Rect>,
 }
 
 pub struct MenuItem {
@@ -928,6 +932,10 @@ impl Component for Home {
         KeyCode::Esc | KeyCode::Enter => vec![Action::EnterMode(Mode::ServiceList)],
         _ => vec![],
       },
+      Mode::UnitExplanation => match key.code {
+        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => vec![Action::EnterMode(Mode::ServiceList)],
+        _ => vec![],
+      },
       Mode::Search => match key.code {
         KeyCode::Esc => vec![Action::EnterMode(Mode::ServiceList)],
         KeyCode::Enter => vec![Action::EnterMode(Mode::ActionMenu)],
@@ -1064,7 +1072,7 @@ impl Component for Home {
       };
     }
 
-    if self.mode == Mode::Error {
+    if self.mode == Mode::Error || self.mode == Mode::UnitExplanation {
       return match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => vec![Action::EnterMode(Mode::ServiceList)],
         _ => vec![],
@@ -1167,9 +1175,11 @@ impl Component for Home {
 
     match mouse.kind {
       MouseEventKind::Moved => {
-        let was_hovering = self.hovered_field(self.mouse_position);
+        let explanation_rect = self.explanation_button_rect;
+        let over_explanation = |p| explanation_rect.map(|r| r.contains(p)).unwrap_or(false);
+        let was_hovering = (self.hovered_field(self.mouse_position), over_explanation(self.mouse_position));
         self.mouse_position = pos;
-        let is_hovering = self.hovered_field(pos);
+        let is_hovering = (self.hovered_field(pos), over_explanation(pos));
         if was_hovering != is_hovering {
           vec![Action::Render]
         } else {
@@ -1205,6 +1215,11 @@ impl Component for Home {
           let text = self.copyable_fields[idx].1.clone();
           self.copy_with_toast(&text);
           return vec![Action::Render];
+        }
+        if let Some(rect) = self.explanation_button_rect {
+          if rect.contains(pos) {
+            return vec![Action::EnterMode(Mode::UnitExplanation)];
+          }
         }
         if self.search_panel.contains(pos) && self.mode == Mode::ServiceList {
           return vec![Action::EnterMode(Mode::Search)];
@@ -1579,9 +1594,11 @@ impl Component for Home {
     let dim = Style::default().add_modifier(Modifier::DIM);
     let mut rows: Vec<(&str, Line)> = vec![];
     let mut stat_rows: Vec<(&str, Line)> = vec![];
+    let mut explanation: Option<&'static str> = None;
 
     if let Some(m) = selected_item {
       rows.push(("Description", Line::from(m.unit.description.as_str())));
+      explanation = crate::unit_descriptions::explain(&m.unit.name, m.unit.scope);
 
       let active_color = match m.unit.activation_state.as_str() {
         "active" => Color::Green,
@@ -1684,18 +1701,6 @@ impl Component for Home {
       rows.push(("Runtime", Line::from(spans)));
     }
 
-    // Size the details panel to its content instead of a fixed height
-    let details_content_height = rows.len().max(stat_rows.len()).max(1) as u16;
-    let right_panel =
-      Layout::new(Direction::Vertical, [Constraint::Length(details_content_height + 2), Constraint::Percentage(100)])
-        .split(right_panel);
-    let details_panel = right_panel[0];
-    let logs_panel = right_panel[1];
-
-    let details_block = Block::default().title("─Details").borders(Borders::ALL).border_type(BorderType::Rounded);
-    let details_inner = details_block.inner(details_panel);
-    f.render_widget(details_block, details_panel);
-
     fn label_width(rows: &[(&str, Line)]) -> u16 {
       rows.iter().map(|(label, _)| label.len() + 2).max().unwrap_or(0) as u16
     }
@@ -1703,6 +1708,18 @@ impl Component for Home {
     fn split_labels_values<'a>(rows: Vec<(&'a str, Line<'a>)>) -> (Vec<Line<'a>>, Vec<Line<'a>>) {
       rows.into_iter().map(|(label, value)| (Line::from(format!("{label}: ")), value)).unzip()
     }
+
+    // Size the details panel to its content instead of a fixed height
+    let grid_height = rows.len().max(stat_rows.len()).max(1) as u16;
+    let right_panel =
+      Layout::new(Direction::Vertical, [Constraint::Length(grid_height + 2), Constraint::Percentage(100)])
+        .split(right_panel);
+    let details_panel = right_panel[0];
+    let logs_panel = right_panel[1];
+
+    let details_block = Block::default().title("─Details").borders(Borders::ALL).border_type(BorderType::Rounded);
+    let details_inner = details_block.inner(details_panel);
+    f.render_widget(details_block, details_panel);
 
     let panes = if two_columns {
       Layout::new(
@@ -1723,10 +1740,19 @@ impl Component for Home {
     // Every details value line (and runtime stat line) is hoverable and click-to-copy. Register
     // each rendered line's rect and text, bolding the hovered one.
     self.copyable_fields.clear();
-    fn register_copyable_fields(values: &mut [Line], pane: Rect, mouse: Position, out: &mut Vec<(Rect, String)>) {
+    fn register_copyable_fields(
+      values: &mut [Line],
+      pane: Rect,
+      mouse: Position,
+      skip: Option<usize>,
+      out: &mut Vec<(Rect, String)>,
+    ) {
       for (i, line) in values.iter_mut().enumerate() {
         if i as u16 >= pane.height {
           break;
+        }
+        if skip == Some(i) {
+          continue;
         }
         let text = line.spans.iter().map(|s| s.content.as_ref()).collect::<String>().trim().to_string();
         if text.is_empty() {
@@ -1741,13 +1767,58 @@ impl Component for Home {
     }
 
     let (labels, mut values) = split_labels_values(rows);
-    register_copyable_fields(&mut values, panes[1], self.mouse_position, &mut self.copyable_fields);
+    self.explanation_button_rect = None;
+    if explanation.is_some() && !values.is_empty() && panes[1].width > 0 {
+      let (separator, hint) = match panes[1].width {
+        1 => ("", "?"),
+        2..=3 => (" ", "?"),
+        _ => (" ", "[?]"),
+      };
+      let hint_width = Line::from(format!("{separator}{hint}")).width() as u16;
+      let description_width = panes[1].width.saturating_sub(hint_width);
+      let description = values[0].spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+
+      fn truncate_to_width(text: &str, width: u16) -> String {
+        if width == 0 {
+          return String::new();
+        }
+        if Line::from(text).width() <= width as usize {
+          return text.to_string();
+        }
+
+        let mut truncated = String::new();
+        let content_width = width.saturating_sub(1) as usize;
+        for ch in text.chars() {
+          truncated.push(ch);
+          if Line::from(truncated.as_str()).width() > content_width {
+            truncated.pop();
+            break;
+          }
+        }
+        truncated.push('…');
+        truncated
+      }
+
+      let description = truncate_to_width(&description, description_width);
+      let button_width = (Line::from(format!("{description}{separator}{hint}")).width() as u16).min(panes[1].width);
+      let button_rect = Rect { x: panes[1].x, y: panes[1].y, width: button_width, height: 1 };
+      let hovered = button_rect.contains(self.mouse_position);
+      let mut hint_style = Style::default().fg(theme.accent).add_modifier(Modifier::UNDERLINED);
+      if hovered {
+        hint_style = hint_style.add_modifier(Modifier::BOLD | Modifier::REVERSED);
+      }
+      values[0] = Line::from(vec![Span::raw(description), Span::raw(separator), Span::styled(hint, hint_style)]);
+      self.explanation_button_rect = Some(button_rect);
+    }
+
+    let explanation_row = self.explanation_button_rect.map(|_| 0);
+    register_copyable_fields(&mut values, panes[1], self.mouse_position, explanation_row, &mut self.copyable_fields);
     f.render_widget(Paragraph::new(labels).alignment(ratatui::layout::Alignment::Right), panes[0]);
     f.render_widget(Paragraph::new(values), panes[1]);
 
     if two_columns {
       let (stat_labels, mut stat_values) = split_labels_values(stat_rows);
-      register_copyable_fields(&mut stat_values, panes[3], self.mouse_position, &mut self.copyable_fields);
+      register_copyable_fields(&mut stat_values, panes[3], self.mouse_position, None, &mut self.copyable_fields);
       f.render_widget(Paragraph::new(stat_labels).alignment(ratatui::layout::Alignment::Right), panes[2]);
       f.render_widget(Paragraph::new(stat_values), panes[3]);
     }
@@ -1926,6 +1997,44 @@ impl Component for Home {
       f.render_widget(paragraph, popup);
     }
 
+    if self.mode == Mode::UnitExplanation {
+      let selected = self.filtered_units.selected();
+      let text = selected.and_then(|s| crate::unit_descriptions::explain(&s.unit.name, s.unit.scope)).unwrap_or("");
+      let title = selected.map(|s| format!("─What is {}?", s.unit.name)).unwrap_or_else(|| "─What is it?".to_string());
+
+      let area = f.area();
+      let popup_width = 64u16.min(area.width.saturating_sub(4)).max(20);
+      let wrapped = word_wrap(text, popup_width.saturating_sub(4) as usize);
+      let disclaimer = word_wrap(
+        "Matched by unit name and scope; locally replaced units may differ.",
+        popup_width.saturating_sub(4) as usize,
+      );
+      // leading blank + text + blank + disclaimer + blank + hint + 2 borders
+      let popup_height = (wrapped.len() as u16 + disclaimer.len() as u16 + 6).min(area.height.saturating_sub(2));
+      let popup = area.centered(Constraint::Length(popup_width), Constraint::Length(popup_height));
+
+      let mut lines = vec![Line::from("")];
+      lines.extend(wrapped.into_iter().map(Line::from));
+      lines.push(Line::from(""));
+      lines.extend(disclaimer.into_iter().map(|line| Line::from(Span::styled(line, dim))));
+      lines.push(Line::from(""));
+      lines.push(Line::from(Span::styled("Press esc to close", dim)));
+
+      let paragraph = Paragraph::new(lines)
+        .block(
+          Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(theme.accent))
+            .padding(ratatui::widgets::Padding::horizontal(1)),
+        )
+        .wrap(Wrap { trim: true });
+
+      f.render_widget(Clear, popup);
+      f.render_widget(paragraph, popup);
+    }
+
     let selected_unit_name = match self.filtered_units.selected() {
       Some(s) => &s.unit.name,
       None => "",
@@ -1956,6 +2065,7 @@ impl Component for Home {
       Mode::ActionMenu => Line::from(span("Execute action: <enter> | Close menu: <esc>", theme.primary)),
       Mode::Processing => Line::from(span("Cancel task: <esc>", theme.primary)),
       Mode::Error => Line::from(span("Close menu: <esc>", theme.primary)),
+      Mode::UnitExplanation => Line::from(span("Close: <esc>", theme.primary)),
       Mode::SignalMenu => Line::from(span("Send signal: <enter> | Close menu: <esc>", theme.primary)),
       Mode::StatusFilter => Line::from(span("Toggle: <space> | All: a | None: n | Close: <esc>", theme.primary)),
     };
@@ -2148,6 +2258,30 @@ fn format_bytes(bytes: u64) -> String {
   } else {
     format!("{value:.1}{}", UNITS[unit])
   }
+}
+
+/// Greedy word-wrap to a given column width. Returns one string per visual line. Words longer than
+/// the width are placed on their own line and allowed to overflow (rare for prose). Width is
+/// measured in chars, which matches display width for the plain English these descriptions use.
+fn word_wrap(text: &str, width: usize) -> Vec<String> {
+  let width = width.max(1);
+  let mut lines: Vec<String> = Vec::new();
+  let mut current = String::new();
+  for word in text.split_whitespace() {
+    if current.is_empty() {
+      current.push_str(word);
+    } else if current.chars().count() + 1 + word.chars().count() <= width {
+      current.push(' ');
+      current.push_str(word);
+    } else {
+      lines.push(std::mem::take(&mut current));
+      current.push_str(word);
+    }
+  }
+  if !current.is_empty() {
+    lines.push(current);
+  }
+  lines
 }
 
 fn format_cpu_nsec(nsec: u64) -> String {
