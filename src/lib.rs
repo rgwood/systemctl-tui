@@ -14,4 +14,6 @@ pub mod systemd;
 
 pub mod ssh;
 
+pub mod remote_picker;
+
 pub mod unit_descriptions;
