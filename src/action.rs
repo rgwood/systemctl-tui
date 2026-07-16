@@ -1,5 +1,6 @@
 use crate::{
   components::home::Mode,
+  journal::LogEntry,
   systemd::{ServiceList, UnitFile, UnitId, UnitRuntimeInfo},
 };
 
@@ -25,8 +26,8 @@ pub enum Action {
   SetUnitFilePath { unit: UnitId, path: Result<String, String> },
   SetUnitRuntimeInfo { unit: UnitId, info: Box<UnitRuntimeInfo> },
   CopyUnitFilePath,
-  SetLogs { unit: UnitId, logs: Vec<String> },
-  AppendLogLine { unit: UnitId, line: String },
+  SetLogs { unit: UnitId, logs: Vec<LogEntry> },
+  AppendLogLines { unit: UnitId, lines: Vec<LogEntry> },
   StartService(UnitId),
   StopService(UnitId),
   RestartService(UnitId),
