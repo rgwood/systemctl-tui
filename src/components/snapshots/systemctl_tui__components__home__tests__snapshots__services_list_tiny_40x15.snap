@@ -1,6 +1,5 @@
 ---
 source: src/components/home.rs
-assertion_line: 2758
 expression: terminal.backend()
 ---
 "╭─Search (ctrl Press ? or F1 for help ─╮"
@@ -11,8 +10,8 @@ expression: terminal.backend()
 "│docker                      ││Active: │"
 "│nginx                       ││Enableme│"
 "│bad-config                  ││Unit fil│"
-"│backup timer                │╰────────╯"
-"│ssh                         │╭─Unit Lo╮"
+"│[T] backup                  │╰────────╯"
+"│ssh                         │╭─Logs — ╮"
 "│                            ││        │"
 "│                            ││        │"
 "│                            ││        │"

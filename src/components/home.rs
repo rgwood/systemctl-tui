@@ -59,6 +59,7 @@ pub enum UnitStatus {
   // Unit type
   Service,
   Timer,
+  Other,
   // Activation state
   Active,
   Inactive,
@@ -74,9 +75,10 @@ pub enum UnitStatus {
 }
 
 impl UnitStatus {
-  const ALL: [UnitStatus; 11] = [
+  const ALL: [UnitStatus; 12] = [
     UnitStatus::Service,
     UnitStatus::Timer,
+    UnitStatus::Other,
     UnitStatus::Active,
     UnitStatus::Inactive,
     UnitStatus::Failed,
@@ -98,6 +100,7 @@ impl UnitStatus {
     match self {
       UnitStatus::Service => "services",
       UnitStatus::Timer => "timers",
+      UnitStatus::Other => "other",
       UnitStatus::Active => "active",
       UnitStatus::Inactive => "inactive",
       UnitStatus::Failed => "failed",
@@ -114,6 +117,7 @@ impl UnitStatus {
     match self {
       UnitStatus::Service => KeyCode::Char('v'),
       UnitStatus::Timer => KeyCode::Char('t'),
+      UnitStatus::Other => KeyCode::Char('o'),
       UnitStatus::Active => KeyCode::Char('c'),
       UnitStatus::Inactive => KeyCode::Char('i'),
       UnitStatus::Failed => KeyCode::Char('f'),
@@ -130,7 +134,7 @@ impl UnitStatus {
     match kind {
       UnitKind::Service => Some(UnitStatus::Service),
       UnitKind::Timer => Some(UnitStatus::Timer),
-      UnitKind::Other => None,
+      UnitKind::Other => Some(UnitStatus::Other),
     }
   }
 
@@ -173,7 +177,7 @@ impl UnitStatus {
 }
 
 const STATUS_CATEGORIES: &[(&str, &[UnitStatus])] = &[
-  ("Type", &[UnitStatus::Service, UnitStatus::Timer]),
+  ("Type", &[UnitStatus::Service, UnitStatus::Timer, UnitStatus::Other]),
   ("Activation", &[UnitStatus::Active, UnitStatus::Inactive, UnitStatus::Failed]),
   ("Enablement", &[UnitStatus::Enabled, UnitStatus::Disabled, UnitStatus::Static, UnitStatus::Masked]),
   ("Load", &[UnitStatus::Loaded, UnitStatus::NotFound]),
@@ -245,6 +249,7 @@ pub struct Home {
   pub runtime_info: Option<UnitRuntimeInfo>,
   pub mode: Mode,
   pub previous_mode: Option<Mode>,
+  pub filter_return_mode: Mode,
   pub input: Input,
   pub menu_items: StatefulList<MenuItem>,
   pub cancel_token: Option<CancellationToken>,
@@ -589,7 +594,7 @@ impl Home {
       .values()
       .filter(|u| {
         let passes_type =
-          UnitStatus::unit_kind_bucket(u.kind()).is_none_or(|kind| self.filtered_statuses.contains(&kind));
+          UnitStatus::unit_kind_bucket(u.kind()).is_some_and(|kind| self.filtered_statuses.contains(&kind));
         let passes_activation = self.filtered_statuses.contains(&UnitStatus::activation_bucket(&u.activation_state));
 
         let passes_enablement = match u.enablement_state.as_deref() {
@@ -619,7 +624,7 @@ impl Home {
         .filter_map(|u| {
           self
             .fuzzy_matcher
-            .fuzzy_indices(u.short_name(), search_value)
+            .fuzzy_indices(&u.name, search_value)
             .map(|(score, indices)| (score, MatchedUnit { unit: u.clone(), match_indices: indices }))
         })
         .collect();
@@ -735,6 +740,7 @@ impl Home {
       match action.await {
         Ok(_) => {
           info!("{} of {:?} service {} succeeded", action_name, service.scope, service.name);
+          let _ = tx.send(Action::RefreshUnitRuntimeInfo(service.clone()));
           let _ = tx.send(Action::EnterMode(Mode::ServiceList));
         },
         // would be nicer to check the error type here, but this is easier
@@ -940,7 +946,7 @@ impl Component for Home {
       return vec![Action::ToggleHelp, Action::Render];
     }
 
-    if matches!(key.code, KeyCode::F(2)) {
+    if matches!(key.code, KeyCode::F(2)) && matches!(self.mode, Mode::Search | Mode::ServiceList) {
       return vec![Action::EnterMode(Mode::StatusFilter)];
     }
 
@@ -1091,7 +1097,7 @@ impl Component for Home {
         },
       },
       Mode::StatusFilter => match key.code {
-        KeyCode::Esc => vec![Action::EnterMode(Mode::ServiceList)],
+        KeyCode::Esc => vec![Action::EnterMode(self.filter_return_mode)],
         KeyCode::Down | KeyCode::Char('j') => {
           if self.filter_cursor < UnitStatus::ALL.len() - 1 {
             self.filter_cursor += 1;
@@ -1207,7 +1213,7 @@ impl Component for Home {
             vec![Action::RefreshStatusFilterMenu]
           } else if !self.filter_popup_rect.contains(pos) {
             // Clicked outside the popup: close it, same as Escape.
-            vec![Action::EnterMode(Mode::ServiceList)]
+            vec![Action::EnterMode(self.filter_return_mode)]
           } else {
             // Clicked inside the popup but not on an item (e.g. a category header).
             vec![]
@@ -1457,6 +1463,7 @@ impl Component for Home {
           }
         } else if mode == Mode::StatusFilter {
           self.filter_cursor = 0;
+          self.filter_return_mode = self.mode;
         }
 
         self.mode = mode;
@@ -1494,10 +1501,18 @@ impl Component for Home {
         self.refresh_filtered_units(); // copy the updated unit file path to the filtered list
       },
       Action::SetUnitRuntimeInfo { unit, info } => {
+        let rebuild_timer_menu = self.mode == Mode::ActionMenu
+          && self
+            .filtered_units
+            .selected()
+            .is_some_and(|selected| selected.unit.id() == unit && selected.unit.kind() == UnitKind::Timer);
         if let Some(selected) = self.filtered_units.selected() {
           if selected.unit.id() == unit {
             self.runtime_info = Some(*info);
           }
+        }
+        if rebuild_timer_menu {
+          return Some(Action::EnterMode(Mode::ActionMenu));
         }
       },
       Action::SetLogs { unit, logs } => {
@@ -1586,12 +1601,27 @@ impl Component for Home {
           }
         });
       },
+      Action::RefreshUnitRuntimeInfo(unit) => {
+        let tx = self.action_tx.clone().unwrap();
+        tokio::task::spawn_blocking(move || match systemd::get_unit_runtime_info(&unit) {
+          Ok(info) => {
+            let _ = tx.send(Action::SetUnitRuntimeInfo { unit, info: Box::new(info) });
+            let _ = tx.send(Action::Render);
+          },
+          Err(e) => error!("Failed to refresh runtime info for {}: {e}", unit.name),
+        });
+      },
       Action::RefreshStatusFilterMenu => {
         self.refresh_filtered_units();
         return Some(Action::Render);
       },
       Action::SetUnitFiles(unit_files) => {
         self.merge_unit_files(unit_files);
+        if self.mode == Mode::ActionMenu
+          && self.filtered_units.selected().is_some_and(|selected| selected.unit.kind() == UnitKind::Timer)
+        {
+          return Some(Action::EnterMode(Mode::ActionMenu));
+        }
         return Some(Action::Render);
       },
       Action::KillService(service_name, signal) => self.kill_service(service_name, signal),
@@ -1662,19 +1692,19 @@ impl Component for Home {
       .map(|m| {
         let color = unit_color(&m.unit);
         let name = m.unit.short_name();
-        let kind = match m.unit.kind() {
-          UnitKind::Timer => " timer",
+        let kind_prefix = match m.unit.kind() {
+          UnitKind::Timer => "[T] ",
           UnitKind::Service | UnitKind::Other => "",
         };
 
         if m.match_indices.is_empty() {
           ListItem::new(Line::from(vec![
+            Span::styled(kind_prefix, Style::default().fg(theme.muted).add_modifier(Modifier::DIM)),
             Span::styled(name, Style::default().fg(color)),
-            Span::styled(kind, Style::default().fg(theme.muted).add_modifier(Modifier::DIM)),
           ]))
         } else {
           // Build spans with highlighted matched characters
-          let mut spans = Vec::new();
+          let mut spans = vec![Span::styled(kind_prefix, Style::default().fg(theme.muted).add_modifier(Modifier::DIM))];
           let mut last_end = 0;
 
           for &idx in &m.match_indices {
@@ -1696,8 +1726,6 @@ impl Component for Home {
           if last_end < name.len() {
             spans.push(Span::styled(&name[last_end..], Style::default().fg(color)));
           }
-          spans.push(Span::styled(kind, Style::default().fg(theme.muted).add_modifier(Modifier::DIM)));
-
           ListItem::new(Line::from(spans))
         }
       })
@@ -1731,6 +1759,7 @@ impl Component for Home {
     f.render_stateful_widget(items, chunks[0], &mut self.filtered_units.state);
 
     let selected_item = self.filtered_units.selected();
+    let is_remote = crate::ssh::remote_host().is_some();
 
     // Details rows: base unit facts on the left, runtime stats (fetched lazily on selection)
     // in a second column on wide terminals, or folded into a single "Runtime" row otherwise.
@@ -1764,7 +1793,7 @@ impl Component for Home {
         } else {
           info.inactive_enter_timestamp.as_deref()
         };
-        if let Some((absolute, relative)) = since.and_then(format_systemd_timestamp) {
+        if let Some((absolute, relative)) = since.and_then(|timestamp| format_systemd_timestamp(timestamp, is_remote)) {
           let relative = relative.map(|r| format!(" ({r})")).unwrap_or_default();
           active_spans.push(Span::styled(format!(" since {absolute}{relative}"), dim));
         }
@@ -1823,14 +1852,31 @@ impl Component for Home {
           stat_rows
             .push(("Restarts", Line::from(Span::styled(restarts.to_string(), Style::default().fg(Color::Yellow)))));
         }
-        if let Some((absolute, relative)) = info.next_elapse.as_deref().and_then(format_systemd_timestamp) {
-          let relative = relative.map(|r| format!(" ({r})")).unwrap_or_default();
-          stat_rows.push(("Next run", Line::from(format!("{absolute}{relative}"))));
-        }
         if m.unit.kind() == UnitKind::Timer {
-          if let Some((absolute, relative)) = info.last_trigger.as_deref().and_then(format_systemd_timestamp) {
+          match (&info.next_elapse_realtime, &info.next_elapse_monotonic) {
+            (Some(realtime), Some(monotonic)) => {
+              if let Some((absolute, relative)) = format_systemd_timestamp(realtime, is_remote) {
+                let relative = relative.map(|r| format!(" ({r})")).unwrap_or_default();
+                stat_rows.push(("Next calendar", Line::from(format!("{absolute}{relative}"))));
+              }
+              stat_rows.push(("Next monotonic", Line::from(format!("in {monotonic}"))));
+            },
+            (Some(realtime), None) => {
+              if let Some((absolute, relative)) = format_systemd_timestamp(realtime, is_remote) {
+                let relative = relative.map(|r| format!(" ({r})")).unwrap_or_default();
+                stat_rows.push(("Next trigger", Line::from(format!("{absolute}{relative}"))));
+              }
+            },
+            (None, Some(monotonic)) => {
+              stat_rows.push(("Next trigger", Line::from(format!("in {monotonic}"))));
+            },
+            (None, None) => {},
+          }
+          if let Some((absolute, relative)) =
+            info.last_trigger.as_deref().and_then(|timestamp| format_systemd_timestamp(timestamp, is_remote))
+          {
             let relative = relative.map(|r| format!(" ({r})")).unwrap_or_default();
-            stat_rows.push(("Last run", Line::from(format!("{absolute}{relative}"))));
+            stat_rows.push(("Last trigger", Line::from(format!("{absolute}{relative}"))));
           }
           if let Some(unit) = &info.triggered_unit {
             stat_rows.push(("Activates", Line::from(unit.as_str())));
@@ -1838,27 +1884,23 @@ impl Component for Home {
           for schedule in &info.timer_schedules {
             stat_rows.push(("Schedule", Line::from(schedule.as_str())));
           }
-          let mut policy = Vec::new();
           if info.persistent == Some(true) {
-            policy.push("persistent".to_string());
+            stat_rows.push(("Persistent", Line::from("yes")));
           }
           if let Some(delay) = &info.randomized_delay {
             if delay != "0" {
-              policy.push(format!("random delay {delay}"));
+              stat_rows.push(("Random delay", Line::from(delay.as_str())));
             }
           }
           if let Some(accuracy) = &info.accuracy {
-            policy.push(format!("accuracy {accuracy}"));
-          }
-          if !policy.is_empty() {
-            stat_rows.push(("Timing", Line::from(policy.join(" · "))));
+            stat_rows.push(("Accuracy", Line::from(accuracy.as_str())));
           }
         }
       }
     }
 
     let timer_details = selected_item.is_some_and(|m| m.unit.kind() == UnitKind::Timer);
-    let two_columns = right_panel.width >= 90 && !stat_rows.is_empty();
+    let two_columns = right_panel.width >= 120 && !stat_rows.is_empty();
     if !two_columns && !stat_rows.is_empty() {
       if timer_details {
         // Timer metadata is the main reason to select a timer. Keep it readable on
@@ -1888,8 +1930,12 @@ impl Component for Home {
 
     // Size the details panel to its content instead of a fixed height
     let grid_height = rows.len().max(stat_rows.len()).max(1) as u16;
+    // Always leave a few rows for logs. On tiny terminals the lower-priority
+    // detail rows are clipped, which is more useful than hiding logs entirely.
+    let max_details_height = right_panel.height.saturating_sub(4).max(3).min(right_panel.height);
+    let details_height = (grid_height + 2).min(max_details_height);
     let right_panel =
-      Layout::new(Direction::Vertical, [Constraint::Length(grid_height + 2), Constraint::Percentage(100)])
+      Layout::new(Direction::Vertical, [Constraint::Length(details_height), Constraint::Percentage(100)])
         .split(right_panel);
     let details_panel = right_panel[0];
     let logs_panel = right_panel[1];
@@ -2043,10 +2089,11 @@ impl Component for Home {
       LogOrder::NewestFirst => "newest first",
       LogOrder::OldestFirst => "oldest first",
     };
+    let logs_unit = selected_item.map(|selected| selected.unit.name.as_str()).unwrap_or("unit");
     let paragraph = Paragraph::new(log_lines)
       .block(
         Block::default()
-          .title(format!("─Unit Logs [{order_label}; ctrl+r to reverse]"))
+          .title(format!("─Logs — {logs_unit} [{order_label}; ctrl+r to reverse]"))
           .borders(Borders::ALL)
           .border_type(BorderType::Rounded),
       )
@@ -2310,12 +2357,16 @@ impl Component for Home {
       let mut lines: Vec<Line> = Vec::new();
       let mut line_item_indices: Vec<Option<usize>> = Vec::new();
       let mut idx = 0;
+      let full_height = STATUS_CATEGORIES.len() + UnitStatus::ALL.len() + 2;
+      let compact = usize::from(f.area().height) < full_height;
       for (category_name, filters) in STATUS_CATEGORIES {
-        lines.push(Line::from(Span::styled(
-          *category_name,
-          Style::default().fg(theme.muted).add_modifier(Modifier::BOLD),
-        )));
-        line_item_indices.push(None);
+        if !compact {
+          lines.push(Line::from(Span::styled(
+            *category_name,
+            Style::default().fg(theme.muted).add_modifier(Modifier::BOLD),
+          )));
+          line_item_indices.push(None);
+        }
         for filter in *filters {
           let is_checked = self.filtered_statuses.contains(filter);
           let is_selected = idx == self.filter_cursor;
@@ -2441,16 +2492,24 @@ impl Component for Home {
 /// systemd v255 changed the timestamp format from `-0700` to `-07:00` (RFC 3339).
 /// See: https://github.com/systemd/systemd/pull/29134
 /// Parses a systemd "show" timestamp like "Wed 2026-07-08 10:00:00 PDT" into a compact
-/// absolute form ("2026-07-08 10:00") and a relative one ("2d 4h ago" or "in 2d 4h").
-/// The relative part assumes the host clock/timezone roughly match ours, which can be
-/// slightly off in remote mode — good enough for a human-scale "how long ago".
-fn format_systemd_timestamp(timestamp: &str) -> Option<(String, Option<String>)> {
+/// absolute form and, for local units, a relative one ("2d 4h ago" or "in 2d 4h").
+/// Remote timestamps retain their source timezone and omit the relative time because
+/// comparing naive wall-clock values from different timezones would be misleading.
+fn format_systemd_timestamp(timestamp: &str, is_remote: bool) -> Option<(String, Option<String>)> {
   let mut parts = timestamp.split_whitespace();
   let _weekday = parts.next()?;
   let date = parts.next()?;
   let time = parts.next()?;
+  let timezone = parts.next();
   let naive = chrono::NaiveDateTime::parse_from_str(&format!("{date} {time}"), "%Y-%m-%d %H:%M:%S").ok()?;
-  let absolute = naive.format("%Y-%m-%d %H:%M").to_string();
+  let mut absolute = naive.format("%Y-%m-%d %H:%M").to_string();
+  if is_remote {
+    if let Some(timezone) = timezone {
+      absolute.push(' ');
+      absolute.push_str(timezone);
+    }
+    return Some((absolute, None));
+  }
   let seconds = chrono::Local::now().naive_local().signed_duration_since(naive).num_seconds();
   let relative = if seconds >= 0 {
     format!("{} ago", format_duration(seconds as u64))
@@ -2684,6 +2743,74 @@ mod tests {
     assert!(matches!(actions.as_slice(), [Action::ToggleLogOrder, Action::Render]));
   }
 
+  #[test]
+  fn f2_filter_returns_focus_to_search() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    home.mode = Mode::Search;
+
+    let actions = home.handle_key_events(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+    let [open] = actions.as_slice() else {
+      panic!("F2 should open the filter");
+    };
+    home.dispatch(open.clone());
+    assert_eq!(home.mode, Mode::StatusFilter);
+
+    let actions = home.handle_key_events(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    let [close] = actions.as_slice() else {
+      panic!("Escape should close the filter");
+    };
+    assert!(matches!(close, Action::EnterMode(Mode::Search)));
+  }
+
+  #[test]
+  fn f2_does_not_interrupt_processing() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    home.mode = Mode::Processing;
+
+    assert!(home.handle_key_events(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE)).is_empty());
+  }
+
+  #[test]
+  fn search_can_match_the_timer_suffix() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let (journalctl_tx, _journalctl_rx) = std::sync::mpsc::channel();
+    home.journalctl_tx = Some(journalctl_tx);
+    home.all_units.insert(test_unit("backup.service").id(), test_unit("backup.service"));
+    home.all_units.insert(test_unit("backup.timer").id(), test_unit("backup.timer"));
+    home.input = Input::default().with_value("backup.timer".to_string());
+
+    home.refresh_filtered_units();
+
+    assert_eq!(home.filtered_units.items.len(), 1);
+    assert_eq!(home.filtered_units.items[0].unit.name, "backup.timer");
+  }
+
+  #[test]
+  fn late_timer_metadata_rebuilds_the_open_action_menu() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let timer = test_unit("backup.timer");
+    let timer_id = timer.id();
+    home.filtered_units = StatefulList::with_items(vec![MatchedUnit { unit: timer, match_indices: vec![] }]);
+    home.filtered_units.state.select(Some(0));
+    home.dispatch(Action::EnterMode(Mode::ActionMenu));
+    assert!(!home.menu_items.items.iter().any(|item| item.name.contains("backup.service")));
+
+    let follow_up = home.dispatch(Action::SetUnitRuntimeInfo {
+      unit: timer_id,
+      info: Box::new(UnitRuntimeInfo { triggered_unit: Some("backup.service".into()), ..Default::default() }),
+    });
+    home.dispatch(follow_up.expect("the action menu should be rebuilt"));
+
+    assert!(home.menu_items.items.iter().any(|item| item.name == "Start backup.service now"));
+  }
+
+  #[test]
+  fn remote_timestamps_keep_their_timezone_without_a_relative_guess() {
+    let formatted = format_systemd_timestamp("Wed 2026-07-08 10:00:00 PDT", true);
+
+    assert_eq!(formatted, Some(("2026-07-08 10:00 PDT".into(), None)));
+  }
+
   mod snapshots {
     //! Snapshot tests of `Home`'s rendering, using `insta` + ratatui's `TestBackend`.
     //!
@@ -2744,6 +2871,22 @@ mod tests {
       terminal
     }
 
+    fn timer_fixture() -> Home {
+      let mut home = fixture();
+      let timer_index = home.filtered_units.items.iter().position(|item| item.unit.name == "backup.timer").unwrap();
+      home.filtered_units.state.select(Some(timer_index));
+      home.runtime_info = Some(UnitRuntimeInfo {
+        next_elapse_monotonic: Some("2h 15min".into()),
+        triggered_unit: Some("backup.service".into()),
+        timer_schedules: vec!["OnBootSec=10min".into(), "OnUnitActiveSec=2h".into()],
+        persistent: Some(true),
+        randomized_delay: Some("5min".into()),
+        accuracy: Some("1min".into()),
+        ..Default::default()
+      });
+      home
+    }
+
     #[test]
     fn services_list_120x40() {
       let mut home = fixture();
@@ -2754,6 +2897,28 @@ mod tests {
     #[test]
     fn services_list_tiny_40x15() {
       let mut home = fixture();
+      let terminal = render(&mut home, 40, 15);
+      insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn timer_details_120x40() {
+      let mut home = timer_fixture();
+      let terminal = render(&mut home, 120, 40);
+      insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn timer_details_80x24() {
+      let mut home = timer_fixture();
+      let terminal = render(&mut home, 80, 24);
+      insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn filter_popup_tiny_40x15() {
+      let mut home = fixture();
+      home.dispatch(Action::EnterMode(Mode::StatusFilter));
       let terminal = render(&mut home, 40, 15);
       insta::assert_snapshot!(terminal.backend());
     }

@@ -5,7 +5,7 @@
 A fast, simple TUI for interacting with [systemd](https://en.wikipedia.org/wiki/Systemd) units and their logs.
 ![Screenshot from 2025-01-23 21-44-31](https://github.com/user-attachments/assets/caac6034-d4e3-4c54-8163-24a8a6d39cb4)
 
-`systemctl-tui` can quickly browse service and timer status and logs, start/stop/restart/reload units, and view/edit unit files. It aims to do a small number of things well.
+`systemctl-tui` can quickly browse service and timer status and logs, manage services and timers, and view/edit unit files. It aims to do a small number of things well.
 
 ## Install
 

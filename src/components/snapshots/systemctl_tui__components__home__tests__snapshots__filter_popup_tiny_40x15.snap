@@ -1,0 +1,19 @@
+---
+source: src/components/home.rs
+expression: terminal.backend()
+---
+"╭─Search (ctrl Press ? or F1 for help ─╮"
+"│         ╭─Unit filters─────╮         │"
+"╰─────────│  ✓ services     v│─────────╯"
+"╭─Units (1│  ✓ timers       t│╭─Details╮"
+"│cron     │  ✓ other        o││Descript│"
+"│docker   │  ✓ active       c││Active: │"
+"│nginx    │  ✓ inactive     i││Enableme│"
+"│bad-confi│  ✓ failed       f││Unit fil│"
+"│[T] backu│  ✓ enabled      e│╰────────╯"
+"│ssh      │  ✓ disabled     d│╭─Logs — ╮"
+"│         │  ✓ static       s││        │"
+"│         │    masked       m││        │"
+"│         │  ✓ loaded       l││        │"
+"╰─────────│    not-found    u│╰────────╯"
+"Toggle: <s╰──────────────────╯e: nv0.6.1"

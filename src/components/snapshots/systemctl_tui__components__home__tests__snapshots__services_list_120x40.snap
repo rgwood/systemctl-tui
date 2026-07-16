@@ -1,6 +1,5 @@
 ---
 source: src/components/home.rs
-assertion_line: 2751
 expression: terminal.backend()
 ---
 "╭─Search (ctrl+f or /)──────────────────────────────────────────────────────────────────────── Press ? or F1 for help ─╮"
@@ -11,8 +10,8 @@ expression: terminal.backend()
 "│docker                      ││     Active: active (running)                                                           │"
 "│nginx                       ││ Enablement: enabled · global                                                           │"
 "│bad-config                  ││  Unit file: /etc/systemd/system/cron.service                                           │"
-"│backup timer                │╰────────────────────────────────────────────────────────────────────────────────────────╯"
-"│ssh                         │╭─Unit Logs [newest first; ctrl+r to reverse]────────────────────────────────────────────╮"
+"│[T] backup                  │╰────────────────────────────────────────────────────────────────────────────────────────╯"
+"│ssh                         │╭─Logs — cron.service [newest first; ctrl+r to reverse]──────────────────────────────────╮"
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"

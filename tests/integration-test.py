@@ -113,7 +113,7 @@ def wait_for(predicate, timeout: float = 15.0, interval: float = 0.5) -> bool:
 def test_startup_and_browse(binary: str, host: str | None) -> None:
     print("startup and browsing:")
     start_app(binary, host)
-    check("app launches and renders", wait_for(lambda: "Services" in capture()))
+    check("app launches and renders", wait_for(lambda: "Units" in capture()))
     check("services listed", wait_for(lambda: ".service" in capture() or "Details" in capture()))
 
     # navigate: initial mode is Search, Down selects the first unit
@@ -174,7 +174,7 @@ def test_mouse(binary: str, host: str | None) -> None:
     """
     print("mouse interactions:")
     start_app(binary, host)
-    wait_for(lambda: "Services" in capture())
+    wait_for(lambda: "Units" in capture())
     # initial mode is Search; leave it so plain keys like 'f' below aren't typed into the box
     send_keys("Escape")
     time.sleep(0.3)
@@ -185,7 +185,7 @@ def test_mouse(binary: str, host: str | None) -> None:
         lines = capture().splitlines() if lines is None else lines
         in_list = False
         for i, line in enumerate(lines):
-            if "Services" in line[:30]:
+            if "Units" in line[:30]:
                 in_list = True
                 continue
             if not in_list:
@@ -248,7 +248,7 @@ def test_mouse(binary: str, host: str | None) -> None:
     # contains relative timestamps ("(17s ago)") that tick between captures.
     def logs_region() -> str:
         lines = capture().splitlines()
-        start = next((i for i, l in enumerate(lines) if "Service Logs" in l), 0)
+        start = next((i for i, l in enumerate(lines) if "Logs —" in l), 0)
         return "\n".join(lines[start:])
 
     logs_before = logs_region()
@@ -270,13 +270,15 @@ def test_mouse(binary: str, host: str | None) -> None:
         time.sleep(0.3)
 
     # 4. drag-selecting log text copies it and shows a toast
-    send_mouse("press", 40, 11)
+    logs_title_row = next(i for i, line in enumerate(capture().splitlines()) if "Logs —" in line)
+    drag_row = logs_title_row + 2  # tmux mouse coordinates are 1-based; use the first log-content row
+    send_mouse("press", 40, drag_row)
     time.sleep(0.1)
-    send_mouse("drag", 44, 11)
+    send_mouse("drag", 44, drag_row)
     time.sleep(0.1)
-    send_mouse("drag", 48, 11)
+    send_mouse("drag", 48, drag_row)
     time.sleep(0.1)
-    send_mouse("release", 48, 11)
+    send_mouse("release", 48, drag_row)
     check("drag selection copies log text", wait_for(lambda: re.search(r"Copied \d+ chars", capture()) is not None), capture())
     time.sleep(2.1)
 
@@ -292,7 +294,7 @@ def test_mouse(binary: str, host: str | None) -> None:
     send_keys("Escape")
     time.sleep(0.3)
     send_keys("f")
-    check("status filter popup opens", wait_for(lambda: "Status filter" in capture()), capture())
+    check("status filter popup opens", wait_for(lambda: "Unit filters" in capture()), capture())
     filter_line = next((i for i, l in enumerate(capture().splitlines()) if "✓ active" in l), None)
     check("status filter has a checked entry", filter_line is not None, capture())
     if filter_line is not None:
@@ -304,7 +306,7 @@ def test_mouse(binary: str, host: str | None) -> None:
         check("clicking a status filter entry toggles its checkmark", "✓ active" not in toggled, toggled)
     click(5, 5)
     time.sleep(0.4)
-    check("click outside closes status filter popup", "Status filter" not in capture(), capture())
+    check("click outside closes status filter popup", "Unit filters" not in capture(), capture())
 
     check("app alive after mouse interactions", app_alive())
     send_keys("q")
@@ -322,7 +324,7 @@ def test_no_dropped_keystrokes(binary: str, host: str | None) -> None:
     text = "systemdnetworkd"
     for ms in (30, 10):
         start_app(binary, host)
-        wait_for(lambda: "Services" in capture())
+        wait_for(lambda: "Units" in capture())
         send_keys(*text, delay=ms / 1000)
         time.sleep(2)
         search_line = capture().splitlines()[1] if len(capture().splitlines()) > 1 else ""
@@ -336,7 +338,7 @@ def test_no_dropped_keystrokes(binary: str, host: str | None) -> None:
 def test_clean_exit(binary: str, host: str | None) -> None:
     print("clean exit:")
     start_app(binary, host)
-    wait_for(lambda: "Services" in capture())
+    wait_for(lambda: "Units" in capture())
     # initial mode is Search where q would be typed into the box; Escape first
     send_keys("Escape")
     time.sleep(0.5)

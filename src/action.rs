@@ -16,6 +16,7 @@ pub enum Action {
   ToggleShowLogger,
   RefreshServices,
   RefreshUnitFiles,
+  RefreshUnitRuntimeInfo(UnitId),
   RefreshStatusFilterMenu,
   SetServices(ServiceList),
   SetUnitFiles(Vec<UnitFile>),

@@ -124,3 +124,20 @@ async fn main() -> Result<()> {
 
   Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn default_unit_patterns_include_services_and_timers() {
+    let args = Args::try_parse_from(["systemctl-tui"]).unwrap();
+    assert_eq!(args.limit_units, ["*.service", "*.timer"]);
+  }
+
+  #[test]
+  fn explicit_unit_patterns_replace_defaults() {
+    let args = Args::try_parse_from(["systemctl-tui", "--limit-units", "*.timer"]).unwrap();
+    assert_eq!(args.limit_units, ["*.timer"]);
+  }
+}

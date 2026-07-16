@@ -301,7 +301,8 @@ pub struct UnitRuntimeInfo {
   pub inactive_enter_timestamp: Option<String>,
   pub result: Option<String>,
   pub exec_main_status: Option<i32>,
-  pub next_elapse: Option<String>,
+  pub next_elapse_realtime: Option<String>,
+  pub next_elapse_monotonic: Option<String>,
   pub last_trigger: Option<String>,
   pub triggered_unit: Option<String>,
   pub timer_schedules: Vec<String>,
@@ -316,32 +317,25 @@ fn parse_timer_schedules(value: &str) -> Vec<String> {
     .filter_map(|entry| {
       let entry = entry.trim().trim_start_matches('{').trim();
       let schedule = entry.split("; next_elapse=").next()?.trim();
-      (!schedule.is_empty()).then(|| schedule.to_string())
+      if schedule.is_empty() {
+        return None;
+      }
+      let schedule = [
+        ("OnActiveUSec=", "OnActiveSec="),
+        ("OnBootUSec=", "OnBootSec="),
+        ("OnStartupUSec=", "OnStartupSec="),
+        ("OnUnitActiveUSec=", "OnUnitActiveSec="),
+        ("OnUnitInactiveUSec=", "OnUnitInactiveSec="),
+      ]
+      .into_iter()
+      .find_map(|(internal, directive)| schedule.strip_prefix(internal).map(|value| format!("{directive}{value}")))
+      .unwrap_or_else(|| schedule.to_string());
+      Some(schedule)
     })
     .collect()
 }
 
-/// Fetches runtime properties (including the unit file path) for a unit in a single
-/// `systemctl show` invocation. Uses systemctl rather than D-Bus so it works in remote mode too.
-/// Properties that don't apply to the unit type are simply omitted from the output.
-pub fn get_unit_runtime_info(service: &UnitId) -> Result<UnitRuntimeInfo> {
-  const PROPERTIES: &str = "FragmentPath,MainPID,MemoryCurrent,TasksCurrent,NRestarts,CPUUsageNSec,\
-                            ActiveEnterTimestamp,InactiveEnterTimestamp,Result,ExecMainStatus,NextElapseUSecRealtime,\
-                            LastTriggerUSec,Unit,TimersCalendar,TimersMonotonic,Persistent,RandomizedDelayUSec,AccuracyUSec";
-  let mut args = vec!["--quiet", "show", "-p", PROPERTIES];
-  args.push(&service.name);
-
-  if service.scope == UnitScope::User {
-    args.insert(0, "--user");
-  }
-
-  let output = ssh::host_command("systemctl", &args).output()?;
-
-  if !output.status.success() {
-    let stderr = String::from_utf8(output.stderr)?;
-    bail!(stderr);
-  }
-
+fn parse_unit_runtime_info(output: &str) -> UnitRuntimeInfo {
   fn non_empty(value: &str) -> Option<String> {
     match value {
       "" | "[not set]" | "n/a" => None,
@@ -349,8 +343,24 @@ pub fn get_unit_runtime_info(service: &UnitId) -> Result<UnitRuntimeInfo> {
     }
   }
 
+  fn next_elapse(value: &str) -> Option<String> {
+    match value {
+      // systemd reports the unused clock as 0 when the other clock has the
+      // timer's real deadline (for example, calendar timers use realtime).
+      "" | "0" | "[not set]" | "n/a" | "infinity" => None,
+      v => Some(v.to_string()),
+    }
+  }
+
   let mut info = UnitRuntimeInfo::default();
-  for line in str::from_utf8(&output.stdout)?.lines() {
+  let mut collecting_timer_schedules = false;
+  for line in output.lines() {
+    if collecting_timer_schedules && line.trim_start().starts_with('{') {
+      info.timer_schedules.extend(parse_timer_schedules(line));
+      continue;
+    }
+    collecting_timer_schedules = false;
+
     let Some((key, value)) = line.split_once('=') else { continue };
     let value = value.trim();
     match key {
@@ -365,11 +375,13 @@ pub fn get_unit_runtime_info(service: &UnitId) -> Result<UnitRuntimeInfo> {
       "InactiveEnterTimestamp" => info.inactive_enter_timestamp = non_empty(value),
       "Result" => info.result = non_empty(value),
       "ExecMainStatus" => info.exec_main_status = value.parse().ok(),
-      "NextElapseUSecRealtime" => info.next_elapse = non_empty(value),
+      "NextElapseUSecRealtime" => info.next_elapse_realtime = next_elapse(value),
+      "NextElapseUSecMonotonic" => info.next_elapse_monotonic = next_elapse(value),
       "LastTriggerUSec" => info.last_trigger = non_empty(value),
       "Unit" => info.triggered_unit = non_empty(value),
       "TimersCalendar" | "TimersMonotonic" => {
         info.timer_schedules.extend(parse_timer_schedules(value));
+        collecting_timer_schedules = true;
       },
       "Persistent" => {
         info.persistent = match value {
@@ -383,8 +395,32 @@ pub fn get_unit_runtime_info(service: &UnitId) -> Result<UnitRuntimeInfo> {
       _ => {},
     }
   }
+  info
+}
 
-  Ok(info)
+/// Fetches runtime properties (including the unit file path) for a unit in a single
+/// `systemctl show` invocation. Uses systemctl rather than D-Bus so it works in remote mode too.
+/// Properties that don't apply to the unit type are simply omitted from the output.
+pub fn get_unit_runtime_info(service: &UnitId) -> Result<UnitRuntimeInfo> {
+  const PROPERTIES: &str = "FragmentPath,MainPID,MemoryCurrent,TasksCurrent,NRestarts,CPUUsageNSec,\
+                            ActiveEnterTimestamp,InactiveEnterTimestamp,Result,ExecMainStatus,NextElapseUSecRealtime,\
+                            NextElapseUSecMonotonic,LastTriggerUSec,Unit,TimersCalendar,TimersMonotonic,Persistent,\
+                            RandomizedDelayUSec,AccuracyUSec";
+  let mut args = vec!["--quiet", "show", "-p", PROPERTIES];
+  args.push(&service.name);
+
+  if service.scope == UnitScope::User {
+    args.insert(0, "--user");
+  }
+
+  let output = ssh::host_command("systemctl", &args).output()?;
+
+  if !output.status.success() {
+    let stderr = String::from_utf8(output.stderr)?;
+    bail!(stderr);
+  }
+
+  Ok(parse_unit_runtime_info(str::from_utf8(&output.stdout)?))
 }
 
 pub async fn start_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
@@ -990,6 +1026,35 @@ mod tests {
       vec!["OnBootSec=15min", "OnUnitActiveSec=1h"]
     );
     assert!(parse_timer_schedules("").is_empty());
+  }
+
+  #[test]
+  fn parses_real_multiline_timer_runtime_output() {
+    let output = "FragmentPath=/usr/lib/systemd/system/example.timer\n\
+NextElapseUSecRealtime=\n\
+NextElapseUSecMonotonic=3h 4min\n\
+LastTriggerUSec=Wed 2026-07-15 12:00:00 PDT\n\
+Unit=example.service\n\
+TimersCalendar={ OnCalendar=daily ; next_elapse=Thu 2026-07-16 00:00:00 PDT }\n\
+TimersMonotonic={ OnUnitActiveUSec=3h ; next_elapse=3h 4min }\n\
+{ OnStartupUSec=1h ; next_elapse=1h 4min }\n\
+Persistent=yes\n";
+
+    let info = parse_unit_runtime_info(output);
+
+    assert_eq!(info.next_elapse_realtime, None);
+    assert_eq!(info.next_elapse_monotonic.as_deref(), Some("3h 4min"));
+    assert_eq!(info.triggered_unit.as_deref(), Some("example.service"));
+    assert_eq!(info.timer_schedules, ["OnCalendar=daily", "OnUnitActiveSec=3h", "OnStartupSec=1h"]);
+    assert_eq!(info.persistent, Some(true));
+  }
+
+  #[test]
+  fn unavailable_next_elapse_is_omitted() {
+    let info = parse_unit_runtime_info("NextElapseUSecRealtime=n/a\nNextElapseUSecMonotonic=0\nTimersCalendar=\n");
+    assert!(info.next_elapse_realtime.is_none());
+    assert!(info.next_elapse_monotonic.is_none());
+    assert!(info.timer_schedules.is_empty());
   }
 
   #[test]
