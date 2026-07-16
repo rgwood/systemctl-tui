@@ -2507,4 +2507,114 @@ mod tests {
 
     assert!(matches!(actions.as_slice(), [Action::ToggleLogOrder, Action::Render]));
   }
+
+  mod snapshots {
+    //! Snapshot tests of `Home`'s rendering, using `insta` + ratatui's `TestBackend`.
+    //!
+    //! These build a `Home` directly (no live systemd/D-Bus/async runtime) and feed it
+    //! fake unit data, so everything here is deterministic. `spinner_tick` is pinned to 0
+    //! and `toast` is left `None` to avoid time-dependence.
+
+    use ratatui::{backend::TestBackend, Terminal};
+
+    use super::*;
+
+    fn unit(name: &str, activation_state: &str, sub_state: &str, load_state: &str) -> UnitWithStatus {
+      UnitWithStatus {
+        name: name.to_string(),
+        scope: UnitScope::Global,
+        description: format!("{name} description"),
+        file_path: Some(Ok(format!("/etc/systemd/system/{name}"))),
+        load_state: load_state.to_string(),
+        activation_state: activation_state.to_string(),
+        sub_state: sub_state.to_string(),
+        enablement_state: Some("enabled".to_string()),
+      }
+    }
+
+    /// A `Home` populated with a handful of units covering varied statuses, and no
+    /// time-dependent fields set (so renders are deterministic across runs).
+    fn fixture() -> Home {
+      let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+      // `get_logs` (triggered by selection changes) sends unit ids down this channel to a
+      // background thread that shells out to `journalctl`. Give it a receiver so the sends
+      // succeed, but never drain it - we don't want to spawn a real journalctl process.
+      let (journalctl_tx, _journalctl_rx) = std::sync::mpsc::channel();
+      home.journalctl_tx = Some(journalctl_tx);
+
+      let units = vec![
+        unit("cron.service", "active", "running", "loaded"),
+        unit("docker.service", "active", "running", "loaded"),
+        unit("nginx.service", "inactive", "dead", "loaded"),
+        unit("bad-config.service", "failed", "failed", "loaded"),
+        unit("backup.timer", "active", "waiting", "loaded"),
+        unit("ssh.service", "active", "running", "loaded"),
+        unit("old-thing.service", "inactive", "dead", "not-found"),
+      ];
+      home.set_units(units);
+      home.filtered_units.state.select(Some(0));
+
+      // Deterministic: no spinner animation, no toast timing.
+      home.spinner_tick = 0;
+      home.toast = None;
+
+      home
+    }
+
+    fn render(home: &mut Home, width: u16, height: u16) -> Terminal<TestBackend> {
+      let backend = TestBackend::new(width, height);
+      let mut terminal = Terminal::new(backend).unwrap();
+      terminal.draw(|f| home.render(f, f.area())).unwrap();
+      terminal
+    }
+
+    #[test]
+    fn services_list_120x40() {
+      let mut home = fixture();
+      let terminal = render(&mut home, 120, 40);
+      insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn services_list_tiny_40x15() {
+      let mut home = fixture();
+      let terminal = render(&mut home, 40, 15);
+      insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn search_mode_with_query() {
+      let mut home = fixture();
+      home.mode = Mode::Search;
+      home.input = Input::default().with_value("ssh".to_string());
+      home.refresh_filtered_units();
+      let terminal = render(&mut home, 120, 40);
+      insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn action_menu_open() {
+      let mut home = fixture();
+      home.dispatch(Action::EnterMode(Mode::ActionMenu));
+      let terminal = render(&mut home, 120, 40);
+      insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn help_screen() {
+      let mut home = fixture();
+      home.mode = Mode::Help;
+      let terminal = render(&mut home, 120, 40);
+      insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn error_state() {
+      let mut home = fixture();
+      home.error_message = "Failed to connect to systemd:\nUnit dbus not found".to_string();
+      home.mode = Mode::Error;
+      let terminal = render(&mut home, 120, 40);
+      insta::assert_snapshot!(terminal.backend());
+    }
+  }
 }

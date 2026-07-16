@@ -58,3 +58,6 @@ panic = 'abort' # Abort on panic
 [[bin]]
 name = "systemctl-tui"
 path = "src/main.rs"
+
+[dev-dependencies]
+insta = "1.48.0"
