@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use systemctl_tui::{
   app::App,
+  components::home::LogOrder,
   ssh, systemd,
   utils::{get_data_dir, initialize_logging, initialize_panic_handler, version},
 };
@@ -29,6 +30,9 @@ struct Args {
   /// Manage a remote host over SSH (e.g. user@hostname). Requires systemd-stdio-bridge on the remote host.
   #[clap(long)]
   host: Option<String>,
+  /// Order used to display service logs
+  #[clap(long, value_enum, default_value_t = CliLogOrder::NewestFirst)]
+  log_order: CliLogOrder,
 }
 
 #[derive(Subcommand, Debug)]
@@ -42,6 +46,21 @@ pub enum Scope {
   Global,
   User,
   All,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliLogOrder {
+  NewestFirst,
+  OldestFirst,
+}
+
+impl From<CliLogOrder> for LogOrder {
+  fn from(value: CliLogOrder) -> Self {
+    match value {
+      CliLogOrder::NewestFirst => LogOrder::NewestFirst,
+      CliLogOrder::OldestFirst => LogOrder::OldestFirst,
+    }
+  }
 }
 
 #[tokio::main]
@@ -94,7 +113,7 @@ async fn main() -> Result<()> {
     }
   }
 
-  let mut app = App::new(scope, args.limit_units)?;
+  let mut app = App::new(scope, args.limit_units, args.log_order.into())?;
   let result = app.run().await;
   ssh::teardown();
   result?;

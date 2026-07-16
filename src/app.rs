@@ -8,7 +8,7 @@ use tracing::debug;
 use crate::{
   action::Action,
   components::{
-    home::{Home, Mode},
+    home::{Home, LogOrder, Mode},
     Component,
   },
   event::EventHandler,
@@ -25,8 +25,8 @@ pub struct App {
 }
 
 impl App {
-  pub fn new(scope: Scope, limit_units: Vec<String>) -> Result<Self> {
-    let home = Home::new(scope, &limit_units);
+  pub fn new(scope: Scope, limit_units: Vec<String>, log_order: LogOrder) -> Result<Self> {
+    let home = Home::new(scope, &limit_units, log_order);
     let home = Arc::new(Mutex::new(home));
     Ok(Self { scope, home, limit_units, should_quit: false, should_suspend: false })
   }
