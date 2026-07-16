@@ -1,4 +1,3 @@
-use chrono::DateTime;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use futures::Future;
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
@@ -27,6 +26,7 @@ use std::{collections::HashSet, process::Stdio, time::Duration};
 use super::{logger::Logger, Component, Frame};
 use crate::{
   action::Action,
+  journal::{parse_json_log_line, LogEntry},
   systemd::{
     self, diagnose_missing_logs, parse_journalctl_error, Scope, UnitFile, UnitId, UnitRuntimeInfo, UnitScope,
     UnitWithStatus,
@@ -216,7 +216,7 @@ pub struct Home {
   pub show_logger: bool,
   pub all_units: IndexMap<UnitId, UnitWithStatus>,
   pub filtered_units: StatefulList<MatchedUnit>,
-  pub logs: Vec<String>,
+  pub logs: Vec<LogEntry>,
   pub logs_scroll_offset: u16,
   /// Maximum wrapped-line scroll offset calculated during the most recent render.
   pub logs_max_scroll_offset: u16,
@@ -385,8 +385,8 @@ impl Home {
 
   fn logs_for_pager(&self) -> Vec<String> {
     match self.log_order {
-      LogOrder::NewestFirst => self.logs.iter().rev().cloned().collect(),
-      LogOrder::OldestFirst => self.logs.clone(),
+      LogOrder::NewestFirst => self.logs.iter().rev().map(LogEntry::to_plain_string).collect(),
+      LogOrder::OldestFirst => self.logs.iter().map(LogEntry::to_plain_string).collect(),
     }
   }
 
@@ -812,7 +812,13 @@ impl Component for Home {
         info!("Getting logs for {}", unit.name);
         let start = std::time::Instant::now();
 
-        let mut args = vec!["--quiet", "--output=short-iso", "--lines=500", "-u"];
+        let mut args = vec![
+          "--quiet",
+          "--output=json",
+          "--output-fields=PRIORITY,MESSAGE,SYSLOG_IDENTIFIER,_COMM,_PID",
+          "--lines=500",
+          "-u",
+        ];
 
         args.push(&unit.name);
 
@@ -825,11 +831,12 @@ impl Component for Home {
             if output.status.success() {
               info!("Got logs for {} in {:?}", unit.name, start.elapsed());
               if let Ok(stdout) = std::str::from_utf8(&output.stdout) {
-                let mut logs = stdout.trim().split('\n').map(String::from).collect_vec();
+                let mut logs =
+                  stdout.trim().lines().filter(|l| !l.is_empty()).flat_map(parse_json_log_line).collect_vec();
 
-                if logs.is_empty() || logs[0].is_empty() {
+                if logs.is_empty() {
                   let diagnostic = diagnose_missing_logs(&unit);
-                  logs = vec![diagnostic.message()];
+                  logs = vec![LogEntry::plain(diagnostic.message())];
                 }
                 let _ = tx.send(Action::SetLogs { unit: unit.clone(), logs });
                 let _ = tx.send(Action::Render);
@@ -840,14 +847,17 @@ impl Component for Home {
               let stderr = String::from_utf8_lossy(&output.stderr);
               warn!("Error getting logs for {}: {}", unit.name, stderr);
               let diagnostic = parse_journalctl_error(&stderr);
-              let _ = tx.send(Action::SetLogs { unit: unit.clone(), logs: vec![diagnostic.message()] });
+              let _ =
+                tx.send(Action::SetLogs { unit: unit.clone(), logs: vec![LogEntry::plain(diagnostic.message())] });
               let _ = tx.send(Action::Render);
             }
           },
           Err(e) => {
             warn!("Error getting logs for {}: {}", unit.name, e);
-            let _ =
-              tx.send(Action::SetLogs { unit: unit.clone(), logs: vec![format!("Failed to run journalctl: {}", e)] });
+            let _ = tx.send(Action::SetLogs {
+              unit: unit.clone(),
+              logs: vec![LogEntry::plain(format!("Failed to run journalctl: {}", e))],
+            });
             let _ = tx.send(Action::Render);
           },
         }
@@ -857,7 +867,15 @@ impl Component for Home {
         // This does mean that we'll miss any logs that are written between the two commands, low enough risk for now
         let tx = tx.clone();
         last_follow_handle = Some(tokio::spawn(async move {
-          let mut args = vec!["-u", &unit.name, "--output=short-iso", "--follow", "--lines=0", "--quiet"];
+          let mut args = vec![
+            "-u",
+            &unit.name,
+            "--output=json",
+            "--output-fields=PRIORITY,MESSAGE,SYSLOG_IDENTIFIER,_COMM,_PID",
+            "--follow",
+            "--lines=0",
+            "--quiet",
+          ];
           if unit.scope == UnitScope::User {
             args.push("--user");
           }
@@ -873,7 +891,7 @@ impl Component for Home {
           let reader = tokio::io::BufReader::new(stdout);
           let mut lines = reader.lines();
           while let Some(line) = lines.next_line().await.unwrap() {
-            let _ = tx.send(Action::AppendLogLine { unit: unit.clone(), line });
+            let _ = tx.send(Action::AppendLogLines { unit: unit.clone(), lines: parse_json_log_line(&line) });
             let _ = tx.send(Action::Render);
           }
         }));
@@ -1421,10 +1439,10 @@ impl Component for Home {
           }
         }
       },
-      Action::AppendLogLine { unit, line } => {
+      Action::AppendLogLines { unit, lines } => {
         if let Some(selected) = self.filtered_units.selected() {
           if selected.unit.id() == unit {
-            self.logs.push(line);
+            self.logs.extend(lines);
             if self.log_order == LogOrder::OldestFirst && self.follow_logs {
               self.logs_scroll_offset = u16::MAX;
             }
@@ -1889,23 +1907,28 @@ impl Component for Home {
       f.render_widget(Paragraph::new(stat_values), panes[3]);
     }
 
-    let logs: Box<dyn Iterator<Item = &String>> = match self.log_order {
+    let logs: Box<dyn Iterator<Item = &LogEntry>> = match self.log_order {
       LogOrder::NewestFirst => Box::new(self.logs.iter().rev()),
       LogOrder::OldestFirst => Box::new(self.logs.iter()),
     };
     let log_lines = logs
-      .map(|l| {
-        if let Some((timestamp, rest)) = l.split_once(' ') {
-          if let Some(formatted_date) = parse_journalctl_timestamp(timestamp) {
-            return Line::from(vec![
-              Span::styled(formatted_date, Style::default().add_modifier(Modifier::DIM)),
-              Span::raw(" "),
-              Span::raw(rest),
-            ]);
-          }
+      .map(|entry| {
+        // Colorize by syslog priority, like journalctl does in a terminal:
+        // err and worse red, warnings yellow, debug dimmed.
+        let content_style = match entry.priority {
+          Some(p) if p <= 3 => Style::default().fg(Color::Red),
+          Some(4) => Style::default().fg(Color::Yellow),
+          Some(7) => Style::default().add_modifier(Modifier::DIM),
+          _ => Style::default(),
+        };
+        match &entry.timestamp {
+          Some(timestamp) => Line::from(vec![
+            Span::styled(timestamp.as_str(), Style::default().add_modifier(Modifier::DIM)),
+            Span::raw(" "),
+            Span::styled(entry.content.as_str(), content_style),
+          ]),
+          None => Line::from(Span::styled(entry.content.as_str(), content_style)),
         }
-
-        Line::from(l.as_str())
       })
       .collect_vec();
 
@@ -2386,11 +2409,6 @@ fn format_cpu_nsec(nsec: u64) -> String {
   }
 }
 
-fn parse_journalctl_timestamp(timestamp: &str) -> Option<String> {
-  // %z accepts both "-0700" (systemd <v255) and "-07:00" (systemd >=v255)
-  DateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S%z").ok().map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -2444,26 +2462,45 @@ mod tests {
   }
 
   #[test]
-  fn test_parse_timestamp_systemd_v255_and_later() {
-    // systemd >=v255 uses RFC 3339 format with colon in timezone offset
-    // https://github.com/systemd/systemd/pull/29134
-    let timestamp = "2025-04-26T06:04:45-07:00";
-    let result = parse_journalctl_timestamp(timestamp);
-    assert_eq!(result, Some("2025-04-26 06:04".to_string()));
-  }
+  fn log_lines_are_colored_by_priority() {
+    use ratatui::{backend::TestBackend, Terminal};
 
-  #[test]
-  fn test_parse_timestamp_systemd_before_v255() {
-    // systemd <v255 uses ISO 8601 format without colon in timezone offset
-    let timestamp = "2025-10-06T11:07:44-0700";
-    let result = parse_journalctl_timestamp(timestamp);
-    assert_eq!(result, Some("2025-10-06 11:07".to_string()));
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let unit = test_unit("cron.service");
+    home.all_units.insert(unit.id(), unit.clone());
+    home.filtered_units.items = vec![MatchedUnit { unit, match_indices: vec![] }];
+    home.filtered_units.state.select(Some(0));
+    home.logs = vec![
+      LogEntry { timestamp: None, content: "an error".into(), priority: Some(3) },
+      LogEntry { timestamp: None, content: "a warning".into(), priority: Some(4) },
+      LogEntry { timestamp: None, content: "plain info".into(), priority: Some(6) },
+    ];
+
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| home.render(f, f.area())).unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let style_of = |needle: &str| {
+      let area = *buffer.area();
+      for y in 0..area.height {
+        let row: String = (0..area.width).map(|x| buffer[(x, y)].symbol()).collect();
+        if let Some(col) = row.find(needle) {
+          return buffer[(col as u16, y)].style();
+        }
+      }
+      panic!("{needle:?} not found in rendered buffer");
+    };
+
+    assert_eq!(style_of("an error").fg, Some(Color::Red));
+    assert_eq!(style_of("a warning").fg, Some(Color::Yellow));
+    assert_eq!(style_of("plain info").fg, Some(Color::Reset));
   }
 
   #[test]
   fn log_order_controls_pager_order() {
     let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
-    home.logs = vec!["oldest".into(), "newest".into()];
+    home.logs = vec![LogEntry::plain("oldest"), LogEntry::plain("newest")];
 
     assert_eq!(home.logs_for_pager(), ["newest", "oldest"]);
     home.dispatch(Action::ToggleLogOrder);
