@@ -921,8 +921,8 @@ impl Component for Home {
     }
 
     match key.code {
-      KeyCode::PageDown => return vec![Action::ScrollDown(1), Action::Render],
-      KeyCode::PageUp => return vec![Action::ScrollUp(1), Action::Render],
+      KeyCode::PageDown => return vec![Action::ScrollDown(2), Action::Render],
+      KeyCode::PageUp => return vec![Action::ScrollUp(2), Action::Render],
       KeyCode::Home => return vec![Action::ScrollToTop, Action::Render],
       KeyCode::End => return vec![Action::ScrollToBottom, Action::Render],
       _ => (),
