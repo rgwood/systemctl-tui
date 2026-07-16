@@ -44,6 +44,13 @@ pub enum Mode {
   UnitExplanation,
 }
 
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq)]
+pub enum LogOrder {
+  #[default]
+  NewestFirst,
+  OldestFirst,
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum UnitStatus {
   // Activation state
@@ -208,6 +215,11 @@ pub struct Home {
   pub filtered_units: StatefulList<MatchedUnit>,
   pub logs: Vec<String>,
   pub logs_scroll_offset: u16,
+  /// Maximum wrapped-line scroll offset calculated during the most recent render.
+  pub logs_max_scroll_offset: u16,
+  pub log_order: LogOrder,
+  /// Whether new entries should keep an oldest-first view pinned to the end.
+  pub follow_logs: bool,
   /// Runtime info for the currently selected unit, fetched lazily after selection
   pub runtime_info: Option<UnitRuntimeInfo>,
   pub mode: Mode,
@@ -353,10 +365,26 @@ impl<T> StatefulList<T> {
 }
 
 impl Home {
-  pub fn new(scope: Scope, limit_units: &[String]) -> Self {
+  pub fn new(scope: Scope, limit_units: &[String], log_order: LogOrder) -> Self {
     let limit_units = limit_units.to_vec();
     let filtered_statuses = UnitStatus::ALL.into_iter().filter(|s| !UnitStatus::DEFAULT_HIDDEN.contains(s)).collect();
-    Self { scope, limit_units, filtered_statuses, filter_cursor: 0, ..Default::default() }
+    Self { scope, limit_units, filtered_statuses, filter_cursor: 0, log_order, follow_logs: true, ..Default::default() }
+  }
+
+  fn reset_logs_viewport(&mut self) {
+    self.follow_logs = true;
+    self.logs_scroll_offset = match self.log_order {
+      LogOrder::NewestFirst => 0,
+      LogOrder::OldestFirst => u16::MAX,
+    };
+    self.clear_logs_selection();
+  }
+
+  fn logs_for_pager(&self) -> Vec<String> {
+    match self.log_order {
+      LogOrder::NewestFirst => self.logs.iter().rev().cloned().collect(),
+      LogOrder::OldestFirst => self.logs.clone(),
+    }
   }
 
   pub fn set_units(&mut self, units: Vec<UnitWithStatus>) {
@@ -441,8 +469,7 @@ impl Home {
     self.runtime_info = None;
     self.filtered_units.next();
     self.get_logs();
-    self.logs_scroll_offset = 0;
-    self.clear_logs_selection();
+    self.reset_logs_viewport();
   }
 
   pub fn previous(&mut self) {
@@ -450,8 +477,7 @@ impl Home {
     self.runtime_info = None;
     self.filtered_units.previous();
     self.get_logs();
-    self.logs_scroll_offset = 0;
-    self.clear_logs_selection();
+    self.reset_logs_viewport();
   }
 
   pub fn select(&mut self, index: Option<usize>, refresh_logs: bool) {
@@ -462,8 +488,7 @@ impl Home {
     self.filtered_units.select(index);
     if refresh_logs {
       self.get_logs();
-      self.logs_scroll_offset = 0;
-      self.clear_logs_selection();
+      self.reset_logs_viewport();
     }
   }
 
@@ -862,6 +887,7 @@ impl Component for Home {
         KeyCode::Char('z') => return vec![Action::Suspend],
         KeyCode::Char('f') => return vec![Action::EnterMode(Mode::Search)],
         KeyCode::Char('l') => return vec![Action::ToggleShowLogger],
+        KeyCode::Char('r') => return vec![Action::ToggleLogOrder, Action::Render],
         // vim-style half-page scrolling
         KeyCode::Char('d') => return vec![Action::ScrollDown(10), Action::Render],
         KeyCode::Char('u') => return vec![Action::ScrollUp(10), Action::Render],
@@ -912,7 +938,10 @@ impl Component for Home {
             vec![]
           },
           KeyCode::Char('o') => {
-            vec![Action::OpenLogsInPager { logs: self.logs.clone() }]
+            vec![Action::OpenLogsInPager { logs: self.logs_for_pager() }]
+          },
+          KeyCode::Char('r') => {
+            vec![Action::ToggleLogOrder, Action::Render]
           },
           KeyCode::Char('G') => {
             let last = self.filtered_units.items.len().saturating_sub(1);
@@ -1296,7 +1325,7 @@ impl Component for Home {
               MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('k'))),
               MenuItem::new(
                 "Open logs in pager",
-                Action::OpenLogsInPager { logs: self.logs.clone() },
+                Action::OpenLogsInPager { logs: self.logs_for_pager() },
                 Some(KeyCode::Char('o')),
               ),
             ];
@@ -1385,6 +1414,7 @@ impl Component for Home {
         if let Some(selected) = self.filtered_units.selected() {
           if selected.unit.id() == unit {
             self.logs = logs;
+            self.reset_logs_viewport();
           }
         }
       },
@@ -1392,27 +1422,42 @@ impl Component for Home {
         if let Some(selected) = self.filtered_units.selected() {
           if selected.unit.id() == unit {
             self.logs.push(line);
+            if self.log_order == LogOrder::OldestFirst && self.follow_logs {
+              self.logs_scroll_offset = u16::MAX;
+            }
           }
         }
       },
       Action::ScrollUp(offset) => {
         self.logs_scroll_offset = self.logs_scroll_offset.saturating_sub(offset);
+        self.follow_logs = false;
         info!("scroll offset: {}", self.logs_scroll_offset);
         self.clear_logs_selection();
       },
       Action::ScrollDown(offset) => {
-        self.logs_scroll_offset = self.logs_scroll_offset.saturating_add(offset);
+        self.logs_scroll_offset = self.logs_scroll_offset.saturating_add(offset).min(self.logs_max_scroll_offset);
+        self.follow_logs =
+          self.log_order == LogOrder::OldestFirst && self.logs_scroll_offset == self.logs_max_scroll_offset;
         info!("scroll offset: {}", self.logs_scroll_offset);
         self.clear_logs_selection();
       },
       Action::ScrollToTop => {
         self.logs_scroll_offset = 0;
+        self.follow_logs = false;
         self.clear_logs_selection();
       },
       Action::ScrollToBottom => {
         // Clamped to the actual wrapped height at render time (see `render`).
         self.logs_scroll_offset = u16::MAX;
+        self.follow_logs = true;
         self.clear_logs_selection();
+      },
+      Action::ToggleLogOrder => {
+        self.log_order = match self.log_order {
+          LogOrder::NewestFirst => LogOrder::OldestFirst,
+          LogOrder::OldestFirst => LogOrder::NewestFirst,
+        };
+        self.reset_logs_viewport();
       },
 
       Action::StartService(service_name) => self.start_service(service_name),
@@ -1841,10 +1886,11 @@ impl Component for Home {
       f.render_widget(Paragraph::new(stat_values), panes[3]);
     }
 
-    let log_lines = self
-      .logs
-      .iter()
-      .rev()
+    let logs: Box<dyn Iterator<Item = &String>> = match self.log_order {
+      LogOrder::NewestFirst => Box::new(self.logs.iter().rev()),
+      LogOrder::OldestFirst => Box::new(self.logs.iter()),
+    };
+    let log_lines = logs
       .map(|l| {
         if let Some((timestamp, rest)) = l.split_once(' ') {
           if let Some(formatted_date) = parse_journalctl_timestamp(timestamp) {
@@ -1860,8 +1906,17 @@ impl Component for Home {
       })
       .collect_vec();
 
+    let order_label = match self.log_order {
+      LogOrder::NewestFirst => "newest first",
+      LogOrder::OldestFirst => "oldest first",
+    };
     let paragraph = Paragraph::new(log_lines)
-      .block(Block::default().title("─Service Logs").borders(Borders::ALL).border_type(BorderType::Rounded))
+      .block(
+        Block::default()
+          .title(format!("─Service Logs [{order_label}; ctrl+r to reverse]"))
+          .borders(Borders::ALL)
+          .border_type(BorderType::Rounded),
+      )
       .style(Style::default())
       .wrap(Wrap { trim: true });
 
@@ -1870,7 +1925,12 @@ impl Component for Home {
     let inner_width = logs_panel.width.saturating_sub(2);
     let total_lines = u16::try_from(paragraph.line_count(inner_width)).unwrap_or(u16::MAX);
     let max_offset = total_lines.saturating_sub(logs_panel.height);
-    self.logs_scroll_offset = self.logs_scroll_offset.min(max_offset);
+    self.logs_max_scroll_offset = max_offset;
+    self.logs_scroll_offset = if self.log_order == LogOrder::OldestFirst && self.follow_logs {
+      max_offset
+    } else {
+      self.logs_scroll_offset.min(max_offset)
+    };
 
     let paragraph = paragraph.scroll((self.logs_scroll_offset, 0));
     f.render_widget(paragraph, logs_panel);
@@ -1962,7 +2022,7 @@ impl Component for Home {
     }
 
     if self.mode == Mode::Help {
-      let popup = f.area().centered(Constraint::Length(50), Constraint::Length(19));
+      let popup = f.area().centered(Constraint::Length(50), Constraint::Length(20));
 
       let primary = |s| Span::styled(s, Style::default().fg(theme.primary));
       let help_lines = vec![
@@ -1971,6 +2031,7 @@ impl Component for Home {
         Line::from(""),
         Line::from(vec![primary("ctrl+C"), Span::raw(" or "), primary("ctrl+Q"), Span::raw(" to quit")]),
         Line::from(vec![primary("ctrl+L"), Span::raw(" toggles the logger pane")]),
+        Line::from(vec![primary("ctrl+R"), Span::raw(" reverses the log order")]),
         Line::from(vec![primary("PageUp"), Span::raw(" / "), primary("PageDown"), Span::raw(" scroll the logs")]),
         Line::from(vec![primary("Home"), Span::raw(" / "), primary("End"), Span::raw(" scroll to top/bottom")]),
         Line::from(vec![primary("Enter"), Span::raw(" or "), primary("Space"), Span::raw(" open the action menu")]),
@@ -2334,7 +2395,7 @@ mod tests {
 
   #[test]
   fn refreshing_unchanged_units_preserves_list_offset() {
-    let mut home = Home::new(Scope::All, &[]);
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
     let units: Vec<_> = (0..10).map(|i| test_unit(&format!("unit-{i}.service"))).collect();
 
     for unit in &units {
@@ -2351,7 +2412,7 @@ mod tests {
 
   #[test]
   fn refreshing_changed_units_resets_list_offset() {
-    let mut home = Home::new(Scope::All, &[]);
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
     let units: Vec<_> = (0..10).map(|i| test_unit(&format!("unit-{i}.service"))).collect();
 
     for unit in &units {
@@ -2382,5 +2443,53 @@ mod tests {
     let timestamp = "2025-10-06T11:07:44-0700";
     let result = parse_journalctl_timestamp(timestamp);
     assert_eq!(result, Some("2025-10-06 11:07".to_string()));
+  }
+
+  #[test]
+  fn log_order_controls_pager_order() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    home.logs = vec!["oldest".into(), "newest".into()];
+
+    assert_eq!(home.logs_for_pager(), ["newest", "oldest"]);
+    home.dispatch(Action::ToggleLogOrder);
+    assert_eq!(home.logs_for_pager(), ["oldest", "newest"]);
+  }
+
+  #[test]
+  fn scrolling_stops_oldest_first_log_following() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::OldestFirst);
+    home.logs_scroll_offset = 20;
+    home.logs_max_scroll_offset = 20;
+
+    home.dispatch(Action::ScrollUp(5));
+    assert_eq!(home.logs_scroll_offset, 15);
+    assert!(!home.follow_logs);
+
+    home.dispatch(Action::ScrollToBottom);
+    assert_eq!(home.logs_scroll_offset, u16::MAX);
+    assert!(home.follow_logs);
+  }
+
+  #[test]
+  fn scrolling_to_bottom_resumes_oldest_first_log_following() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::OldestFirst);
+    home.logs_scroll_offset = 15;
+    home.logs_max_scroll_offset = 20;
+    home.follow_logs = false;
+
+    home.dispatch(Action::ScrollDown(5));
+
+    assert_eq!(home.logs_scroll_offset, 20);
+    assert!(home.follow_logs);
+  }
+
+  #[test]
+  fn control_r_reverses_logs_while_search_has_focus() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    home.mode = Mode::Search;
+
+    let actions = home.handle_key_events(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+
+    assert!(matches!(actions.as_slice(), [Action::ToggleLogOrder, Action::Render]));
   }
 }
