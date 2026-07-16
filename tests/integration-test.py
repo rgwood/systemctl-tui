@@ -44,11 +44,6 @@ def capture() -> str:
     return tmux("capture-pane", "-t", SESSION, "-p").stdout
 
 
-def capture_esc() -> str:
-    """Like capture(), but keeps ANSI escape sequences (e.g. to detect highlight colors)."""
-    return tmux("capture-pane", "-t", SESSION, "-e", "-p").stdout
-
-
 def send_keys(*keys: str, delay: float = 0.0) -> None:
     for key in keys:
         tmux("send-keys", "-t", SESSION, key)
@@ -184,13 +179,6 @@ def test_mouse(binary: str, host: str | None) -> None:
     send_keys("Escape")
     time.sleep(0.3)
 
-    def highlighted_row(screen_esc: str) -> int | None:
-        """Row (0-based, matching capture().splitlines()) carrying the list-selection background."""
-        for i, line in enumerate(screen_esc.splitlines()):
-            if "48;5;8" in line:
-                return i
-        return None
-
     def service_rows() -> list[int]:
         """0-based row indices of visible, non-empty service list entries (left ~29 cols)."""
         rows = []
@@ -209,28 +197,28 @@ def test_mouse(binary: str, host: str | None) -> None:
                 rows.append(i)
         return rows
 
-    # 1. click selects a service. Compare the *name* under the highlight rather than the row
-    # number: in remote mode units are still arriving and the list can re-sort between the click
-    # and the assertion, moving the (correctly) selected unit to a different row.
+    # 1. click selects a service. Verify the action menu title rather than looking for the
+    # selection background in tmux's ANSI capture: tmux can omit background colour escapes even
+    # when the highlight is rendered, depending on the terminal and colour settings.
     def name_at(row: int) -> str:
         lines = capture().splitlines()
         return lines[row][1:29].strip() if row < len(lines) else ""
 
     rows = service_rows()
-    before = highlighted_row(capture_esc())
-    target = next((r for r in rows if r != before), rows[0] if rows else None)
+    # The first service is initially selected, so prefer another visible row to ensure the click
+    # actually changes the selection.
+    target = rows[1] if len(rows) > 1 else (rows[0] if rows else None)
     check("found a clickable service row", target is not None)
     if target is not None:
         target_name = name_at(target)
         click(10, target + 1)
-        time.sleep(0.4)
-        after = highlighted_row(capture_esc())
-        selected_name = name_at(after) if after is not None else ""
+        send_keys("Enter")
         check(
             "click selects a service",
-            after == target or selected_name == target_name,
-            f"before={before} target={target} ({target_name!r}) after={after} ({selected_name!r})",
+            wait_for(lambda: f"Actions for {target_name}" in capture()),
+            f"target={target} ({target_name!r})\n{capture()}",
         )
+        send_keys("Escape")
 
     # For the rest of this test we want a unit with a guaranteed non-empty description and
     # plenty of log history to scroll/select, so the click/wheel/drag checks below aren't at the
