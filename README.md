@@ -20,6 +20,14 @@ curl https://raw.githubusercontent.com/rgwood/systemctl-tui/master/install.sh | 
 ```
 The script installs the downloaded binary to `$HOME/.local/bin` by default, but it can be changed by setting the `DIR` environment variable.
 
+### Debian/Ubuntu
+
+`.deb` packages (with no dependencies) are published in the [GitHub releases](https://github.com/rgwood/systemctl-tui/releases). Download the one for your architecture and install it with:
+
+```sh
+sudo apt install ./systemctl-tui_*.deb
+```
+
 ### Rust
 
 If you'd rather build from scratch you will need [Rust installed](https://rustup.rs/). Then either:
