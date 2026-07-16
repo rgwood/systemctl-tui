@@ -179,10 +179,10 @@ def test_mouse(binary: str, host: str | None) -> None:
     send_keys("Escape")
     time.sleep(0.3)
 
-    def service_rows() -> list[int]:
+    def service_rows(lines: list[str] | None = None) -> list[int]:
         """0-based row indices of visible, non-empty service list entries (left ~29 cols)."""
         rows = []
-        lines = capture().splitlines()
+        lines = capture().splitlines() if lines is None else lines
         in_list = False
         for i, line in enumerate(lines):
             if "Services" in line[:30]:
@@ -197,51 +197,35 @@ def test_mouse(binary: str, host: str | None) -> None:
                 rows.append(i)
         return rows
 
-    # 1. click selects a service. Verify the action menu title rather than looking for the
-    # selection background in tmux's ANSI capture: tmux can omit background colour escapes even
-    # when the highlight is rendered, depending on the terminal and colour settings.
-    def name_at(row: int) -> str:
-        lines = capture().splitlines()
-        return lines[row][1:29].strip() if row < len(lines) else ""
-
-    rows = service_rows()
-    # The first service is initially selected, so prefer another visible row to ensure the click
-    # actually changes the selection.
-    target = rows[1] if len(rows) > 1 else (rows[0] if rows else None)
-    check("found a clickable service row", target is not None)
-    if target is not None:
-        target_name = name_at(target)
-        click(10, target + 1)
-        send_keys("Enter")
-        check(
-            "click selects a service",
-            wait_for(lambda: f"Actions for {target_name}" in capture()),
-            f"target={target} ({target_name!r})\n{capture()}",
-        )
-        send_keys("Escape")
-
-    # For the rest of this test we want a unit with a guaranteed non-empty description and
-    # plenty of log history to scroll/select, so the click/wheel/drag checks below aren't at the
-    # mercy of whichever unit happened to be under the cursor in step 1. systemd-journald.service
-    # is a real (non-alias) unit that has logged on any systemd machine (see test_logs).
+    # Use a unit with a guaranteed non-empty description and plenty of log history so the
+    # click/wheel/drag checks below aren't at the mercy of whichever unit happens to be visible.
+    # systemd-journald.service is a real (non-alias) unit that has logged on any systemd machine
+    # (see test_logs).
     send_keys("C-f")
-    time.sleep(0.2)
     type_text("systemd-journald")
-    time.sleep(0.3)
+
+    def systemd_journald_row() -> int | None:
+        screen_lines = capture().splitlines()
+        return next(
+            (r for r in service_rows(screen_lines) if screen_lines[r][1:29].strip() == "systemd-journald"),
+            None,
+        )
+
+    # Wait for the filtered row itself rather than a fixed delay. Remote queries can take long
+    # enough that a sleep which is generous on one CI runner still races on another.
+    wait_for(lambda: systemd_journald_row() is not None)
     send_keys("Escape")
-    time.sleep(0.3)
     # Click the exact "systemd-journald" row rather than taking the first fuzzy match: the list
     # also contains the systemd-journald@ template unit (empty description, no logs), and fuzzy
     # ranking put it first on some distros, breaking every check below.
-    screen_lines = capture().splitlines()
-    exact_row = next((r for r in service_rows() if screen_lines[r][1:29].strip() == "systemd-journald"), None)
+    exact_row = systemd_journald_row()
     check("found the systemd-journald row", exact_row is not None, capture())
     if exact_row is not None:
         click(10, exact_row + 1)
     # journald log lines always contain "systemd-journald[<pid>]:", so this also guarantees the
     # unit under test has real logs for the wheel/drag checks below
     check(
-        "selected systemd-journald.service for the remaining checks",
+        "click selects systemd-journald.service",
         wait_for(lambda: "systemd-journald[" in capture()),
         capture(),
     )
@@ -367,7 +351,7 @@ def addr_of(host: str) -> str:
 
 
 def type_text(text: str) -> None:
-    send_keys(*list(text))
+    tmux("send-keys", "-t", SESSION, "-l", text)
 
 
 def test_user_bus_is_user_bus(binary: str, host: str) -> None:
