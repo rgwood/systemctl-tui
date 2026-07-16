@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use systemctl_tui::{
   app::App,
   components::home::LogOrder,
-  ssh, systemd,
+  remote_picker, ssh, systemd,
   utils::{get_data_dir, initialize_logging, initialize_panic_handler, version},
 };
 
@@ -30,6 +30,9 @@ struct Args {
   /// Manage a remote host over SSH (e.g. user@hostname). Requires systemd-stdio-bridge on the remote host.
   #[clap(long)]
   host: Option<String>,
+  /// Choose a remote host from SSH config
+  #[clap(short, long, conflicts_with = "host")]
+  remote: bool,
   /// Order used to display service logs
   #[clap(long, value_enum, default_value_t = CliLogOrder::NewestFirst)]
   log_order: CliLogOrder,
@@ -104,7 +107,8 @@ async fn main() -> Result<()> {
   };
 
   // Connect before entering the TUI so SSH auth prompts (password, 2FA) work
-  if let Some(host) = args.host {
+  let host = if args.remote { Some(remote_picker::choose_remote_host()?) } else { args.host };
+  if let Some(host) = host {
     println!("Connecting to {host}...");
     if let Err(e) = ssh::init(host) {
       // ssh has already printed its own error to stderr
