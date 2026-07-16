@@ -38,6 +38,7 @@ pub enum Action {
   ScrollDown(u16),
   ScrollToTop,
   ScrollToBottom,
+  ToggleLogOrder,
   EditUnitFile { unit: UnitId, path: String },
   OpenLogsInPager { logs: Vec<String> },
   Noop,
