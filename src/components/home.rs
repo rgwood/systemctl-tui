@@ -8,7 +8,10 @@ use ratatui::{
   layout::{Constraint, Direction, Layout, Margin, Position, Rect},
   style::{Color, Modifier, Style},
   text::{Line, Span},
-  widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+  widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Wrap,
+  },
 };
 use tokio::{
   io::AsyncBufReadExt,
@@ -1934,6 +1937,18 @@ impl Component for Home {
 
     let paragraph = paragraph.scroll((self.logs_scroll_offset, 0));
     f.render_widget(paragraph, logs_panel);
+
+    if max_offset > 0 {
+      let viewport_height = logs_panel.height.saturating_sub(2) as usize;
+      // ScrollbarState treats content_length - 1 as its maximum position, so describe the
+      // possible scroll offsets here rather than passing the paragraph's total height.
+      let scroll_positions = max_offset as usize + 1;
+      let mut scrollbar_state = ScrollbarState::new(scroll_positions)
+        .position(self.logs_scroll_offset as usize)
+        .viewport_content_length(viewport_height);
+      let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight).begin_symbol(None).end_symbol(None);
+      f.render_stateful_widget(scrollbar, logs_panel.inner(Margin::new(0, 1)), &mut scrollbar_state);
+    }
 
     // Inner area of the logs panel (border-excluded), used for mouse hit-testing and selection.
     self.logs_panel_inner = logs_panel.inner(Margin::new(1, 1));
