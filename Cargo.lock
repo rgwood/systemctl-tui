@@ -1979,6 +1979,7 @@ dependencies = [
  "log",
  "nix 0.31.2",
  "ratatui",
+ "serde_json",
  "signal-hook 0.4.3",
  "terminal-light",
  "tokio",

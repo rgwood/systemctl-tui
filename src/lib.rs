@@ -12,6 +12,8 @@ pub mod utils;
 
 pub mod systemd;
 
+pub mod journal;
+
 pub mod ssh;
 
 pub mod remote_picker;
