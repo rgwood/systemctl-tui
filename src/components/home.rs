@@ -1360,22 +1360,50 @@ impl Component for Home {
         if mode == Mode::ActionMenu {
           {
             let selected = self.filtered_units.selected()?;
-            let mut menu_items = vec![
-              MenuItem::new("Start", Action::StartService(selected.unit.id()), Some(KeyCode::Char('s'))),
-              MenuItem::new("Stop", Action::StopService(selected.unit.id()), Some(KeyCode::Char('t'))),
-              MenuItem::new("Restart", Action::RestartService(selected.unit.id()), Some(KeyCode::Char('r'))),
-              MenuItem::new("Reload", Action::ReloadService(selected.unit.id()), Some(KeyCode::Char('l'))),
-              MenuItem::new("Enable", Action::EnableService(selected.unit.id()), Some(KeyCode::Char('n'))),
-              MenuItem::new("Disable", Action::DisableService(selected.unit.id()), Some(KeyCode::Char('d'))),
-              MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('k'))),
-              MenuItem::new(
-                "Open logs in pager",
-                Action::OpenLogsInPager { logs: self.logs_for_pager() },
-                Some(KeyCode::Char('o')),
-              ),
-            ];
+            let is_timer = selected.unit.kind() == UnitKind::Timer;
+            let mut menu_items = if is_timer {
+              let mut items = Vec::new();
+              if selected.unit.is_active() {
+                items.push(MenuItem::new(
+                  "Stop timer",
+                  Action::StopService(selected.unit.id()),
+                  Some(KeyCode::Char('t')),
+                ));
+              } else {
+                items.push(MenuItem::new(
+                  "Start timer",
+                  Action::StartService(selected.unit.id()),
+                  Some(KeyCode::Char('s')),
+                ));
+              }
 
-            if selected.unit.kind() == UnitKind::Timer {
+              match selected.unit.enablement_state.as_deref() {
+                Some("enabled" | "enabled-runtime") => items.push(MenuItem::new(
+                  "Disable timer",
+                  Action::DisableService(selected.unit.id()),
+                  Some(KeyCode::Char('d')),
+                )),
+                Some("disabled") => items.push(MenuItem::new(
+                  "Enable timer",
+                  Action::EnableService(selected.unit.id()),
+                  Some(KeyCode::Char('n')),
+                )),
+                _ => {},
+              }
+              items
+            } else {
+              vec![
+                MenuItem::new("Start", Action::StartService(selected.unit.id()), Some(KeyCode::Char('s'))),
+                MenuItem::new("Stop", Action::StopService(selected.unit.id()), Some(KeyCode::Char('t'))),
+                MenuItem::new("Restart", Action::RestartService(selected.unit.id()), Some(KeyCode::Char('r'))),
+                MenuItem::new("Reload", Action::ReloadService(selected.unit.id()), Some(KeyCode::Char('l'))),
+                MenuItem::new("Enable", Action::EnableService(selected.unit.id()), Some(KeyCode::Char('n'))),
+                MenuItem::new("Disable", Action::DisableService(selected.unit.id()), Some(KeyCode::Char('d'))),
+                MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('k'))),
+              ]
+            };
+
+            if is_timer {
               if let Some(target) = self.runtime_info.as_ref().and_then(|info| info.triggered_unit.as_ref()) {
                 let label = format!("Start {target} now");
                 menu_items.push(MenuItem::new(
@@ -1385,6 +1413,12 @@ impl Component for Home {
                 ));
               }
             }
+
+            menu_items.push(MenuItem::new(
+              "Open logs in pager",
+              Action::OpenLogsInPager { logs: self.logs_for_pager() },
+              Some(KeyCode::Char('o')),
+            ));
 
             if let Some(Ok(file_path)) = &selected.unit.file_path {
               menu_items.push(MenuItem::new("Copy unit file path", Action::CopyUnitFilePath, Some(KeyCode::Char('c'))));
@@ -2497,6 +2531,38 @@ mod tests {
       sub_state: "running".to_string(),
       enablement_state: None,
     }
+  }
+
+  #[test]
+  fn active_timer_actions_are_state_aware() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let mut timer = test_unit("backup.timer");
+    timer.sub_state = "waiting".into();
+    timer.enablement_state = Some("enabled".into());
+    home.filtered_units = StatefulList::with_items(vec![MatchedUnit { unit: timer, match_indices: vec![] }]);
+    home.filtered_units.state.select(Some(0));
+    home.runtime_info = Some(UnitRuntimeInfo { triggered_unit: Some("backup.service".into()), ..Default::default() });
+
+    home.dispatch(Action::EnterMode(Mode::ActionMenu));
+
+    let names = home.menu_items.items.iter().map(|item| item.name.as_str()).collect_vec();
+    assert_eq!(names, ["Stop timer", "Disable timer", "Start backup.service now", "Open logs in pager"]);
+  }
+
+  #[test]
+  fn inactive_timer_can_be_armed_and_enabled() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let mut timer = test_unit("backup.timer");
+    timer.activation_state = "inactive".into();
+    timer.sub_state = "dead".into();
+    timer.enablement_state = Some("disabled".into());
+    home.filtered_units = StatefulList::with_items(vec![MatchedUnit { unit: timer, match_indices: vec![] }]);
+    home.filtered_units.state.select(Some(0));
+
+    home.dispatch(Action::EnterMode(Mode::ActionMenu));
+
+    let names = home.menu_items.items.iter().map(|item| item.name.as_str()).collect_vec();
+    assert_eq!(names, ["Start timer", "Enable timer", "Open logs in pager"]);
   }
 
   #[test]
