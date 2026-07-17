@@ -419,6 +419,59 @@ def test_root_action_round_trip(binary: str, root_host: str) -> None:
     check("stop succeeds", wait_for(lambda: "inactive (dead)" in capture(), timeout=20), capture())
 
 
+def test_root_timer_action_round_trip(binary: str, root_host: str) -> None:
+    print("root timer action round-trip:")
+    # This is a dedicated inert timer in the disposable matrix container. Its
+    # one-hour deadline ensures arming it cannot accidentally start the service
+    # while these checks run.
+    run(["ssh", root_host, "systemctl", "disable", "--now", "sctui-test.timer"])
+    try:
+        start_app(binary, root_host, ["--scope", "global", "--limit-units", "sctui-test.timer"])
+        check("timer fixture is listed", wait_for(lambda: "[T] sctui-test" in capture()), capture())
+        send_keys("Down")
+        check("timer starts inactive", wait_for(lambda: "inactive (dead)" in capture()), capture())
+        check("timer starts disabled", wait_for(lambda: "Enablement: disabled" in capture()), capture())
+
+        send_keys("Enter")
+        check("inactive timer menu opens", wait_for(lambda: "Start timer" in capture()), capture())
+        send_keys("s")
+        check("start arms timer", wait_for(lambda: "active (waiting)" in capture(), timeout=20), capture())
+
+        send_keys("Enter")
+        check("active timer menu opens", wait_for(lambda: "Stop timer" in capture()), capture())
+        send_keys("t")
+        check("stop disarms timer", wait_for(lambda: "inactive (dead)" in capture(), timeout=20), capture())
+
+        send_keys("Enter")
+        check("disabled timer offers enable", wait_for(lambda: "Enable timer" in capture()), capture())
+        send_keys("n")
+        check("enable persists timer", wait_for(lambda: "Enablement: enabled" in capture(), timeout=20), capture())
+
+        send_keys("Enter")
+        check("enabled timer offers disable", wait_for(lambda: "Disable timer" in capture()), capture())
+        send_keys("d")
+        check("disable removes persistent enablement", wait_for(lambda: "Enablement: disabled" in capture(), timeout=20), capture())
+        persistent_state = run(["ssh", root_host, "systemctl", "is-enabled", "sctui-test.timer"])
+        check("persistent symlink is gone", persistent_state.stdout.strip() == "disabled", persistent_state.stdout + persistent_state.stderr)
+
+        # Create a temporary /run enablement externally, relaunch to load it,
+        # then make sure the same UI action selects DisableUnitFiles(runtime=true).
+        runtime_enable = run(["ssh", root_host, "systemctl", "enable", "--runtime", "sctui-test.timer"])
+        check("runtime fixture enable succeeds", runtime_enable.returncode == 0, runtime_enable.stdout + runtime_enable.stderr)
+        start_app(binary, root_host, ["--scope", "global", "--limit-units", "sctui-test.timer"])
+        check("runtime enablement is displayed", wait_for(lambda: "enabled-runtime" in capture()), capture())
+        send_keys("Down")
+        send_keys("Enter")
+        check("runtime-enabled timer offers disable", wait_for(lambda: "Disable timer" in capture()), capture())
+        send_keys("d")
+        check("runtime disable updates the UI", wait_for(lambda: "Enablement: disabled" in capture(), timeout=20), capture())
+        runtime_state = run(["ssh", root_host, "systemctl", "is-enabled", "sctui-test.timer"])
+        check("runtime symlink is gone", runtime_state.stdout.strip() == "disabled", runtime_state.stdout + runtime_state.stderr)
+    finally:
+        run(["ssh", root_host, "systemctl", "disable", "--now", "sctui-test.timer"])
+        run(["ssh", root_host, "systemctl", "stop", "sctui-test.service"])
+
+
 def test_polkit_rejection(binary: str, host: str) -> None:
     print("polkit/permission rejection:")
     start_app(binary, host, ["--scope", "global", "--limit-units", "sctui-test.service"])
@@ -580,6 +633,7 @@ def main() -> int:
 
             test_user_bus_is_user_bus(args.binary, args.host)
             test_root_action_round_trip(args.binary, root_host)
+            test_root_timer_action_round_trip(args.binary, root_host)
             test_polkit_rejection(args.binary, args.host)
             test_user_scope_action_succeeds(args.binary, args.host)
             test_log_rendering(args.binary, args.host)
