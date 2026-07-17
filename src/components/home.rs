@@ -130,11 +130,11 @@ impl UnitStatus {
     }
   }
 
-  fn unit_kind_bucket(kind: UnitKind) -> Option<UnitStatus> {
+  fn unit_kind_bucket(kind: UnitKind) -> UnitStatus {
     match kind {
-      UnitKind::Service => Some(UnitStatus::Service),
-      UnitKind::Timer => Some(UnitStatus::Timer),
-      UnitKind::Other => Some(UnitStatus::Other),
+      UnitKind::Service => UnitStatus::Service,
+      UnitKind::Timer => UnitStatus::Timer,
+      UnitKind::Other => UnitStatus::Other,
     }
   }
 
@@ -593,8 +593,7 @@ impl Home {
       .all_units
       .values()
       .filter(|u| {
-        let passes_type =
-          UnitStatus::unit_kind_bucket(u.kind()).is_some_and(|kind| self.filtered_statuses.contains(&kind));
+        let passes_type = self.filtered_statuses.contains(&UnitStatus::unit_kind_bucket(u.kind()));
         let passes_activation = self.filtered_statuses.contains(&UnitStatus::activation_bucket(&u.activation_state));
 
         let passes_enablement = match u.enablement_state.as_deref() {
@@ -622,10 +621,17 @@ impl Home {
       let mut scored: Vec<(i64, MatchedUnit)> = status_filtered_units
         .into_iter()
         .filter_map(|u| {
-          self
-            .fuzzy_matcher
-            .fuzzy_indices(&u.name, search_value)
-            .map(|(score, indices)| (score, MatchedUnit { unit: u.clone(), match_indices: indices }))
+          let short_name = u.short_name();
+          let matched = self.fuzzy_matcher.fuzzy_indices(short_name, search_value).or_else(|| {
+            // The suffix is intentionally hidden in the list, so only consider
+            // it when the query explicitly looks like a full unit name. This
+            // keeps ordinary queries such as "ser" from matching every service.
+            search_value.contains('.').then(|| self.fuzzy_matcher.fuzzy_indices(&u.name, search_value)).flatten()
+          });
+          matched.map(|(score, indices)| {
+            let visible_indices = indices.into_iter().filter(|&index| index < short_name.len()).collect();
+            (score, MatchedUnit { unit: u.clone(), match_indices: visible_indices })
+          })
         })
         .collect();
 
@@ -696,9 +702,9 @@ impl Home {
     self.service_action(service, "Enable".into(), cancel_token, future, true);
   }
 
-  fn disable_service(&mut self, service: UnitId) {
+  fn disable_service(&mut self, service: UnitId, runtime: bool) {
     let cancel_token = CancellationToken::new();
-    let future = systemd::disable_service(service.clone(), cancel_token.clone());
+    let future = systemd::disable_service(service.clone(), runtime, cancel_token.clone());
     self.service_action(service, "Disable".into(), cancel_token, future, true);
   }
 
@@ -1365,6 +1371,9 @@ impl Component for Home {
       Action::EnterMode(mode) => {
         if mode == Mode::ActionMenu {
           {
+            let previously_selected_action = (self.mode == Mode::ActionMenu)
+              .then(|| self.menu_items.selected().map(|item| item.name.clone()))
+              .flatten();
             let selected = self.filtered_units.selected()?;
             let is_timer = selected.unit.kind() == UnitKind::Timer;
             let mut menu_items = if is_timer {
@@ -1384,9 +1393,9 @@ impl Component for Home {
               }
 
               match selected.unit.enablement_state.as_deref() {
-                Some("enabled" | "enabled-runtime") => items.push(MenuItem::new(
+                Some(enablement @ ("enabled" | "enabled-runtime")) => items.push(MenuItem::new(
                   "Disable timer",
-                  Action::DisableService(selected.unit.id()),
+                  Action::DisableService { unit: selected.unit.id(), runtime: enablement == "enabled-runtime" },
                   Some(KeyCode::Char('d')),
                 )),
                 Some("disabled") => items.push(MenuItem::new(
@@ -1404,7 +1413,14 @@ impl Component for Home {
                 MenuItem::new("Restart", Action::RestartService(selected.unit.id()), Some(KeyCode::Char('r'))),
                 MenuItem::new("Reload", Action::ReloadService(selected.unit.id()), Some(KeyCode::Char('l'))),
                 MenuItem::new("Enable", Action::EnableService(selected.unit.id()), Some(KeyCode::Char('n'))),
-                MenuItem::new("Disable", Action::DisableService(selected.unit.id()), Some(KeyCode::Char('d'))),
+                MenuItem::new(
+                  "Disable",
+                  Action::DisableService {
+                    unit: selected.unit.id(),
+                    runtime: selected.unit.enablement_state.as_deref() == Some("enabled-runtime"),
+                  },
+                  Some(KeyCode::Char('d')),
+                ),
                 MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('k'))),
               ]
             };
@@ -1435,8 +1451,11 @@ impl Component for Home {
               ));
             }
 
+            let selected_index = previously_selected_action
+              .and_then(|name| menu_items.iter().position(|item| item.name == name))
+              .unwrap_or(0);
             self.menu_items = StatefulList::with_items(menu_items);
-            self.menu_items.state.select(Some(0));
+            self.menu_items.state.select(Some(selected_index));
           }
         } else if mode == Mode::SignalMenu {
           {
@@ -1501,7 +1520,10 @@ impl Component for Home {
         self.refresh_filtered_units(); // copy the updated unit file path to the filtered list
       },
       Action::SetUnitRuntimeInfo { unit, info } => {
+        let target_changed = self.runtime_info.as_ref().and_then(|current| current.triggered_unit.as_ref())
+          != info.triggered_unit.as_ref();
         let rebuild_timer_menu = self.mode == Mode::ActionMenu
+          && target_changed
           && self
             .filtered_units
             .selected()
@@ -1570,7 +1592,7 @@ impl Component for Home {
       Action::ReloadService(service_name) => self.reload_service(service_name),
       Action::RestartService(service_name) => self.restart_service(service_name),
       Action::EnableService(service_name) => self.enable_service(service_name),
-      Action::DisableService(service_name) => self.disable_service(service_name),
+      Action::DisableService { unit, runtime } => self.disable_service(unit, runtime),
       Action::RefreshServices => {
         let tx = self.action_tx.clone().unwrap();
         let scope = self.scope;
@@ -1616,11 +1638,21 @@ impl Component for Home {
         return Some(Action::Render);
       },
       Action::SetUnitFiles(unit_files) => {
+        let selected_timer = (self.mode == Mode::ActionMenu)
+          .then(|| {
+            self.filtered_units.selected().and_then(|selected| {
+              (selected.unit.kind() == UnitKind::Timer)
+                .then(|| (selected.unit.id(), selected.unit.enablement_state.clone()))
+            })
+          })
+          .flatten();
         self.merge_unit_files(unit_files);
-        if self.mode == Mode::ActionMenu
-          && self.filtered_units.selected().is_some_and(|selected| selected.unit.kind() == UnitKind::Timer)
-        {
-          return Some(Action::EnterMode(Mode::ActionMenu));
+        if let Some((unit, old_enablement)) = selected_timer {
+          let enablement_changed =
+            self.all_units.get(&unit).map(|unit| &unit.enablement_state) != Some(&old_enablement);
+          if enablement_changed {
+            return Some(Action::EnterMode(Mode::ActionMenu));
+          }
         }
         return Some(Action::Render);
       },
@@ -1853,24 +1885,11 @@ impl Component for Home {
             .push(("Restarts", Line::from(Span::styled(restarts.to_string(), Style::default().fg(Color::Yellow)))));
         }
         if m.unit.kind() == UnitKind::Timer {
-          match (&info.next_elapse_realtime, &info.next_elapse_monotonic) {
-            (Some(realtime), Some(monotonic)) => {
-              if let Some((absolute, relative)) = format_systemd_timestamp(realtime, is_remote) {
-                let relative = relative.map(|r| format!(" ({r})")).unwrap_or_default();
-                stat_rows.push(("Next calendar", Line::from(format!("{absolute}{relative}"))));
-              }
-              stat_rows.push(("Next monotonic", Line::from(format!("in {monotonic}"))));
-            },
-            (Some(realtime), None) => {
-              if let Some((absolute, relative)) = format_systemd_timestamp(realtime, is_remote) {
-                let relative = relative.map(|r| format!(" ({r})")).unwrap_or_default();
-                stat_rows.push(("Next trigger", Line::from(format!("{absolute}{relative}"))));
-              }
-            },
-            (None, Some(monotonic)) => {
-              stat_rows.push(("Next trigger", Line::from(format!("in {monotonic}"))));
-            },
-            (None, None) => {},
+          if let Some((absolute, relative)) =
+            info.next_elapse.as_deref().and_then(|timestamp| format_systemd_timestamp(timestamp, is_remote))
+          {
+            let relative = relative.map(|r| format!(" ({r})")).unwrap_or_default();
+            stat_rows.push(("Next trigger", Line::from(format!("{absolute}{relative}"))));
           }
           if let Some((absolute, relative)) =
             info.last_trigger.as_deref().and_then(|timestamp| format_systemd_timestamp(timestamp, is_remote))
@@ -1900,7 +1919,8 @@ impl Component for Home {
     }
 
     let timer_details = selected_item.is_some_and(|m| m.unit.kind() == UnitKind::Timer);
-    let two_columns = right_panel.width >= 120 && !stat_rows.is_empty();
+    let two_column_min_width = if timer_details { 120 } else { 90 };
+    let two_columns = right_panel.width >= two_column_min_width && !stat_rows.is_empty();
     if !two_columns && !stat_rows.is_empty() {
       if timer_details {
         // Timer metadata is the main reason to select a timer. Keep it readable on
@@ -2625,6 +2645,24 @@ mod tests {
   }
 
   #[test]
+  fn runtime_enabled_timer_uses_runtime_disable() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let mut timer = test_unit("backup.timer");
+    timer.enablement_state = Some("enabled-runtime".into());
+    let timer_id = timer.id();
+    home.filtered_units = StatefulList::with_items(vec![MatchedUnit { unit: timer, match_indices: vec![] }]);
+    home.filtered_units.state.select(Some(0));
+
+    home.dispatch(Action::EnterMode(Mode::ActionMenu));
+
+    let disable = home.menu_items.items.iter().find(|item| item.name == "Disable timer").unwrap();
+    assert!(matches!(
+      &disable.action,
+      Action::DisableService { unit, runtime: true } if unit == &timer_id
+    ));
+  }
+
+  #[test]
   fn refreshing_unchanged_units_preserves_list_offset() {
     let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
     let units: Vec<_> = (0..10).map(|i| test_unit(&format!("unit-{i}.service"))).collect();
@@ -2786,14 +2824,29 @@ mod tests {
   }
 
   #[test]
+  fn search_does_not_match_an_invisible_suffix() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    home.all_units.insert(test_unit("backup.service").id(), test_unit("backup.service"));
+    home.all_units.insert(test_unit("backup.timer").id(), test_unit("backup.timer"));
+    home.input = Input::default().with_value("timer".to_string());
+
+    home.refresh_filtered_units();
+
+    assert!(home.filtered_units.items.is_empty());
+  }
+
+  #[test]
   fn late_timer_metadata_rebuilds_the_open_action_menu() {
     let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
-    let timer = test_unit("backup.timer");
+    let mut timer = test_unit("backup.timer");
+    timer.enablement_state = Some("enabled".into());
     let timer_id = timer.id();
     home.filtered_units = StatefulList::with_items(vec![MatchedUnit { unit: timer, match_indices: vec![] }]);
     home.filtered_units.state.select(Some(0));
     home.dispatch(Action::EnterMode(Mode::ActionMenu));
     assert!(!home.menu_items.items.iter().any(|item| item.name.contains("backup.service")));
+    let disable_index = home.menu_items.items.iter().position(|item| item.name == "Disable timer").unwrap();
+    home.menu_items.state.select(Some(disable_index));
 
     let follow_up = home.dispatch(Action::SetUnitRuntimeInfo {
       unit: timer_id,
@@ -2802,6 +2855,7 @@ mod tests {
     home.dispatch(follow_up.expect("the action menu should be rebuilt"));
 
     assert!(home.menu_items.items.iter().any(|item| item.name == "Start backup.service now"));
+    assert_eq!(home.menu_items.selected().map(|item| item.name.as_str()), Some("Disable timer"));
   }
 
   #[test]
@@ -2809,6 +2863,29 @@ mod tests {
     let formatted = format_systemd_timestamp("Wed 2026-07-08 10:00:00 PDT", true);
 
     assert_eq!(formatted, Some(("2026-07-08 10:00 PDT".into(), None)));
+  }
+
+  #[test]
+  fn timer_next_trigger_uses_an_absolute_timestamp() {
+    use ratatui::{backend::TestBackend, Terminal};
+
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let timer = test_unit("backup.timer");
+    home.filtered_units = StatefulList::with_items(vec![MatchedUnit { unit: timer, match_indices: vec![] }]);
+    home.filtered_units.state.select(Some(0));
+    let next = chrono::Local::now() + chrono::Duration::hours(2);
+    let expected_absolute = next.format("%Y-%m-%d %H:%M").to_string();
+    home.runtime_info = Some(UnitRuntimeInfo {
+      next_elapse: Some(next.format("%a %Y-%m-%d %H:%M:%S %Z").to_string()),
+      ..Default::default()
+    });
+
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|frame| home.render(frame, frame.area())).unwrap();
+    let rendered = format!("{}", terminal.backend());
+
+    assert!(rendered.contains("Next trigger"));
+    assert!(rendered.contains(&expected_absolute));
   }
 
   mod snapshots {
@@ -2876,7 +2953,6 @@ mod tests {
       let timer_index = home.filtered_units.items.iter().position(|item| item.unit.name == "backup.timer").unwrap();
       home.filtered_units.state.select(Some(timer_index));
       home.runtime_info = Some(UnitRuntimeInfo {
-        next_elapse_monotonic: Some("2h 15min".into()),
         triggered_unit: Some("backup.service".into()),
         timer_schedules: vec!["OnBootSec=10min".into(), "OnUnitActiveSec=2h".into()],
         persistent: Some(true),

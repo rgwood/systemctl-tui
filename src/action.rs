@@ -34,7 +34,7 @@ pub enum Action {
   RestartService(UnitId),
   ReloadService(UnitId),
   EnableService(UnitId),
-  DisableService(UnitId),
+  DisableService { unit: UnitId, runtime: bool },
   KillService(UnitId, String),
   ScrollUp(u16),
   ScrollDown(u16),

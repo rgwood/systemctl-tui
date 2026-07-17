@@ -167,6 +167,30 @@ def test_logs(binary: str, host: str | None) -> None:
     check("app still alive", app_alive())
 
 
+def test_timer_browsing(binary: str, host: str | None) -> None:
+    """Exercise real timer discovery, runtime properties, and the timer-specific menu."""
+    print("timers:")
+    start_app(binary, host, ["--scope", "global", "--limit-units", "systemd-tmpfiles-clean.timer"])
+    check("timer is listed with its type marker", wait_for(lambda: "[T] systemd-tmpfiles-clean" in capture()), capture())
+
+    # Initial focus is in Search; Down moves focus into the unit list and starts
+    # the lazy runtime-property fetch for the selected timer.
+    send_keys("Down")
+    check("timer target is shown", wait_for(lambda: "systemd-tmpfiles-clean.service" in capture()), capture())
+    check("computed next trigger is shown", wait_for(lambda: "Next trigger:" in capture()), capture())
+
+    send_keys("Enter")
+    check("timer action menu opens", wait_for(lambda: "Actions for systemd-tmpfiles-clean.timer" in capture()), capture())
+    screen = capture()
+    check("timer menu has an arm/disarm action", "Start timer" in screen or "Stop timer" in screen, screen)
+    check(
+        "timer menu omits service-only actions",
+        not any(action in screen for action in ("Restart", "Reload", "Kill")),
+        screen,
+    )
+    send_keys("Escape")
+
+
 def test_mouse(binary: str, host: str | None) -> None:
     """Mouse handling is client-side (crossterm SGR parsing + ratatui rect hit-testing), so this
     runs identically in local and remote mode - unlike most of the remote suite it isn't testing
@@ -543,6 +567,7 @@ def main() -> int:
     try:
         test_startup_and_browse(args.binary, args.host)
         test_logs(args.binary, args.host)
+        test_timer_browsing(args.binary, args.host)
         test_mouse(args.binary, args.host)
         if not args.remote_suite:
             test_no_dropped_keystrokes(args.binary, args.host)

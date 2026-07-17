@@ -3,7 +3,7 @@
 use core::str;
 
 use anyhow::{bail, Context, Result};
-use log::error;
+use log::{error, warn};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use zbus::{proxy, zvariant, Connection};
@@ -301,8 +301,10 @@ pub struct UnitRuntimeInfo {
   pub inactive_enter_timestamp: Option<String>,
   pub result: Option<String>,
   pub exec_main_status: Option<i32>,
-  pub next_elapse_realtime: Option<String>,
-  pub next_elapse_monotonic: Option<String>,
+  /// The next trigger as an absolute wall-clock timestamp, calculated by
+  /// `systemctl list-timers`. `NextElapseUSecMonotonic` is deliberately not
+  /// used here: it is an absolute CLOCK_MONOTONIC value, not a countdown.
+  pub next_elapse: Option<String>,
   pub last_trigger: Option<String>,
   pub triggered_unit: Option<String>,
   pub timer_schedules: Vec<String>,
@@ -343,24 +345,8 @@ fn parse_unit_runtime_info(output: &str) -> UnitRuntimeInfo {
     }
   }
 
-  fn next_elapse(value: &str) -> Option<String> {
-    match value {
-      // systemd reports the unused clock as 0 when the other clock has the
-      // timer's real deadline (for example, calendar timers use realtime).
-      "" | "0" | "[not set]" | "n/a" | "infinity" => None,
-      v => Some(v.to_string()),
-    }
-  }
-
   let mut info = UnitRuntimeInfo::default();
-  let mut collecting_timer_schedules = false;
   for line in output.lines() {
-    if collecting_timer_schedules && line.trim_start().starts_with('{') {
-      info.timer_schedules.extend(parse_timer_schedules(line));
-      continue;
-    }
-    collecting_timer_schedules = false;
-
     let Some((key, value)) = line.split_once('=') else { continue };
     let value = value.trim();
     match key {
@@ -375,13 +361,10 @@ fn parse_unit_runtime_info(output: &str) -> UnitRuntimeInfo {
       "InactiveEnterTimestamp" => info.inactive_enter_timestamp = non_empty(value),
       "Result" => info.result = non_empty(value),
       "ExecMainStatus" => info.exec_main_status = value.parse().ok(),
-      "NextElapseUSecRealtime" => info.next_elapse_realtime = next_elapse(value),
-      "NextElapseUSecMonotonic" => info.next_elapse_monotonic = next_elapse(value),
       "LastTriggerUSec" => info.last_trigger = non_empty(value),
       "Unit" => info.triggered_unit = non_empty(value),
       "TimersCalendar" | "TimersMonotonic" => {
         info.timer_schedules.extend(parse_timer_schedules(value));
-        collecting_timer_schedules = true;
       },
       "Persistent" => {
         info.persistent = match value {
@@ -398,13 +381,46 @@ fn parse_unit_runtime_info(output: &str) -> UnitRuntimeInfo {
   info
 }
 
-/// Fetches runtime properties (including the unit file path) for a unit in a single
-/// `systemctl show` invocation. Uses systemctl rather than D-Bus so it works in remote mode too.
-/// Properties that don't apply to the unit type are simply omitted from the output.
+/// Parse the NEXT column from `systemctl list-timers --no-legend`.
+///
+/// On every supported systemd version a scheduled timer starts with an
+/// absolute timestamp such as `Fri 2026-07-17 01:09:35 PDT`. Unscheduled
+/// timers start with `n/a` and have no useful next trigger.
+fn parse_timer_next_elapse(output: &str) -> Option<String> {
+  let line = output.lines().find(|line| !line.trim().is_empty())?;
+  let mut parts = line.split_whitespace();
+  let weekday = parts.next()?;
+  if weekday == "n/a" {
+    return None;
+  }
+  let date = parts.next()?;
+  let time = parts.next()?;
+  let timezone = parts.next()?;
+  Some(format!("{weekday} {date} {time} {timezone}"))
+}
+
+fn get_timer_next_elapse(service: &UnitId) -> Result<Option<String>> {
+  let mut args = vec!["--quiet", "list-timers", "--all", "--no-legend", "--no-pager", "--full", &service.name];
+  if service.scope == UnitScope::User {
+    args.insert(0, "--user");
+  }
+
+  let output = ssh::host_command("systemctl", &args).output()?;
+  if !output.status.success() {
+    let stderr = String::from_utf8(output.stderr)?;
+    bail!(stderr);
+  }
+  Ok(parse_timer_next_elapse(str::from_utf8(&output.stdout)?))
+}
+
+/// Fetches runtime properties (including the unit file path) for a unit. Uses
+/// systemctl rather than D-Bus so it works in remote mode too. Timers need one
+/// additional `list-timers` call because only that command converts monotonic
+/// deadlines into an accurate wall-clock NEXT value, including across suspend.
 pub fn get_unit_runtime_info(service: &UnitId) -> Result<UnitRuntimeInfo> {
   const PROPERTIES: &str = "FragmentPath,MainPID,MemoryCurrent,TasksCurrent,NRestarts,CPUUsageNSec,\
-                            ActiveEnterTimestamp,InactiveEnterTimestamp,Result,ExecMainStatus,NextElapseUSecRealtime,\
-                            NextElapseUSecMonotonic,LastTriggerUSec,Unit,TimersCalendar,TimersMonotonic,Persistent,\
+                            ActiveEnterTimestamp,InactiveEnterTimestamp,Result,ExecMainStatus,LastTriggerUSec,Unit,\
+                            TimersCalendar,TimersMonotonic,Persistent,\
                             RandomizedDelayUSec,AccuracyUSec";
   let mut args = vec!["--quiet", "show", "-p", PROPERTIES];
   args.push(&service.name);
@@ -420,7 +436,14 @@ pub fn get_unit_runtime_info(service: &UnitId) -> Result<UnitRuntimeInfo> {
     bail!(stderr);
   }
 
-  Ok(parse_unit_runtime_info(str::from_utf8(&output.stdout)?))
+  let mut info = parse_unit_runtime_info(str::from_utf8(&output.stdout)?);
+  if service.name.ends_with(".timer") {
+    match get_timer_next_elapse(service) {
+      Ok(next_elapse) => info.next_elapse = next_elapse,
+      Err(error) => warn!("Could not get the next trigger for {}: {error}", service.name),
+    }
+  }
+  Ok(info)
 }
 
 pub async fn start_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
@@ -564,12 +587,12 @@ pub async fn enable_service(service: UnitId, cancel_token: CancellationToken) ->
   }
 }
 
-pub async fn disable_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
-  async fn disable(service: UnitId) -> Result<()> {
+pub async fn disable_service(service: UnitId, runtime: bool, cancel_token: CancellationToken) -> Result<()> {
+  async fn disable(service: UnitId, runtime: bool) -> Result<()> {
     let connection = get_connection(service.scope).await?;
     let manager_proxy = ManagerProxy::new(&connection).await?;
     let files = vec![service.name];
-    let changes = manager_proxy.disable_unit_files(files, false).await?;
+    let changes = manager_proxy.disable_unit_files(files, runtime).await?;
 
     for (change_type, name, destination) in changes {
       info!("{}: {} -> {}", change_type, name, destination);
@@ -582,7 +605,7 @@ pub async fn disable_service(service: UnitId, cancel_token: CancellationToken) -
     _ = cancel_token.cancelled() => {
         anyhow::bail!("cancelled");
     }
-    result = disable(service) => {
+    result = disable(service, runtime) => {
         result
     }
   }
@@ -1029,32 +1052,32 @@ mod tests {
   }
 
   #[test]
-  fn parses_real_multiline_timer_runtime_output() {
+  fn parses_captured_timer_runtime_output() {
     let output = "FragmentPath=/usr/lib/systemd/system/example.timer\n\
-NextElapseUSecRealtime=\n\
-NextElapseUSecMonotonic=3h 4min\n\
 LastTriggerUSec=Wed 2026-07-15 12:00:00 PDT\n\
 Unit=example.service\n\
 TimersCalendar={ OnCalendar=daily ; next_elapse=Thu 2026-07-16 00:00:00 PDT }\n\
 TimersMonotonic={ OnUnitActiveUSec=3h ; next_elapse=3h 4min }\n\
-{ OnStartupUSec=1h ; next_elapse=1h 4min }\n\
+TimersMonotonic={ OnStartupUSec=1h ; next_elapse=1h 4min }\n\
 Persistent=yes\n";
 
     let info = parse_unit_runtime_info(output);
 
-    assert_eq!(info.next_elapse_realtime, None);
-    assert_eq!(info.next_elapse_monotonic.as_deref(), Some("3h 4min"));
     assert_eq!(info.triggered_unit.as_deref(), Some("example.service"));
     assert_eq!(info.timer_schedules, ["OnCalendar=daily", "OnUnitActiveSec=3h", "OnStartupSec=1h"]);
     assert_eq!(info.persistent, Some(true));
   }
 
   #[test]
-  fn unavailable_next_elapse_is_omitted() {
-    let info = parse_unit_runtime_info("NextElapseUSecRealtime=n/a\nNextElapseUSecMonotonic=0\nTimersCalendar=\n");
-    assert!(info.next_elapse_realtime.is_none());
-    assert!(info.next_elapse_monotonic.is_none());
-    assert!(info.timer_schedules.is_empty());
+  fn parses_next_timer_timestamp_from_list_timers() {
+    let output = "Fri 2026-07-17 01:09:35 PDT 7h left Wed 2026-07-15 07:17:49 PDT 16h ago systemd-tmpfiles-clean.timer systemd-tmpfiles-clean.service\n";
+    assert_eq!(parse_timer_next_elapse(output).as_deref(), Some("Fri 2026-07-17 01:09:35 PDT"));
+  }
+
+  #[test]
+  fn unscheduled_timer_has_no_next_timestamp() {
+    let output = "n/a n/a n/a n/a snapd.snap-repair.timer snapd.snap-repair.service\n";
+    assert_eq!(parse_timer_next_elapse(output), None);
   }
 
   #[test]
