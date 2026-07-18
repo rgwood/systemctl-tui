@@ -448,7 +448,7 @@ def test_root_kill_round_trip(binary: str, root_host: str) -> None:
         send_keys("s")
         check("start succeeds", wait_for(lambda: "active (running)" in capture(), timeout=20), capture())
 
-        main_pid = run(["ssh", root_host, "systemctl", "show", "-P", "MainPID", "sctui-test.service"])
+        main_pid = run(["ssh", root_host, "systemctl", "show", "--property=MainPID", "--value", "sctui-test.service"])
         check("MainPID recorded before kill", main_pid.stdout.strip().isdigit() and main_pid.stdout.strip() != "0", main_pid.stdout + main_pid.stderr)
 
         send_keys("Enter")
@@ -462,7 +462,7 @@ def test_root_kill_round_trip(binary: str, root_host: str) -> None:
         remote_state = run(["ssh", root_host, "systemctl", "is-failed", "sctui-test.service"])
         check("remote unit confirms failed state", remote_state.stdout.strip() == "failed", remote_state.stdout + remote_state.stderr)
 
-        remote_pid = run(["ssh", root_host, "systemctl", "show", "-P", "MainPID", "sctui-test.service"])
+        remote_pid = run(["ssh", root_host, "systemctl", "show", "--property=MainPID", "--value", "sctui-test.service"])
         check("MainPID cleared after kill", remote_pid.stdout.strip() == "0", remote_pid.stdout + remote_pid.stderr)
     finally:
         run(["ssh", root_host, "systemctl", "reset-failed", "sctui-test.service"])
