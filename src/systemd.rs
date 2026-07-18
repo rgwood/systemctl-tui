@@ -822,7 +822,15 @@ pub async fn check_unit_has_run(unit: &UnitId) -> bool {
     Ok(timestamp > 0)
   }
 
-  check(unit).await.unwrap_or(false)
+  // Bounded so a stalled connection (e.g. remote-mode ssh setup on first use) can't
+  // wedge the log-loading thread, which block_on's this
+  match tokio::time::timeout(std::time::Duration::from_secs(10), check(unit)).await {
+    Ok(result) => result.unwrap_or(false),
+    Err(_) => {
+      warn!("Timed out checking whether {} has run", unit.name);
+      false
+    },
+  }
 }
 
 /// Check whether the journal is readable and we can see system-wide entries.
