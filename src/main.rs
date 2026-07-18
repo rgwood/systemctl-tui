@@ -9,7 +9,7 @@ use systemctl_tui::{
 
 // Define the command line arguments structure
 #[derive(Parser, Debug)]
-#[command(version = version(), about = "A simple TUI for systemd services")]
+#[command(version = version(), about = "A simple TUI for systemd units")]
 struct Args {
   #[command(subcommand)]
   command: Option<Commands>,
@@ -25,7 +25,7 @@ struct Args {
     )]
   no_log: bool,
   /// Limit view to only these unit files
-  #[clap(short, long, default_value="*.service", num_args=1..)]
+  #[clap(short, long, default_values_t = ["*.service".to_string(), "*.timer".to_string()], num_args=1..)]
   limit_units: Vec<String>,
   /// Manage a remote host over SSH (e.g. user@hostname). Requires systemd-stdio-bridge on the remote host.
   #[clap(long)]
@@ -123,4 +123,21 @@ async fn main() -> Result<()> {
   result?;
 
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn default_unit_patterns_include_services_and_timers() {
+    let args = Args::try_parse_from(["systemctl-tui"]).unwrap();
+    assert_eq!(args.limit_units, ["*.service", "*.timer"]);
+  }
+
+  #[test]
+  fn explicit_unit_patterns_replace_defaults() {
+    let args = Args::try_parse_from(["systemctl-tui", "--limit-units", "*.timer"]).unwrap();
+    assert_eq!(args.limit_units, ["*.timer"]);
+  }
 }

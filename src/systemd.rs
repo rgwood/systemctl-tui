@@ -3,12 +3,19 @@
 use core::str;
 
 use anyhow::{bail, Context, Result};
-use log::error;
+use log::{error, warn};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use zbus::{proxy, zvariant, Connection};
 
 use crate::ssh;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnitKind {
+  Service,
+  Timer,
+  Other,
+}
 
 #[derive(Debug, Clone)]
 pub struct UnitWithStatus {
@@ -50,6 +57,16 @@ pub struct UnitId {
 }
 
 impl UnitWithStatus {
+  pub fn kind(&self) -> UnitKind {
+    if self.name.ends_with(".service") {
+      UnitKind::Service
+    } else if self.name.ends_with(".timer") {
+      UnitKind::Timer
+    } else {
+      UnitKind::Other
+    }
+  }
+
   pub fn is_active(&self) -> bool {
     self.activation_state == "active"
   }
@@ -69,6 +86,8 @@ impl UnitWithStatus {
   pub fn short_name(&self) -> &str {
     if self.name.ends_with(".service") {
       &self.name[..self.name.len() - 8]
+    } else if self.name.ends_with(".timer") {
+      &self.name[..self.name.len() - 6]
     } else {
       &self.name
     }
@@ -282,29 +301,43 @@ pub struct UnitRuntimeInfo {
   pub inactive_enter_timestamp: Option<String>,
   pub result: Option<String>,
   pub exec_main_status: Option<i32>,
+  /// The next trigger as an absolute wall-clock timestamp, calculated by
+  /// `systemctl list-timers`. `NextElapseUSecMonotonic` is deliberately not
+  /// used here: it is an absolute CLOCK_MONOTONIC value, not a countdown.
   pub next_elapse: Option<String>,
+  pub last_trigger: Option<String>,
+  pub triggered_unit: Option<String>,
+  pub timer_schedules: Vec<String>,
+  pub persistent: Option<bool>,
+  pub randomized_delay: Option<String>,
+  pub accuracy: Option<String>,
 }
 
-/// Fetches runtime properties (including the unit file path) for a unit in a single
-/// `systemctl show` invocation. Uses systemctl rather than D-Bus so it works in remote mode too.
-/// Properties that don't apply to the unit type are simply omitted from the output.
-pub fn get_unit_runtime_info(service: &UnitId) -> Result<UnitRuntimeInfo> {
-  const PROPERTIES: &str = "FragmentPath,MainPID,MemoryCurrent,TasksCurrent,NRestarts,CPUUsageNSec,\
-                            ActiveEnterTimestamp,InactiveEnterTimestamp,Result,ExecMainStatus,NextElapseUSecRealtime";
-  let mut args = vec!["--quiet", "show", "-p", PROPERTIES];
-  args.push(&service.name);
+fn parse_timer_schedules(value: &str) -> Vec<String> {
+  value
+    .split(" }")
+    .filter_map(|entry| {
+      let entry = entry.trim().trim_start_matches('{').trim();
+      let schedule = entry.split("; next_elapse=").next()?.trim();
+      if schedule.is_empty() {
+        return None;
+      }
+      let schedule = [
+        ("OnActiveUSec=", "OnActiveSec="),
+        ("OnBootUSec=", "OnBootSec="),
+        ("OnStartupUSec=", "OnStartupSec="),
+        ("OnUnitActiveUSec=", "OnUnitActiveSec="),
+        ("OnUnitInactiveUSec=", "OnUnitInactiveSec="),
+      ]
+      .into_iter()
+      .find_map(|(internal, directive)| schedule.strip_prefix(internal).map(|value| format!("{directive}{value}")))
+      .unwrap_or_else(|| schedule.to_string());
+      Some(schedule)
+    })
+    .collect()
+}
 
-  if service.scope == UnitScope::User {
-    args.insert(0, "--user");
-  }
-
-  let output = ssh::host_command("systemctl", &args).output()?;
-
-  if !output.status.success() {
-    let stderr = String::from_utf8(output.stderr)?;
-    bail!(stderr);
-  }
-
+fn parse_unit_runtime_info(output: &str) -> UnitRuntimeInfo {
   fn non_empty(value: &str) -> Option<String> {
     match value {
       "" | "[not set]" | "n/a" => None,
@@ -313,7 +346,7 @@ pub fn get_unit_runtime_info(service: &UnitId) -> Result<UnitRuntimeInfo> {
   }
 
   let mut info = UnitRuntimeInfo::default();
-  for line in str::from_utf8(&output.stdout)?.lines() {
+  for line in output.lines() {
     let Some((key, value)) = line.split_once('=') else { continue };
     let value = value.trim();
     match key {
@@ -328,11 +361,88 @@ pub fn get_unit_runtime_info(service: &UnitId) -> Result<UnitRuntimeInfo> {
       "InactiveEnterTimestamp" => info.inactive_enter_timestamp = non_empty(value),
       "Result" => info.result = non_empty(value),
       "ExecMainStatus" => info.exec_main_status = value.parse().ok(),
-      "NextElapseUSecRealtime" => info.next_elapse = non_empty(value),
+      "LastTriggerUSec" => info.last_trigger = non_empty(value),
+      "Unit" => info.triggered_unit = non_empty(value),
+      "TimersCalendar" | "TimersMonotonic" => {
+        info.timer_schedules.extend(parse_timer_schedules(value));
+      },
+      "Persistent" => {
+        info.persistent = match value {
+          "yes" => Some(true),
+          "no" => Some(false),
+          _ => None,
+        }
+      },
+      "RandomizedDelayUSec" => info.randomized_delay = non_empty(value),
+      "AccuracyUSec" => info.accuracy = non_empty(value),
       _ => {},
     }
   }
+  info
+}
 
+/// Parse the NEXT column from `systemctl list-timers --no-legend`.
+///
+/// On every supported systemd version a scheduled timer starts with an
+/// absolute timestamp such as `Fri 2026-07-17 01:09:35 PDT`. Unscheduled
+/// timers start with `n/a` and have no useful next trigger.
+fn parse_timer_next_elapse(output: &str) -> Option<String> {
+  let line = output.lines().find(|line| !line.trim().is_empty())?;
+  let mut parts = line.split_whitespace();
+  let weekday = parts.next()?;
+  if weekday == "n/a" {
+    return None;
+  }
+  let date = parts.next()?;
+  let time = parts.next()?;
+  let timezone = parts.next()?;
+  Some(format!("{weekday} {date} {time} {timezone}"))
+}
+
+fn get_timer_next_elapse(service: &UnitId) -> Result<Option<String>> {
+  let mut args = vec!["--quiet", "list-timers", "--all", "--no-legend", "--no-pager", "--full", &service.name];
+  if service.scope == UnitScope::User {
+    args.insert(0, "--user");
+  }
+
+  let output = ssh::host_command("systemctl", &args).output()?;
+  if !output.status.success() {
+    let stderr = String::from_utf8(output.stderr)?;
+    bail!(stderr);
+  }
+  Ok(parse_timer_next_elapse(str::from_utf8(&output.stdout)?))
+}
+
+/// Fetches runtime properties (including the unit file path) for a unit. Uses
+/// systemctl rather than D-Bus so it works in remote mode too. Timers need one
+/// additional `list-timers` call because only that command converts monotonic
+/// deadlines into an accurate wall-clock NEXT value, including across suspend.
+pub fn get_unit_runtime_info(service: &UnitId) -> Result<UnitRuntimeInfo> {
+  const PROPERTIES: &str = "FragmentPath,MainPID,MemoryCurrent,TasksCurrent,NRestarts,CPUUsageNSec,\
+                            ActiveEnterTimestamp,InactiveEnterTimestamp,Result,ExecMainStatus,LastTriggerUSec,Unit,\
+                            TimersCalendar,TimersMonotonic,Persistent,\
+                            RandomizedDelayUSec,AccuracyUSec";
+  let mut args = vec!["--quiet", "show", "-p", PROPERTIES];
+  args.push(&service.name);
+
+  if service.scope == UnitScope::User {
+    args.insert(0, "--user");
+  }
+
+  let output = ssh::host_command("systemctl", &args).output()?;
+
+  if !output.status.success() {
+    let stderr = String::from_utf8(output.stderr)?;
+    bail!(stderr);
+  }
+
+  let mut info = parse_unit_runtime_info(str::from_utf8(&output.stdout)?);
+  if service.name.ends_with(".timer") {
+    match get_timer_next_elapse(service) {
+      Ok(next_elapse) => info.next_elapse = next_elapse,
+      Err(error) => warn!("Could not get the next trigger for {}: {error}", service.name),
+    }
+  }
   Ok(info)
 }
 
@@ -477,12 +587,12 @@ pub async fn enable_service(service: UnitId, cancel_token: CancellationToken) ->
   }
 }
 
-pub async fn disable_service(service: UnitId, cancel_token: CancellationToken) -> Result<()> {
-  async fn disable(service: UnitId) -> Result<()> {
+pub async fn disable_service(service: UnitId, runtime: bool, cancel_token: CancellationToken) -> Result<()> {
+  async fn disable(service: UnitId, runtime: bool) -> Result<()> {
     let connection = get_connection(service.scope).await?;
     let manager_proxy = ManagerProxy::new(&connection).await?;
     let files = vec![service.name];
-    let changes = manager_proxy.disable_unit_files(files, false).await?;
+    let changes = manager_proxy.disable_unit_files(files, runtime).await?;
 
     for (change_type, name, destination) in changes {
       info!("{}: {} -> {}", change_type, name, destination);
@@ -495,7 +605,7 @@ pub async fn disable_service(service: UnitId, cancel_token: CancellationToken) -
     _ = cancel_token.cancelled() => {
         anyhow::bail!("cancelled");
     }
-    result = disable(service) => {
+    result = disable(service, runtime) => {
         result
     }
   }
@@ -904,6 +1014,70 @@ mod tests {
   fn test_encode_as_dbus_object_path() {
     assert_eq!(encode_as_dbus_object_path("test.service"), "test_2eservice");
     assert_eq!(encode_as_dbus_object_path("test-with-hyphen.service"), "test_2dwith_2dhyphen_2eservice");
+  }
+
+  #[test]
+  fn unit_kind_and_short_name_follow_suffix() {
+    let mut unit = UnitWithStatus {
+      name: "backup.timer".into(),
+      scope: UnitScope::Global,
+      description: String::new(),
+      file_path: None,
+      load_state: "loaded".into(),
+      activation_state: "active".into(),
+      sub_state: "waiting".into(),
+      enablement_state: None,
+    };
+    assert_eq!(unit.kind(), UnitKind::Timer);
+    assert_eq!(unit.short_name(), "backup");
+
+    unit.name = "backup.service".into();
+    assert_eq!(unit.kind(), UnitKind::Service);
+    assert_eq!(unit.short_name(), "backup");
+  }
+
+  #[test]
+  fn parses_systemctl_timer_schedule_properties() {
+    assert_eq!(
+      parse_timer_schedules("{ OnCalendar=*-*-* 07..23:30:00 ; next_elapse=Sun 2026-07-12 13:30:00 PDT }"),
+      vec!["OnCalendar=*-*-* 07..23:30:00"]
+    );
+    assert_eq!(
+      parse_timer_schedules(
+        "{ OnBootSec=15min ; next_elapse=Sun 2026-07-12 13:30:00 PDT } { OnUnitActiveSec=1h ; next_elapse=Sun 2026-07-12 14:30:00 PDT }"
+      ),
+      vec!["OnBootSec=15min", "OnUnitActiveSec=1h"]
+    );
+    assert!(parse_timer_schedules("").is_empty());
+  }
+
+  #[test]
+  fn parses_captured_timer_runtime_output() {
+    let output = "FragmentPath=/usr/lib/systemd/system/example.timer\n\
+LastTriggerUSec=Wed 2026-07-15 12:00:00 PDT\n\
+Unit=example.service\n\
+TimersCalendar={ OnCalendar=daily ; next_elapse=Thu 2026-07-16 00:00:00 PDT }\n\
+TimersMonotonic={ OnUnitActiveUSec=3h ; next_elapse=3h 4min }\n\
+TimersMonotonic={ OnStartupUSec=1h ; next_elapse=1h 4min }\n\
+Persistent=yes\n";
+
+    let info = parse_unit_runtime_info(output);
+
+    assert_eq!(info.triggered_unit.as_deref(), Some("example.service"));
+    assert_eq!(info.timer_schedules, ["OnCalendar=daily", "OnUnitActiveSec=3h", "OnStartupSec=1h"]);
+    assert_eq!(info.persistent, Some(true));
+  }
+
+  #[test]
+  fn parses_next_timer_timestamp_from_list_timers() {
+    let output = "Fri 2026-07-17 01:09:35 PDT 7h left Wed 2026-07-15 07:17:49 PDT 16h ago systemd-tmpfiles-clean.timer systemd-tmpfiles-clean.service\n";
+    assert_eq!(parse_timer_next_elapse(output).as_deref(), Some("Fri 2026-07-17 01:09:35 PDT"));
+  }
+
+  #[test]
+  fn unscheduled_timer_has_no_next_timestamp() {
+    let output = "n/a n/a n/a n/a snapd.snap-repair.timer snapd.snap-repair.service\n";
+    assert_eq!(parse_timer_next_elapse(output), None);
   }
 
   #[test]

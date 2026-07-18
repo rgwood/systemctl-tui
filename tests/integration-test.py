@@ -113,7 +113,7 @@ def wait_for(predicate, timeout: float = 15.0, interval: float = 0.5) -> bool:
 def test_startup_and_browse(binary: str, host: str | None) -> None:
     print("startup and browsing:")
     start_app(binary, host)
-    check("app launches and renders", wait_for(lambda: "Services" in capture()))
+    check("app launches and renders", wait_for(lambda: "Units" in capture()))
     check("services listed", wait_for(lambda: ".service" in capture() or "Details" in capture()))
 
     # navigate: initial mode is Search, Down selects the first unit
@@ -167,6 +167,30 @@ def test_logs(binary: str, host: str | None) -> None:
     check("app still alive", app_alive())
 
 
+def test_timer_browsing(binary: str, host: str | None) -> None:
+    """Exercise real timer discovery, runtime properties, and the timer-specific menu."""
+    print("timers:")
+    start_app(binary, host, ["--scope", "global", "--limit-units", "systemd-tmpfiles-clean.timer"])
+    check("timer is listed with its type marker", wait_for(lambda: "[T] systemd-tmpfiles-clean" in capture()), capture())
+
+    # Initial focus is in Search; Down moves focus into the unit list and starts
+    # the lazy runtime-property fetch for the selected timer.
+    send_keys("Down")
+    check("timer target is shown", wait_for(lambda: "systemd-tmpfiles-clean.service" in capture()), capture())
+    check("computed next trigger is shown", wait_for(lambda: "Next trigger:" in capture()), capture())
+
+    send_keys("Enter")
+    check("timer action menu opens", wait_for(lambda: "Actions for systemd-tmpfiles-clean.timer" in capture()), capture())
+    screen = capture()
+    check("timer menu has an arm/disarm action", "Start timer" in screen or "Stop timer" in screen, screen)
+    check(
+        "timer menu omits service-only actions",
+        not any(action in screen for action in ("Restart", "Reload", "Kill")),
+        screen,
+    )
+    send_keys("Escape")
+
+
 def test_mouse(binary: str, host: str | None) -> None:
     """Mouse handling is client-side (crossterm SGR parsing + ratatui rect hit-testing), so this
     runs identically in local and remote mode - unlike most of the remote suite it isn't testing
@@ -174,7 +198,7 @@ def test_mouse(binary: str, host: str | None) -> None:
     """
     print("mouse interactions:")
     start_app(binary, host)
-    wait_for(lambda: "Services" in capture())
+    wait_for(lambda: "Units" in capture())
     # initial mode is Search; leave it so plain keys like 'f' below aren't typed into the box
     send_keys("Escape")
     time.sleep(0.3)
@@ -185,7 +209,7 @@ def test_mouse(binary: str, host: str | None) -> None:
         lines = capture().splitlines() if lines is None else lines
         in_list = False
         for i, line in enumerate(lines):
-            if "Services" in line[:30]:
+            if "Units" in line[:30]:
                 in_list = True
                 continue
             if not in_list:
@@ -248,7 +272,7 @@ def test_mouse(binary: str, host: str | None) -> None:
     # contains relative timestamps ("(17s ago)") that tick between captures.
     def logs_region() -> str:
         lines = capture().splitlines()
-        start = next((i for i, l in enumerate(lines) if "Service Logs" in l), 0)
+        start = next((i for i, l in enumerate(lines) if "Logs —" in l), 0)
         return "\n".join(lines[start:])
 
     logs_before = logs_region()
@@ -270,13 +294,15 @@ def test_mouse(binary: str, host: str | None) -> None:
         time.sleep(0.3)
 
     # 4. drag-selecting log text copies it and shows a toast
-    send_mouse("press", 40, 11)
+    logs_title_row = next(i for i, line in enumerate(capture().splitlines()) if "Logs —" in line)
+    drag_row = logs_title_row + 2  # tmux mouse coordinates are 1-based; use the first log-content row
+    send_mouse("press", 40, drag_row)
     time.sleep(0.1)
-    send_mouse("drag", 44, 11)
+    send_mouse("drag", 44, drag_row)
     time.sleep(0.1)
-    send_mouse("drag", 48, 11)
+    send_mouse("drag", 48, drag_row)
     time.sleep(0.1)
-    send_mouse("release", 48, 11)
+    send_mouse("release", 48, drag_row)
     check("drag selection copies log text", wait_for(lambda: re.search(r"Copied \d+ chars", capture()) is not None), capture())
     time.sleep(2.1)
 
@@ -292,7 +318,7 @@ def test_mouse(binary: str, host: str | None) -> None:
     send_keys("Escape")
     time.sleep(0.3)
     send_keys("f")
-    check("status filter popup opens", wait_for(lambda: "Status filter" in capture()), capture())
+    check("status filter popup opens", wait_for(lambda: "Unit filters" in capture()), capture())
     filter_line = next((i for i, l in enumerate(capture().splitlines()) if "✓ active" in l), None)
     check("status filter has a checked entry", filter_line is not None, capture())
     if filter_line is not None:
@@ -304,7 +330,7 @@ def test_mouse(binary: str, host: str | None) -> None:
         check("clicking a status filter entry toggles its checkmark", "✓ active" not in toggled, toggled)
     click(5, 5)
     time.sleep(0.4)
-    check("click outside closes status filter popup", "Status filter" not in capture(), capture())
+    check("click outside closes status filter popup", "Unit filters" not in capture(), capture())
 
     check("app alive after mouse interactions", app_alive())
     send_keys("q")
@@ -322,7 +348,7 @@ def test_no_dropped_keystrokes(binary: str, host: str | None) -> None:
     text = "systemdnetworkd"
     for ms in (30, 10):
         start_app(binary, host)
-        wait_for(lambda: "Services" in capture())
+        wait_for(lambda: "Units" in capture())
         send_keys(*text, delay=ms / 1000)
         time.sleep(2)
         search_line = capture().splitlines()[1] if len(capture().splitlines()) > 1 else ""
@@ -336,7 +362,7 @@ def test_no_dropped_keystrokes(binary: str, host: str | None) -> None:
 def test_clean_exit(binary: str, host: str | None) -> None:
     print("clean exit:")
     start_app(binary, host)
-    wait_for(lambda: "Services" in capture())
+    wait_for(lambda: "Units" in capture())
     # initial mode is Search where q would be typed into the box; Escape first
     send_keys("Escape")
     time.sleep(0.5)
@@ -391,6 +417,59 @@ def test_root_action_round_trip(binary: str, root_host: str) -> None:
     check("actions menu opens again", wait_for(lambda: "Actions for" in capture()), capture())
     send_keys("t")
     check("stop succeeds", wait_for(lambda: "inactive (dead)" in capture(), timeout=20), capture())
+
+
+def test_root_timer_action_round_trip(binary: str, root_host: str) -> None:
+    print("root timer action round-trip:")
+    # This is a dedicated inert timer in the disposable matrix container. Its
+    # one-hour deadline ensures arming it cannot accidentally start the service
+    # while these checks run.
+    run(["ssh", root_host, "systemctl", "disable", "--now", "sctui-test.timer"])
+    try:
+        start_app(binary, root_host, ["--scope", "global", "--limit-units", "sctui-test.timer"])
+        check("timer fixture is listed", wait_for(lambda: "[T] sctui-test" in capture()), capture())
+        send_keys("Down")
+        check("timer starts inactive", wait_for(lambda: "inactive (dead)" in capture()), capture())
+        check("timer starts disabled", wait_for(lambda: "Enablement: disabled" in capture()), capture())
+
+        send_keys("Enter")
+        check("inactive timer menu opens", wait_for(lambda: "Start timer" in capture()), capture())
+        send_keys("s")
+        check("start arms timer", wait_for(lambda: "active (waiting)" in capture(), timeout=20), capture())
+
+        send_keys("Enter")
+        check("active timer menu opens", wait_for(lambda: "Stop timer" in capture()), capture())
+        send_keys("t")
+        check("stop disarms timer", wait_for(lambda: "inactive (dead)" in capture(), timeout=20), capture())
+
+        send_keys("Enter")
+        check("disabled timer offers enable", wait_for(lambda: "Enable timer" in capture()), capture())
+        send_keys("n")
+        check("enable persists timer", wait_for(lambda: "Enablement: enabled" in capture(), timeout=20), capture())
+
+        send_keys("Enter")
+        check("enabled timer offers disable", wait_for(lambda: "Disable timer" in capture()), capture())
+        send_keys("d")
+        check("disable removes persistent enablement", wait_for(lambda: "Enablement: disabled" in capture(), timeout=20), capture())
+        persistent_state = run(["ssh", root_host, "systemctl", "is-enabled", "sctui-test.timer"])
+        check("persistent symlink is gone", persistent_state.stdout.strip() == "disabled", persistent_state.stdout + persistent_state.stderr)
+
+        # Create a temporary /run enablement externally, relaunch to load it,
+        # then make sure the same UI action selects DisableUnitFiles(runtime=true).
+        runtime_enable = run(["ssh", root_host, "systemctl", "enable", "--runtime", "sctui-test.timer"])
+        check("runtime fixture enable succeeds", runtime_enable.returncode == 0, runtime_enable.stdout + runtime_enable.stderr)
+        start_app(binary, root_host, ["--scope", "global", "--limit-units", "sctui-test.timer"])
+        check("runtime enablement is displayed", wait_for(lambda: "enabled-runtime" in capture()), capture())
+        send_keys("Down")
+        send_keys("Enter")
+        check("runtime-enabled timer offers disable", wait_for(lambda: "Disable timer" in capture()), capture())
+        send_keys("d")
+        check("runtime disable updates the UI", wait_for(lambda: "Enablement: disabled" in capture(), timeout=20), capture())
+        runtime_state = run(["ssh", root_host, "systemctl", "is-enabled", "sctui-test.timer"])
+        check("runtime symlink is gone", runtime_state.stdout.strip() == "disabled", runtime_state.stdout + runtime_state.stderr)
+    finally:
+        run(["ssh", root_host, "systemctl", "disable", "--now", "sctui-test.timer"])
+        run(["ssh", root_host, "systemctl", "stop", "sctui-test.service"])
 
 
 def test_polkit_rejection(binary: str, host: str) -> None:
@@ -541,6 +620,7 @@ def main() -> int:
     try:
         test_startup_and_browse(args.binary, args.host)
         test_logs(args.binary, args.host)
+        test_timer_browsing(args.binary, args.host)
         test_mouse(args.binary, args.host)
         if not args.remote_suite:
             test_no_dropped_keystrokes(args.binary, args.host)
@@ -553,6 +633,7 @@ def main() -> int:
 
             test_user_bus_is_user_bus(args.binary, args.host)
             test_root_action_round_trip(args.binary, root_host)
+            test_root_timer_action_round_trip(args.binary, root_host)
             test_polkit_rejection(args.binary, args.host)
             test_user_scope_action_succeeds(args.binary, args.host)
             test_log_rendering(args.binary, args.host)

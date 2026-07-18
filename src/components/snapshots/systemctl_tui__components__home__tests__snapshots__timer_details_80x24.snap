@@ -1,0 +1,28 @@
+---
+source: src/components/home.rs
+expression: terminal.backend()
+---
+"╭─Search (ctrl+f or /)──────────────────────────────── Press ? or F1 for help ─╮"
+"│                                                                              │"
+"╰──────────────────────────────────────────────────────────────────────────────╯"
+"╭─Units (1 hidden)───────────╮╭─Details────────────────────────────────────────╮"
+"│cron                        ││ Description: backup.timer description          │"
+"│docker                      ││      Active: active (waiting)                  │"
+"│nginx                       ││  Enablement: enabled · global                  │"
+"│bad-config                  ││   Unit file: /etc/systemd/system/backup.timer  │"
+"│[T] backup                  ││   Activates: backup.service                    │"
+"│ssh                         ││    Schedule: OnBootSec=10min                   │"
+"│                            ││    Schedule: OnUnitActiveSec=2h                │"
+"│                            ││  Persistent: yes                               │"
+"│                            ││Random delay: 5min                              │"
+"│                            ││    Accuracy: 1min                              │"
+"│                            │╰────────────────────────────────────────────────╯"
+"│                            │╭─Logs — backup.timer [newest first; ctrl+r to re╮"
+"│                            ││                                                │"
+"│                            ││                                                │"
+"│                            ││                                                │"
+"│                            ││                                                │"
+"│                            ││                                                │"
+"│                            ││                                                │"
+"╰────────────────────────────╯╰────────────────────────────────────────────────╯"
+"Actions: enter | Filter: F2 | Navigate: tab                               v0.6.1"

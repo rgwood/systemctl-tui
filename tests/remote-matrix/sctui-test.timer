@@ -1,0 +1,12 @@
+[Unit]
+Description=systemctl-tui integration test dummy timer
+
+[Timer]
+# Long enough that this never fires during the test. The action tests only arm
+# and disarm it; "Start target now" is covered by the existing service fixture.
+OnActiveSec=1h
+Unit=sctui-test.service
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
