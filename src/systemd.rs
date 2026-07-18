@@ -779,6 +779,9 @@ pub enum LogDiagnostic {
   PermissionDenied { error: String },
   /// Journal is available but no logs exist for this unit
   NoLogsRecorded { unit_name: String },
+  /// Journal is available but no logs exist for this unit, and we couldn't determine
+  /// whether the unit has ever run (D-Bus check timed out or errored)
+  NoLogsStatusUnknown { unit_name: String, reason: String },
   /// The user can only see their own journal entries, not system-wide ones
   LimitedJournalAccess,
   /// journalctl command failed with an error
@@ -797,6 +800,9 @@ impl LogDiagnostic {
       Self::NoLogsRecorded { unit_name } => {
         format!("No logs recorded for {} (unit has run but produced no journal output)", unit_name)
       },
+      Self::NoLogsStatusUnknown { unit_name, reason } => {
+        format!("No logs found for {unit_name} (could not check whether it has ever run: {reason})")
+      },
       Self::LimitedJournalAccess => {
         let place = match crate::ssh::remote_host() {
           Some(ssh_host) => format!(" on {}", ssh_host.host),
@@ -811,8 +817,18 @@ impl LogDiagnostic {
   }
 }
 
+/// Whether a unit has ever been activated, per `ActiveEnterTimestampMonotonic`.
+/// `Unknown` covers cases where we genuinely couldn't tell (D-Bus error or timeout),
+/// carrying a short human-readable reason for display.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HasRun {
+  Yes,
+  No,
+  Unknown(String),
+}
+
 /// Check if a unit has ever been activated, via the `ActiveEnterTimestampMonotonic` D-Bus property
-pub async fn check_unit_has_run(unit: &UnitId) -> bool {
+pub async fn check_unit_has_run(unit: &UnitId) -> HasRun {
   async fn check(unit: &UnitId) -> Result<bool> {
     let connection = get_connection(unit.scope).await?;
     let object_path = get_unit_path(&unit.name);
@@ -825,12 +841,15 @@ pub async fn check_unit_has_run(unit: &UnitId) -> bool {
   // Bounded so a stalled connection (e.g. remote-mode ssh setup on first use) can't
   // wedge the log-loading thread, which block_on's this
   match tokio::time::timeout(std::time::Duration::from_secs(10), check(unit)).await {
-    Ok(result) => result.unwrap_or(false),
+    Ok(Ok(true)) => HasRun::Yes,
+    Ok(Ok(false)) => HasRun::No,
+    Ok(Err(e)) => {
+      warn!("Error checking whether {} has run: {}", unit.name, e);
+      HasRun::Unknown(e.to_string())
+    },
     Err(_) => {
       warn!("Timed out checking whether {} has run", unit.name);
-      // Unknown, so assume it has run: the generic no-logs-recorded message is
-      // a safer fallback than confidently claiming the unit never started
-      true
+      HasRun::Unknown("timed out after 10s".to_string())
     },
   }
 }
@@ -908,12 +927,11 @@ pub fn diagnose_missing_logs(unit: &UnitId) -> LogDiagnostic {
   // check_unit_has_run is async (it goes over D-Bus), but diagnose_missing_logs is called
   // synchronously from within a tokio::task::spawn_blocking closure, so Handle::current() is
   // available and block_on is safe here (it would panic if called from an async context).
-  if !tokio::runtime::Handle::current().block_on(check_unit_has_run(unit)) {
-    return LogDiagnostic::NeverRun { unit_name: unit.name.clone() };
+  match tokio::runtime::Handle::current().block_on(check_unit_has_run(unit)) {
+    HasRun::No => LogDiagnostic::NeverRun { unit_name: unit.name.clone() },
+    HasRun::Yes => LogDiagnostic::NoLogsRecorded { unit_name: unit.name.clone() },
+    HasRun::Unknown(reason) => LogDiagnostic::NoLogsStatusUnknown { unit_name: unit.name.clone(), reason },
   }
-
-  // If we get here, journal is accessible but no logs for this specific unit
-  LogDiagnostic::NoLogsRecorded { unit_name: unit.name.clone() }
 }
 
 #[cfg(test)]
@@ -1005,6 +1023,18 @@ Persistent=yes\n";
   fn test_parse_journalctl_error_no_file() {
     let diagnostic = parse_journalctl_error("No such file or directory");
     assert!(matches!(diagnostic, LogDiagnostic::JournalInaccessible { .. }));
+  }
+
+  #[test]
+  fn test_no_logs_status_unknown_message() {
+    let diagnostic = LogDiagnostic::NoLogsStatusUnknown {
+      unit_name: "foo.service".to_string(),
+      reason: "timed out after 10s".to_string(),
+    };
+    assert_eq!(
+      diagnostic.message(),
+      "No logs found for foo.service (could not check whether it has ever run: timed out after 10s)"
+    );
   }
 
   #[test]
