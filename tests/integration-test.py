@@ -32,6 +32,8 @@ SESSION = f"sctui-integration-test-{os.getpid()}"
 
 passed: list[str] = []
 failed: list[str] = []
+active_host: str | None = None
+unexpected_disconnect = False
 
 
 def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -43,7 +45,11 @@ def tmux(*args: str) -> subprocess.CompletedProcess:
 
 
 def capture() -> str:
-    return tmux("capture-pane", "-t", SESSION, "-p").stdout
+    global unexpected_disconnect
+    screen = tmux("capture-pane", "-t", SESSION, "-p").stdout
+    if active_host and "Lost connection" in screen:
+        unexpected_disconnect = True
+    return screen
 
 
 def send_keys(*keys: str, delay: float = 0.0) -> None:
@@ -73,7 +79,9 @@ def click(col: int, row: int) -> None:
 
 
 def start_app(binary: str, host: str | None, extra_args: list[str] | None = None) -> None:
-    tmux("kill-session", "-t", SESSION)
+    global active_host
+    stop_app()
+    active_host = host
     host_args = ["--host", host] if host else []
     args = [binary, *host_args, *(extra_args or [])]
     cmd = " ".join(f"'{a}'" for a in args)
@@ -84,7 +92,36 @@ def start_app(binary: str, host: str | None, extra_args: list[str] | None = None
 
 
 def stop_app() -> None:
-    tmux("kill-session", "-t", SESSION)
+    global active_host
+    if not app_alive():
+        active_host = None
+        return
+
+    # Let the app restore the terminal and close its SSH ControlMaster. Killing the
+    # tmux session skips ssh::teardown and leaves a detached master behind for its
+    # full ControlPersist window; a long remote suite can accumulate several of
+    # them and put avoidable pressure on sshd's connection/session limits.
+    send_keys("Escape", "q")
+    if not wait_for(lambda: not app_alive(), timeout=3, interval=0.1):
+        tmux("kill-session", "-t", SESSION)
+    active_host = None
+
+
+def run_test(test, binary: str, host: str | None) -> None:
+    """Run one test, retrying once only after an unexpected remote disconnect."""
+    global unexpected_disconnect
+    passed_before = len(passed)
+    failed_before = len(failed)
+    unexpected_disconnect = False
+    test(binary, host)
+
+    if host and unexpected_disconnect and len(failed) > failed_before:
+        del passed[passed_before:]
+        del failed[failed_before:]
+        print("  RETRY unexpected SSH disconnect; restarting this test once")
+        stop_app()
+        unexpected_disconnect = False
+        test(binary, host)
 
 
 def app_alive() -> bool:
@@ -658,30 +695,32 @@ def main() -> int:
 
     print(f"testing against: {args.host or 'local systemd'}\n")
     try:
-        test_startup_and_browse(args.binary, args.host)
-        test_logs(args.binary, args.host)
-        test_timer_browsing(args.binary, args.host)
-        test_mouse(args.binary, args.host)
+        run_test(test_startup_and_browse, args.binary, args.host)
+        run_test(test_logs, args.binary, args.host)
+        run_test(test_timer_browsing, args.binary, args.host)
+        run_test(test_mouse, args.binary, args.host)
         if not args.remote_suite:
-            test_no_dropped_keystrokes(args.binary, args.host)
-        test_clean_exit(args.binary, args.host)
+            run_test(test_no_dropped_keystrokes, args.binary, args.host)
+        run_test(test_clean_exit, args.binary, args.host)
 
         if args.remote_suite:
             addr = addr_of(args.host)
             root_host = f"root@{addr}"
             nojournal_host = f"nojournal@{addr}"
 
-            test_user_bus_is_user_bus(args.binary, args.host)
-            test_root_action_round_trip(args.binary, root_host)
-            test_root_timer_action_round_trip(args.binary, root_host)
-            test_polkit_rejection(args.binary, args.host)
-            test_user_scope_action_succeeds(args.binary, args.host)
-            test_log_rendering(args.binary, args.host)
-            test_follow_mode_streams(args.binary, root_host)
-            test_journal_access_diagnostic(args.binary, nojournal_host)
+            run_test(test_user_bus_is_user_bus, args.binary, args.host)
+            run_test(test_root_action_round_trip, args.binary, root_host)
+            run_test(test_root_timer_action_round_trip, args.binary, root_host)
+            run_test(test_polkit_rejection, args.binary, args.host)
+            run_test(test_user_scope_action_succeeds, args.binary, args.host)
+            run_test(test_log_rendering, args.binary, args.host)
+            run_test(test_follow_mode_streams, args.binary, root_host)
+            run_test(test_journal_access_diagnostic, args.binary, nojournal_host)
+            # This deliberately kills the SSH master, so it must not be treated as
+            # an infrastructure flake and retried by run_test.
             test_disconnect_recovery(args.binary, args.host)
             # last: this one breaks systemd-stdio-bridge on the remote host
-            test_missing_bridge_error_path(args.binary, root_host)
+            run_test(test_missing_bridge_error_path, args.binary, root_host)
     finally:
         stop_app()
 
