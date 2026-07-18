@@ -38,7 +38,20 @@ pub fn init(host: String) -> Result<()> {
   let status = Command::new("ssh")
     .args(["-o", "ControlMaster=auto", "-o"])
     .arg(format!("ControlPath={}", control_path.display()))
-    .args(["-o", "ControlPersist=60", "-o", "ConnectTimeout=10", "-N", "-f", "--", &host])
+    .args([
+      "-o",
+      "ControlPersist=60",
+      "-o",
+      "ConnectTimeout=10",
+      "-o",
+      "ServerAliveInterval=15",
+      "-o",
+      "ServerAliveCountMax=3",
+      "-N",
+      "-f",
+      "--",
+      &host,
+    ])
     .status()
     .context("Failed to run ssh. Is OpenSSH installed?")?;
 
