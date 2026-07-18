@@ -414,9 +414,10 @@ fn get_timer_next_elapse(service: &UnitId) -> Result<Option<String>> {
 }
 
 /// Fetches runtime properties (including the unit file path) for a unit. Uses
-/// systemctl rather than D-Bus so it works in remote mode too. Timers need one
-/// additional `list-timers` call because only that command converts monotonic
-/// deadlines into an accurate wall-clock NEXT value, including across suspend.
+/// systemctl rather than D-Bus because systemctl pre-formats timestamps for us,
+/// and because timers need one additional `list-timers` call: only that command
+/// converts monotonic deadlines into an accurate wall-clock NEXT value, including
+/// across suspend.
 pub fn get_unit_runtime_info(service: &UnitId) -> Result<UnitRuntimeInfo> {
   const PROPERTIES: &str = "FragmentPath,MainPID,MemoryCurrent,TasksCurrent,NRestarts,CPUUsageNSec,\
                             ActiveEnterTimestamp,InactiveEnterTimestamp,Result,ExecMainStatus,LastTriggerUSec,Unit,\
@@ -611,36 +612,21 @@ pub async fn disable_service(service: UnitId, runtime: bool, cancel_token: Cance
   }
 }
 
-// useless function only added to test that cancellation works
-pub async fn sleep_test(_service: String, cancel_token: CancellationToken) -> Result<()> {
-  // god these select macros are ugly, is there really no better way to select?
-  tokio::select! {
-      _ = cancel_token.cancelled() => {
-          // The token was cancelled
-          anyhow::bail!("cancelled");
-      }
-      _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
-          Ok(())
-      }
-  }
-}
-
 pub async fn kill_service(service: UnitId, signal: String, cancel_token: CancellationToken) -> Result<()> {
   async fn kill(service: UnitId, signal: String) -> Result<()> {
-    let mut args = vec!["kill", "--signal", &signal];
-    if service.scope == UnitScope::User {
-      args.push("--user");
-    }
-    args.push(&service.name);
+    let signal_num: nix::sys::signal::Signal =
+      signal.parse().map_err(|e| anyhow::anyhow!("Invalid signal {}: {}", signal, e))?;
 
-    let output = ssh::host_command("systemctl", &args).output()?;
-
-    if output.status.success() {
-      info!("Successfully sent signal {} to srvice {}", signal, service.name);
-      Ok(())
-    } else {
-      let stderr = String::from_utf8(output.stderr)?;
-      bail!("Failed to send signal {} to service {}: {}", signal, service.name, stderr);
+    let connection = get_connection(service.scope).await?;
+    let manager_proxy = ManagerProxy::new(&connection).await?;
+    match manager_proxy.kill_unit(service.name.clone(), "all".into(), signal_num as i32).await {
+      Ok(()) => {
+        info!("Successfully sent signal {} to service {}", signal, service.name);
+        Ok(())
+      },
+      Err(e) => {
+        bail!("Failed to send signal {} to service {}: {}", signal, service.name, e);
+      },
     }
   }
 
@@ -671,9 +657,9 @@ pub trait Manager {
   #[zbus(name = "StopUnit", allow_interactive_auth)]
   fn stop_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
 
-  /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#ReloadUnit()) Call interface method `ReloadUnit`.
-  #[zbus(name = "ReloadUnit", allow_interactive_auth)]
-  fn reload_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
+  /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#KillUnit()) Call interface method `KillUnit`.
+  #[zbus(name = "KillUnit", allow_interactive_auth)]
+  fn kill_unit(&self, name: String, whom: String, signal: i32) -> zbus::Result<()>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#RestartUnit()) Call interface method `RestartUnit`.
   #[zbus(name = "RestartUnit", allow_interactive_auth)]
@@ -754,89 +740,9 @@ pub trait Manager {
   gen_blocking = false
 )]
 pub trait Unit {
-  /// Get property `ActiveState`.
+  /// Get property `ActiveEnterTimestampMonotonic`.
   #[zbus(property)]
-  fn active_state(&self) -> zbus::Result<String>;
-
-  /// Get property `LoadState`.
-  #[zbus(property)]
-  fn load_state(&self) -> zbus::Result<String>;
-
-  /// Get property `UnitFileState`.
-  #[zbus(property)]
-  fn unit_file_state(&self) -> zbus::Result<String>;
-}
-
-/// Proxy object for `org.freedesktop.systemd1.Service`.
-/// Taken from https://github.com/lucab/zbus_systemd/blob/main/src/systemd1/generated.rs
-#[proxy(
-  interface = "org.freedesktop.systemd1.Service",
-  default_service = "org.freedesktop.systemd1",
-  assume_defaults = false,
-  gen_blocking = false
-)]
-trait Service {
-  /// Get property `MainPID`.
-  #[zbus(property, name = "MainPID")]
-  fn main_pid(&self) -> zbus::Result<u32>;
-}
-
-/// Returns the load state of a systemd unit
-///
-/// Returns `invalid-unit-path` if the path is invalid
-///
-/// # Arguments
-///
-/// * `connection`: zbus connection
-/// * `full_service_name`: Full name of the service name with '.service' in the end
-///
-pub async fn get_active_state(connection: &Connection, full_service_name: &str) -> String {
-  let object_path = get_unit_path(full_service_name);
-
-  match zvariant::ObjectPath::try_from(object_path) {
-    Ok(path) => {
-      let unit_proxy = UnitProxy::new(connection, path).await.unwrap();
-      unit_proxy.active_state().await.unwrap_or("invalid-unit-path".into())
-    },
-    Err(_) => "invalid-unit-path".to_string(),
-  }
-}
-
-/// Returns the unit file state of a systemd unit. If the state is `enabled`, the unit loads on every boot
-///
-/// Returns `invalid-unit-path` if the path is invalid
-///
-/// # Arguments
-///
-/// * `connection`: zbus connection
-/// * `full_service_name`: Full name of the service name with '.service' in the end
-///
-pub async fn get_unit_file_state(connection: &Connection, full_service_name: &str) -> String {
-  let object_path = get_unit_path(full_service_name);
-
-  match zvariant::ObjectPath::try_from(object_path) {
-    Ok(path) => {
-      let unit_proxy = UnitProxy::new(connection, path).await.unwrap();
-      unit_proxy.unit_file_state().await.unwrap_or("invalid-unit-path".into())
-    },
-    Err(_) => "invalid-unit-path".to_string(),
-  }
-}
-
-/// Returns the PID of a systemd service
-///
-/// # Arguments
-///
-/// * `connection`: zbus connection
-/// * `full_service_name`: Full name of the service name with '.service' in the end
-///
-pub async fn get_main_pid(connection: &Connection, full_service_name: &str) -> Result<u32, zbus::Error> {
-  let object_path = get_unit_path(full_service_name);
-
-  let validated_object_path = zvariant::ObjectPath::try_from(object_path).unwrap();
-
-  let service_proxy = ServiceProxy::new(connection, validated_object_path).await.unwrap();
-  service_proxy.main_pid().await
+  fn active_enter_timestamp_monotonic(&self) -> zbus::Result<u64>;
 }
 
 /// Encode into a valid dbus string
@@ -905,22 +811,18 @@ impl LogDiagnostic {
   }
 }
 
-/// Check if a unit has ever been activated using systemctl show
-pub fn check_unit_has_run(unit: &UnitId) -> bool {
-  let mut args = vec!["show", "-P", "ActiveEnterTimestampMonotonic"];
-  if unit.scope == UnitScope::User {
-    args.insert(0, "--user");
+/// Check if a unit has ever been activated, via the `ActiveEnterTimestampMonotonic` D-Bus property
+pub async fn check_unit_has_run(unit: &UnitId) -> bool {
+  async fn check(unit: &UnitId) -> Result<bool> {
+    let connection = get_connection(unit.scope).await?;
+    let object_path = get_unit_path(&unit.name);
+    let path = zvariant::ObjectPath::try_from(object_path)?;
+    let unit_proxy = UnitProxy::new(&connection, path).await?;
+    let timestamp = unit_proxy.active_enter_timestamp_monotonic().await?;
+    Ok(timestamp > 0)
   }
-  args.push(&unit.name);
 
-  ssh::host_command("systemctl", &args)
-    .output()
-    .ok()
-    .and_then(
-      |output| if output.status.success() { std::str::from_utf8(&output.stdout).ok().map(String::from) } else { None },
-    )
-    .map(|s| s.trim().parse::<u64>().unwrap_or(0) > 0)
-    .unwrap_or(false)
+  check(unit).await.unwrap_or(false)
 }
 
 /// Check whether the journal is readable and we can see system-wide entries.
@@ -993,7 +895,10 @@ pub fn diagnose_missing_logs(unit: &UnitId) -> LogDiagnostic {
   }
 
   // Check 2: Has the unit ever run?
-  if !check_unit_has_run(unit) {
+  // check_unit_has_run is async (it goes over D-Bus), but diagnose_missing_logs is called
+  // synchronously from within a tokio::task::spawn_blocking closure, so Handle::current() is
+  // available and block_on is safe here (it would panic if called from an async context).
+  if !tokio::runtime::Handle::current().block_on(check_unit_has_run(unit)) {
     return LogDiagnostic::NeverRun { unit_name: unit.name.clone() };
   }
 
