@@ -296,7 +296,10 @@ def test_mouse(binary: str, host: str | None) -> None:
         time.sleep(0.3)
 
     # 4. drag-selecting log text copies it and shows a toast
-    logs_title_row = next(i for i, line in enumerate(capture().splitlines()) if "Logs —" in line)
+    logs_title_row = next((i for i, line in enumerate(capture().splitlines()) if "Logs —" in line), None)
+    if logs_title_row is None:
+        check("logs pane present for drag test", False, capture())
+        return
     drag_row = logs_title_row + 2  # tmux mouse coordinates are 1-based; use the first log-content row
     send_mouse("press", 40, drag_row)
     time.sleep(0.1)
