@@ -22,6 +22,7 @@ pub enum Action {
   SetUnitFiles(Vec<UnitFile>),
   EnterMode(Mode),
   EnterError(String),
+  ServicesRefreshFailed(String),
   CancelTask,
   ToggleHelp,
   SetUnitFilePath { unit: UnitId, path: Result<String, String> },
