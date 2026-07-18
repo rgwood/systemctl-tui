@@ -18,10 +18,12 @@ passwordless ssh to the target.
 """
 
 import argparse
+import glob
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 # unique per run so concurrent invocations (e.g. remote-matrix.py against several
@@ -553,6 +555,41 @@ def test_journal_access_diagnostic(binary: str, nojournal_host: str) -> None:
     )
 
 
+def test_disconnect_recovery(binary: str, host: str) -> None:
+    """The app must survive losing the SSH connection mid-session (issue #111):
+    one error modal, no panic, no modal re-spam after dismissal, clean exit."""
+    print("disconnect recovery:")
+    start_app(binary, host)
+    if not wait_for(lambda: "Description:" in capture()):
+        check("app launches and renders", False, capture())
+        return
+
+    # Killing the mux master makes every subsequent SSH call fail with a broken
+    # pipe - same symptom as a remote reboot, without needing to reboot anything.
+    # The control path format matches ssh::init (systemctl-tui-ssh-<pid>-<hash>);
+    # match on our app's PID so concurrent instances (remote-matrix.py) don't
+    # kill each other's masters.
+    app_pid = tmux("list-panes", "-t", SESSION, "-F", "#{pane_pid}").stdout.strip()
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir())
+    socks = glob.glob(os.path.join(runtime_dir, f"systemctl-tui-ssh-{app_pid}-*"))
+    if not socks:
+        check("found SSH control socket", False, f"no systemctl-tui-ssh-{app_pid}-* in {runtime_dir}")
+        return
+    run(["ssh", "-o", f"ControlPath={socks[0]}", "-O", "exit", "--", host])
+
+    # the 5s refresh tick notices the dead connection
+    check("connection-lost modal appears", wait_for(lambda: "Lost connection" in capture(), timeout=30), capture())
+    check("app still alive (no panic)", app_alive(), capture())
+
+    send_keys("Escape")
+    time.sleep(12)  # at least two refresh ticks
+    check("modal stays dismissed across refresh ticks", "Lost connection" not in capture(), capture())
+    check("app still alive after dismissal", app_alive())
+
+    send_keys("q")
+    check("q exits cleanly after disconnect", wait_for(lambda: not app_alive(), timeout=10))
+
+
 def test_missing_bridge_error_path(binary: str, root_host: str) -> None:
     """Must run last: it temporarily breaks systemd-stdio-bridge on the remote host."""
     print("missing-bridge error path:")
@@ -639,6 +676,7 @@ def main() -> int:
             test_log_rendering(args.binary, args.host)
             test_follow_mode_streams(args.binary, root_host)
             test_journal_access_diagnostic(args.binary, nojournal_host)
+            test_disconnect_recovery(args.binary, args.host)
             # last: this one breaks systemd-stdio-bridge on the remote host
             test_missing_bridge_error_path(args.binary, root_host)
     finally:

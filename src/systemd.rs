@@ -794,9 +794,9 @@ pub async fn get_active_state(connection: &Connection, full_service_name: &str) 
   let object_path = get_unit_path(full_service_name);
 
   match zvariant::ObjectPath::try_from(object_path) {
-    Ok(path) => {
-      let unit_proxy = UnitProxy::new(connection, path).await.unwrap();
-      unit_proxy.active_state().await.unwrap_or("invalid-unit-path".into())
+    Ok(path) => match UnitProxy::new(connection, path).await {
+      Ok(unit_proxy) => unit_proxy.active_state().await.unwrap_or("invalid-unit-path".into()),
+      Err(_) => "invalid-unit-path".to_string(),
     },
     Err(_) => "invalid-unit-path".to_string(),
   }
@@ -815,9 +815,9 @@ pub async fn get_unit_file_state(connection: &Connection, full_service_name: &st
   let object_path = get_unit_path(full_service_name);
 
   match zvariant::ObjectPath::try_from(object_path) {
-    Ok(path) => {
-      let unit_proxy = UnitProxy::new(connection, path).await.unwrap();
-      unit_proxy.unit_file_state().await.unwrap_or("invalid-unit-path".into())
+    Ok(path) => match UnitProxy::new(connection, path).await {
+      Ok(unit_proxy) => unit_proxy.unit_file_state().await.unwrap_or("invalid-unit-path".into()),
+      Err(_) => "invalid-unit-path".to_string(),
     },
     Err(_) => "invalid-unit-path".to_string(),
   }
@@ -833,9 +833,9 @@ pub async fn get_unit_file_state(connection: &Connection, full_service_name: &st
 pub async fn get_main_pid(connection: &Connection, full_service_name: &str) -> Result<u32, zbus::Error> {
   let object_path = get_unit_path(full_service_name);
 
-  let validated_object_path = zvariant::ObjectPath::try_from(object_path).unwrap();
+  let validated_object_path = zvariant::ObjectPath::try_from(object_path)?;
 
-  let service_proxy = ServiceProxy::new(connection, validated_object_path).await.unwrap();
+  let service_proxy = ServiceProxy::new(connection, validated_object_path).await?;
   service_proxy.main_pid().await
 }
 
