@@ -828,7 +828,9 @@ pub async fn check_unit_has_run(unit: &UnitId) -> bool {
     Ok(result) => result.unwrap_or(false),
     Err(_) => {
       warn!("Timed out checking whether {} has run", unit.name);
-      false
+      // Unknown, so assume it has run: the generic no-logs-recorded message is
+      // a safer fallback than confidently claiming the unit never started
+      true
     },
   }
 }
