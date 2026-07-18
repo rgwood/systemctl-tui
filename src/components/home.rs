@@ -255,6 +255,7 @@ pub struct Home {
   pub cancel_token: Option<CancellationToken>,
   pub spinner_tick: u8,
   pub error_message: String,
+  pub refresh_error_shown: bool,
   pub action_tx: Option<mpsc::UnboundedSender<Action>>,
   pub journalctl_tx: Option<std::sync::mpsc::Sender<UnitId>>,
   pub fuzzy_matcher: SkimMatcherV2,
@@ -916,13 +917,20 @@ impl Component for Home {
           command.stderr(Stdio::piped());
           command.kill_on_drop(true);
 
-          let mut child = command.spawn().expect("failed to execute process");
+          let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+              error!("Failed to spawn journalctl: {:?}", e);
+              return;
+            },
+          };
 
-          let stdout = child.stdout.take().unwrap();
+          let Some(stdout) = child.stdout.take() else { return };
 
           let reader = tokio::io::BufReader::new(stdout);
           let mut lines = reader.lines();
-          while let Some(line) = lines.next_line().await.unwrap() {
+          // An Err on read (e.g. remote disconnect) just ends log following
+          while let Ok(Some(line)) = lines.next_line().await {
             let _ = tx.send(Action::AppendLogLines { unit: unit.clone(), lines: parse_json_log_line(&line) });
             let _ = tx.send(Action::Render);
           }
@@ -1493,6 +1501,14 @@ impl Component for Home {
         self.error_message = err;
         return Some(Action::EnterMode(Mode::Error));
       },
+      Action::ServicesRefreshFailed(err) => {
+        // The refresh tick retries continuously (e.g. after a remote disconnect); show the modal
+        // once rather than re-opening it every tick after the user dismisses it
+        if !self.refresh_error_shown {
+          self.refresh_error_shown = true;
+          return Some(Action::EnterError(err));
+        }
+      },
       Action::ToggleHelp => {
         if self.mode != Mode::Help {
           self.previous_mode = Some(self.mode);
@@ -1598,13 +1614,28 @@ impl Component for Home {
         let scope = self.scope;
         let limit_units = self.limit_units.to_vec();
         tokio::spawn(async move {
-          let units = systemd::get_all_services(scope, &limit_units)
-            .await
-            .expect("Failed to get services. Check that systemd is running and try running this tool with sudo.");
-          let _ = tx.send(Action::SetServices(units));
+          match systemd::get_all_services(scope, &limit_units).await {
+            Ok(units) => {
+              let _ = tx.send(Action::SetServices(units));
+            },
+            Err(e) => {
+              error!("Failed to get services: {:?}", e);
+              let error_string = match crate::ssh::remote_host() {
+                Some(ssh_host) => format!(
+                  "Lost connection to {} (or systemd stopped responding):\n{}\n\nRestart systemctl-tui to reconnect.",
+                  ssh_host.host, e
+                ),
+                None => {
+                  format!("Failed to get services:\n{e}\n\nCheck that systemd is running, or try running this tool with sudo.")
+                },
+              };
+              let _ = tx.send(Action::ServicesRefreshFailed(error_string));
+            },
+          }
         });
       },
       Action::SetServices(units) => {
+        self.refresh_error_shown = false;
         self.update_units(units);
         return Some(Action::Render);
       },
