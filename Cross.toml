@@ -1,0 +1,4 @@
+# `cross` 0.2.5 defaults to an image from 2023. Its glibc is too old for
+# build scripts compiled with current Rust toolchains.
+[target.aarch64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-musl:main"
