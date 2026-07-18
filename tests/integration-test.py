@@ -429,9 +429,10 @@ def test_root_kill_round_trip(binary: str, root_host: str) -> None:
     `systemctl kill` shell-out. sctui-test.service has no Restart= directive, so a delivered
     SIGKILL is a deterministic, one-way trip to `failed` - nothing restarts it out from under us.
 
-    The 'k' shortcut can't be used for either step here: in both ActionMenu and SignalMenu, the
-    literal key 'k' is bound to "move selection up" before the per-item shortcut lookup runs, so
-    reaching "Kill" and "SIGKILL" has to be done via Down navigation instead.
+    Lowercase 'k' is bound to "move selection up" in both ActionMenu and SignalMenu, which used
+    to shadow the per-item shortcuts for "Kill" and "SIGKILL" (both previously also 'k'). Those
+    shortcuts have been reassigned to 'K' (shift+k) and '9' (kill -9 mnemonic) respectively, so
+    this test exercises them directly instead of navigating down to the items.
     """
     print("root kill round-trip:")
     run(["ssh", root_host, "systemctl", "reset-failed", "sctui-test.service"])
@@ -452,17 +453,10 @@ def test_root_kill_round_trip(binary: str, root_host: str) -> None:
 
         send_keys("Enter")
         check("actions menu opens again", wait_for(lambda: "Actions for" in capture()), capture())
-        # menu order for a service is Start, Stop, Restart, Reload, Enable, Disable, Kill, ...
-        send_keys(*["Down"] * 6)
-        check("Kill entry highlighted", "Kill" in capture(), capture())
-        send_keys("Enter")
+        send_keys("K")
         check("signal menu opens", wait_for(lambda: "Signals for" in capture()), capture())
 
-        # signal order is SIGTERM, SIGHUP, SIGINT, SIGQUIT, SIGKILL, SIGUSR1, SIGUSR2
-        send_keys(*["Down"] * 4)
-        check("SIGKILL entry highlighted", "SIGKILL" in capture(), capture())
-        send_keys("Enter")
-
+        send_keys("9")
         check("service goes failed after SIGKILL", wait_for(lambda: "failed" in capture(), timeout=20), capture())
 
         remote_state = run(["ssh", root_host, "systemctl", "is-failed", "sctui-test.service"])
