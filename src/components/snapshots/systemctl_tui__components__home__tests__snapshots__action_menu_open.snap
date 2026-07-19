@@ -41,4 +41,4 @@ expression: terminal.backend()
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"
 "╰────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────────────────╯"
-"Execute action: <enter> | Close menu: <esc>                                                                       v0.6.1"
+"Execute action: <enter> | Close menu: <esc>                                                                       v0.7.0"

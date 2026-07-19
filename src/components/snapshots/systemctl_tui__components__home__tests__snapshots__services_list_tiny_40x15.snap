@@ -16,4 +16,4 @@ expression: terminal.backend()
 "│                            ││        │"
 "│                            ││        │"
 "╰────────────────────────────╯╰────────╯"
-"Actions: enter | Filter: F2 | Naviv0.6.1"
+"Actions: enter | Filter: F2 | Naviv0.7.0"
