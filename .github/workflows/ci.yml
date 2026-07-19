@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
 
     - name: Install toolchain
       uses: dtolnay/rust-toolchain@stable
@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
 
     - name: Install toolchain
       uses: dtolnay/rust-toolchain@stable
@@ -82,7 +82,7 @@ jobs:
         distro: [rocky-8, ubuntu-20.04, ubuntu-22.04, debian-12, ubuntu-24.04, fedora-latest, no-systemd, dead-systemd]
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
 
     - name: Install toolchain
       uses: dtolnay/rust-toolchain@stable
