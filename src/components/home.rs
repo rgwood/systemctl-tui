@@ -1452,8 +1452,10 @@ impl Component for Home {
 
             if let Some(Ok(file_path)) = &selected.unit.file_path {
               menu_items.push(MenuItem::new("Copy unit file path", Action::CopyUnitFilePath, Some(KeyCode::Char('c'))));
+              // Remote unit files can't be opened in a local editor, so we show them read-only instead
+              let label = if crate::ssh::remote_host().is_some() { "View unit file" } else { "Edit unit file" };
               menu_items.push(MenuItem::new(
-                "Edit unit file",
+                label,
                 Action::EditUnitFile { unit: selected.unit.id(), path: file_path.clone() },
                 Some(KeyCode::Char('e')),
               ));
@@ -2375,7 +2377,12 @@ impl Component for Home {
     let help_line = match self.mode {
       Mode::Search => Line::from(span("Actions: enter | Filter: F2 | Navigate: tab", theme.primary)),
       Mode::ServiceList => {
-        let mut spans = vec![span("Actions: enter | Logs: o | Edit: e | Filter: f/F2", theme.primary)];
+        // In remote mode `e` views the unit file (read-only) rather than editing it
+        let edit_help = if crate::ssh::remote_host().is_some() { "View: e" } else { "Edit: e" };
+        let mut spans = vec![Span::styled(
+          format!("Actions: enter | Logs: o | {edit_help} | Filter: f/F2"),
+          Style::default().fg(theme.primary),
+        )];
         if self.is_status_filter_active() {
           spans.push(Span::styled(" ●", Style::default().fg(theme.accent)));
         }
