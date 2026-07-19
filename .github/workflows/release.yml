@@ -22,3 +22,27 @@ jobs:
           target: ${{ matrix.target }}
           # (required) GitHub token for uploading assets to GitHub Releases.
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  upload-debs:
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-musl
+          - target: x86_64-unknown-linux-musl
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/setup-cross-toolchain-action@v1
+        with:
+          target: ${{ matrix.target }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
+      - name: Build .deb
+        run: cargo deb --target ${{ matrix.target }} --output .
+      - name: Upload .deb to release
+        run: gh release upload "$GITHUB_REF_NAME" ./*.deb
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
