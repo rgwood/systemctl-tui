@@ -41,7 +41,10 @@ jobs:
         with:
           tool: cargo-deb
       - name: Build .deb
-        run: cargo deb --target ${{ matrix.target }} --output .
+        # --no-strip: cargo-deb strips by default with the host `strip`, which
+        # chokes on aarch64 binaries. We don't strip release binaries anyway
+        # (see Cargo.toml), so skip it for both targets.
+        run: cargo deb --target ${{ matrix.target }} --output . --no-strip
       - name: Upload .deb to release
         run: gh release upload "$GITHUB_REF_NAME" ./*.deb
         env:
