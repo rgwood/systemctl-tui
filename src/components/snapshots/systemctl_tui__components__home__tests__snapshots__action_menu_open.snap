@@ -23,7 +23,7 @@ expression: terminal.backend()
 "│                            ││                │ l Reload               │                                              │"
 "│                            ││                │ n Enable               │                                              │"
 "│                            ││                │ d Disable              │                                              │"
-"│                            ││                │ k Kill                 │                                              │"
+"│                            ││                │ K Kill                 │                                              │"
 "│                            ││                │ o Open logs in pager   │                                              │"
 "│                            ││                │ c Copy unit file path  │                                              │"
 "│                            ││                │ e Edit unit file       │                                              │"

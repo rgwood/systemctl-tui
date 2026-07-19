@@ -461,6 +461,51 @@ def test_root_action_round_trip(binary: str, root_host: str) -> None:
     check("stop succeeds", wait_for(lambda: "inactive (dead)" in capture(), timeout=20), capture())
 
 
+def test_root_kill_round_trip(binary: str, root_host: str) -> None:
+    """Exercise the D-Bus KillUnit path (kill_service in src/systemd.rs), which replaced a
+    `systemctl kill` shell-out. sctui-test.service has no Restart= directive, so a delivered
+    SIGKILL is a deterministic, one-way trip to `failed` - nothing restarts it out from under us.
+
+    Lowercase 'k' is bound to "move selection up" in both ActionMenu and SignalMenu, which used
+    to shadow the per-item shortcuts for "Kill" and "SIGKILL" (both previously also 'k'). Those
+    shortcuts have been reassigned to 'K' (shift+k) and '9' (kill -9 mnemonic) respectively, so
+    this test exercises them directly instead of navigating down to the items.
+    """
+    print("root kill round-trip:")
+    run(["ssh", root_host, "systemctl", "reset-failed", "sctui-test.service"])
+    run(["ssh", root_host, "systemctl", "stop", "sctui-test.service"])
+    try:
+        start_app(binary, root_host, ["--scope", "global", "--limit-units", "sctui-test.service"])
+        wait_for(lambda: "Description:" in capture())
+        send_keys("Down")
+        check("starts inactive", wait_for(lambda: "inactive" in capture()), capture())
+
+        send_keys("Enter")
+        check("actions menu opens", wait_for(lambda: "Actions for" in capture()), capture())
+        send_keys("s")
+        check("start succeeds", wait_for(lambda: "active (running)" in capture(), timeout=20), capture())
+
+        main_pid = run(["ssh", root_host, "systemctl", "show", "--property=MainPID", "--value", "sctui-test.service"])
+        check("MainPID recorded before kill", main_pid.stdout.strip().isdigit() and main_pid.stdout.strip() != "0", main_pid.stdout + main_pid.stderr)
+
+        send_keys("Enter")
+        check("actions menu opens again", wait_for(lambda: "Actions for" in capture()), capture())
+        send_keys("K")
+        check("signal menu opens", wait_for(lambda: "Signals for" in capture()), capture())
+
+        send_keys("9")
+        check("service goes failed after SIGKILL", wait_for(lambda: "failed" in capture(), timeout=20), capture())
+
+        remote_state = run(["ssh", root_host, "systemctl", "is-failed", "sctui-test.service"])
+        check("remote unit confirms failed state", remote_state.stdout.strip() == "failed", remote_state.stdout + remote_state.stderr)
+
+        remote_pid = run(["ssh", root_host, "systemctl", "show", "--property=MainPID", "--value", "sctui-test.service"])
+        check("MainPID cleared after kill", remote_pid.stdout.strip() == "0", remote_pid.stdout + remote_pid.stderr)
+    finally:
+        run(["ssh", root_host, "systemctl", "reset-failed", "sctui-test.service"])
+        run(["ssh", root_host, "systemctl", "stop", "sctui-test.service"])
+
+
 def test_root_timer_action_round_trip(binary: str, root_host: str) -> None:
     print("root timer action round-trip:")
     # This is a dedicated inert timer in the disposable matrix container. Its
@@ -710,6 +755,7 @@ def main() -> int:
 
             run_test(test_user_bus_is_user_bus, args.binary, args.host)
             run_test(test_root_action_round_trip, args.binary, root_host)
+            run_test(test_root_kill_round_trip, args.binary, root_host)
             run_test(test_root_timer_action_round_trip, args.binary, root_host)
             run_test(test_polkit_rejection, args.binary, args.host)
             run_test(test_user_scope_action_succeeds, args.binary, args.host)

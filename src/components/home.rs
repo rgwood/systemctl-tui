@@ -1429,7 +1429,7 @@ impl Component for Home {
                   },
                   Some(KeyCode::Char('d')),
                 ),
-                MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('k'))),
+                MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('K'))),
               ]
             };
 
@@ -1473,7 +1473,7 @@ impl Component for Home {
               ("SIGHUP", KeyCode::Char('h')),
               ("SIGINT", KeyCode::Char('i')),
               ("SIGQUIT", KeyCode::Char('q')),
-              ("SIGKILL", KeyCode::Char('k')),
+              ("SIGKILL", KeyCode::Char('9')),
               ("SIGUSR1", KeyCode::Char('1')),
               ("SIGUSR2", KeyCode::Char('2')),
             ];
