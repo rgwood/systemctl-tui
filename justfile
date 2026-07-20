@@ -25,6 +25,12 @@ watch-tests:
 
 expected_filename := "systemctl-tui"
 
+# Publishes core + TUI to crates.io in dependency order. Plain `cargo publish`
+# from the repo root does the same thing (cargo 1.90+); this recipe just makes
+# the release step discoverable.
+publish-to-crates-io:
+    cargo publish --workspace
+
 build-release:
     cargo build --release
     @echo "Build size: $(du -h target/release/{{expected_filename}} | cut -f1)"

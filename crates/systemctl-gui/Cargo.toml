@@ -7,6 +7,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Reilly Wood"]
 license = "MIT"
+# Early preview, not ready for crates.io
 publish = false
 
 [dependencies]
