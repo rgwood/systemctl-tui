@@ -56,6 +56,15 @@ pub struct UnitId {
   pub scope: UnitScope,
 }
 
+impl UnitId {
+  /// Whether this identifies a unit template rather than a concrete instance.
+  ///
+  /// `foo@.service` is a template; `foo@bar.service` is an instance.
+  pub fn is_template(&self) -> bool {
+    self.name.contains("@.")
+  }
+}
+
 impl UnitWithStatus {
   pub fn kind(&self) -> UnitKind {
     if self.name.ends_with(".service") {
@@ -81,6 +90,10 @@ impl UnitWithStatus {
 
   pub fn is_enabled(&self) -> bool {
     self.load_state == "loaded" && self.activation_state == "active"
+  }
+
+  pub fn is_template(&self) -> bool {
+    self.name.contains("@.")
   }
 
   pub fn short_name(&self) -> &str {
@@ -1082,6 +1095,27 @@ mod tests {
     unit.name = "backup.service".into();
     assert_eq!(unit.kind(), UnitKind::Service);
     assert_eq!(unit.short_name(), "backup");
+  }
+
+  #[test]
+  fn distinguishes_templates_from_instances() {
+    let mut unit = UnitWithStatus {
+      name: "backup@.service".into(),
+      scope: UnitScope::Global,
+      description: String::new(),
+      file_path: None,
+      load_state: "not-loaded".into(),
+      activation_state: "inactive".into(),
+      sub_state: "dead".into(),
+      enablement_state: Some("static".into()),
+    };
+
+    assert!(unit.is_template());
+    assert!(unit.id().is_template());
+
+    unit.name = "backup@nightly.service".into();
+    assert!(!unit.is_template());
+    assert!(!unit.id().is_template());
   }
 
   #[test]

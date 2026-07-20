@@ -821,6 +821,18 @@ impl Component for Home {
         // lazy debounce to avoid spamming journalctl on slow connections/systems
         std::thread::sleep(Duration::from_millis(100));
 
+        // A template is a unit file used to create instances, not something systemd can
+        // inspect or run directly. Avoid passing it to systemctl/journalctl: systemctl
+        // rejects the name, while journalctl cannot tell us which instance the user meant.
+        if unit.is_template() {
+          let _ = tx.send(Action::SetLogs {
+            unit: unit.clone(),
+            logs: vec![LogEntry::plain(template_logs_message(&unit.name))],
+          });
+          let _ = tx.send(Action::Render);
+          continue;
+        }
+
         // get the unit file path + runtime info (one systemctl call for both)
         match systemd::get_unit_runtime_info(&unit) {
           Ok(info) => {
@@ -1384,8 +1396,11 @@ impl Component for Home {
               .then(|| self.menu_items.selected().map(|item| item.name.clone()))
               .flatten();
             let selected = self.filtered_units.selected()?;
+            let is_template = selected.unit.is_template();
             let is_timer = selected.unit.kind() == UnitKind::Timer;
-            let mut menu_items = if is_timer {
+            let mut menu_items = if is_template {
+              Vec::new()
+            } else if is_timer {
               let mut items = Vec::new();
               if selected.unit.is_active() {
                 items.push(MenuItem::new(
@@ -1434,7 +1449,7 @@ impl Component for Home {
               ]
             };
 
-            if is_timer {
+            if is_timer && !is_template {
               if let Some(target) = self.runtime_info.as_ref().and_then(|info| info.triggered_unit.as_ref()) {
                 let label = format!("Start {target} now");
                 menu_items.push(MenuItem::new(
@@ -1445,11 +1460,13 @@ impl Component for Home {
               }
             }
 
-            menu_items.push(MenuItem::new(
-              "Open logs in pager",
-              Action::OpenLogsInPager { logs: self.logs_for_pager() },
-              Some(KeyCode::Char('o')),
-            ));
+            if !is_template {
+              menu_items.push(MenuItem::new(
+                "Open logs in pager",
+                Action::OpenLogsInPager { logs: self.logs_for_pager() },
+                Some(KeyCode::Char('o')),
+              ));
+            }
 
             if let Some(Ok(file_path)) = &selected.unit.file_path {
               menu_items.push(MenuItem::new("Copy unit file path", Action::CopyUnitFilePath, Some(KeyCode::Char('c'))));
@@ -1836,33 +1853,45 @@ impl Component for Home {
       rows.push(("Description", Line::from(m.unit.description.as_str())));
       explanation = crate::unit_descriptions::explain(&m.unit.name, m.unit.scope);
 
-      let active_color = match m.unit.activation_state.as_str() {
-        "active" => Color::Green,
-        "failed" => Color::Red,
-        _ => Color::Reset,
-      };
-      let mut active_spans = vec![Span::styled(
-        format!("{} ({})", m.unit.activation_state, m.unit.sub_state),
-        Style::default().fg(active_color),
-      )];
-      if let Some(info) = &self.runtime_info {
-        if m.unit.activation_state == "failed" {
-          if let Some(result) = info.result.as_deref().filter(|r| *r != "success") {
-            let status = info.exec_main_status.filter(|&s| s != 0).map(|s| format!(", status={s}")).unwrap_or_default();
-            active_spans.push(Span::styled(format!(" ({result}{status})"), Style::default().fg(Color::Red)));
-          }
-        }
-        let since = if m.unit.activation_state == "active" {
-          info.active_enter_timestamp.as_deref()
-        } else {
-          info.inactive_enter_timestamp.as_deref()
+      let mut active_spans = if m.unit.is_template() {
+        vec![Span::styled("template (not an instance)", dim)]
+      } else {
+        let active_color = match m.unit.activation_state.as_str() {
+          "active" => Color::Green,
+          "failed" => Color::Red,
+          _ => Color::Reset,
         };
-        if let Some((absolute, relative)) = since.and_then(|timestamp| format_systemd_timestamp(timestamp, is_remote)) {
-          let relative = relative.map(|r| format!(" ({r})")).unwrap_or_default();
-          active_spans.push(Span::styled(format!(" since {absolute}{relative}"), dim));
+        vec![Span::styled(
+          format!("{} ({})", m.unit.activation_state, m.unit.sub_state),
+          Style::default().fg(active_color),
+        )]
+      };
+      if !m.unit.is_template() {
+        if let Some(info) = &self.runtime_info {
+          if m.unit.activation_state == "failed" {
+            if let Some(result) = info.result.as_deref().filter(|r| *r != "success") {
+              let status =
+                info.exec_main_status.filter(|&s| s != 0).map(|s| format!(", status={s}")).unwrap_or_default();
+              active_spans.push(Span::styled(format!(" ({result}{status})"), Style::default().fg(Color::Red)));
+            }
+          }
+          let since = if m.unit.activation_state == "active" {
+            info.active_enter_timestamp.as_deref()
+          } else {
+            info.inactive_enter_timestamp.as_deref()
+          };
+          if let Some((absolute, relative)) = since.and_then(|timestamp| format_systemd_timestamp(timestamp, is_remote))
+          {
+            let relative = relative.map(|r| format!(" ({r})")).unwrap_or_default();
+            active_spans.push(Span::styled(format!(" since {absolute}{relative}"), dim));
+          }
         }
       }
       rows.push(("Active", Line::from(active_spans)));
+
+      if m.unit.is_template() {
+        rows.push(("Instance", Line::from(template_instance_example(&m.unit.name))));
+      }
 
       // Enablement, scope, and any load problem share a line
       let enablement_state = m.unit.enablement_state.as_deref().unwrap_or("");
@@ -2571,6 +2600,17 @@ fn format_cpu_nsec(nsec: u64) -> String {
   }
 }
 
+fn template_instance_example(template: &str) -> String {
+  template.replacen("@.", "@INSTANCE.", 1)
+}
+
+fn template_logs_message(template: &str) -> String {
+  format!(
+    "{template} is a unit template, not a running service. Logs belong to concrete instances such as {}.",
+    template_instance_example(template)
+  )
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -2636,6 +2676,29 @@ mod tests {
       &disable.action,
       Action::DisableService { unit, runtime: true } if unit == &timer_id
     ));
+  }
+
+  #[test]
+  fn template_actions_only_offer_unit_file_operations() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let mut template = test_unit("backup@.service");
+    template.file_path = Some(Ok("/usr/lib/systemd/system/backup@.service".into()));
+    home.filtered_units = StatefulList::with_items(vec![MatchedUnit { unit: template, match_indices: vec![] }]);
+    home.filtered_units.state.select(Some(0));
+
+    home.dispatch(Action::EnterMode(Mode::ActionMenu));
+
+    let names = home.menu_items.items.iter().map(|item| item.name.as_str()).collect_vec();
+    assert_eq!(names, ["Copy unit file path", "Edit unit file"]);
+  }
+
+  #[test]
+  fn template_message_explains_instance_names() {
+    assert_eq!(template_instance_example("backup@.service"), "backup@INSTANCE.service");
+    assert_eq!(
+      template_logs_message("backup@.service"),
+      "backup@.service is a unit template, not a running service. Logs belong to concrete instances such as backup@INSTANCE.service."
+    );
   }
 
   #[test]
