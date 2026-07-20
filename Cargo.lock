@@ -2304,7 +2304,9 @@ name = "systemctl-gui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "gtk4",
+ "log",
  "systemctl-ui-core",
  "tokio",
  "tokio-util",

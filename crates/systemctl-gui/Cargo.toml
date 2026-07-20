@@ -13,6 +13,8 @@ publish = false
 [dependencies]
 systemctl-ui-core = { version = "0.1.0", path = "../systemctl-ui-core" }
 anyhow = "1.0.71"
+chrono = { version = "0.4.31", default-features = false, features = ["clock"] }
 gtk4 = "0.10"
+log = "0.4.19"
 tokio = { version = "1.28.2", features = ["full"] }
 tokio-util = "0.7.8"

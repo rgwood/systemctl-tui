@@ -10,8 +10,12 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
 use systemctl_ui_core::{
+  journal::{self, LogEntry},
   ssh,
-  systemd::{self, LogDiagnostic, Scope, ServiceList, UnitFile, UnitId, UnitRuntimeInfo, UnitWithStatus},
+  systemd::{
+    self, LogDiagnostic, Scope, ServiceList, TimerListEntry, UnitFile, UnitId, UnitRuntimeInfo, UnitScope,
+    UnitWithStatus,
+  },
 };
 
 const MAX_UNIT_DEFINITION_BYTES: usize = 4 * 1024 * 1024;
@@ -59,6 +63,32 @@ pub fn merge_service_inventory(mut services: ServiceList, unit_files: Vec<UnitFi
 
   services.units.sort_by_key(|unit| unit.name.to_lowercase());
   services
+}
+
+/// Fetch every timer's next/last trigger and target unit in one `list-timers` call per scope.
+///
+/// The user manager can be missing (e.g. running as root); a user-scope failure is skipped
+/// so system timers still load, matching how the unit inventory treats user scope.
+pub async fn load_timer_lists(scope: Scope) -> Result<Vec<(UnitScope, TimerListEntry)>> {
+  let unit_scopes: &[UnitScope] = match scope {
+    Scope::Global => &[UnitScope::Global],
+    Scope::User => &[UnitScope::User],
+    Scope::All => &[UnitScope::Global, UnitScope::User],
+  };
+  let mut entries = Vec::new();
+  for &unit_scope in unit_scopes {
+    let result = tokio::task::spawn_blocking(move || systemd::get_timer_list(unit_scope))
+      .await
+      .context("timer list worker panicked")?;
+    match result {
+      Ok(timers) => entries.extend(timers.into_iter().map(|timer| (unit_scope, timer))),
+      Err(error) if unit_scope == UnitScope::User && matches!(scope, Scope::All) => {
+        log::warn!("could not list user timers: {error:#}");
+      },
+      Err(error) => return Err(error).with_context(|| format!("could not list {unit_scope:?} timers")),
+    }
+  }
+  Ok(entries)
 }
 
 /// Fetch runtime properties for a unit without blocking an async UI backend.
@@ -123,7 +153,7 @@ fn parse_unit_definition_output(unit: &UnitId, success: bool, stdout: &[u8], std
 ///
 /// Missing logs and journal permission failures are returned as a human-readable diagnostic line,
 /// matching the TUI's behaviour. Process-launch and output-decoding failures remain errors.
-pub async fn load_recent_logs(unit: UnitId, line_count: usize) -> Result<Vec<String>> {
+pub async fn load_recent_logs(unit: UnitId, line_count: usize) -> Result<Vec<LogEntry>> {
   tokio::task::spawn_blocking(move || load_recent_logs_blocking(&unit, line_count))
     .await
     .context("journal worker panicked")?
@@ -131,12 +161,13 @@ pub async fn load_recent_logs(unit: UnitId, line_count: usize) -> Result<Vec<Str
 
 /// Follow new journal entries for a unit until `cancel` is triggered.
 ///
-/// The callback runs once for each complete line emitted by `journalctl`. Dropping the returned
-/// future also kills the child process, so replacing a selected unit cannot leave a follower
-/// behind. Cancellation is a normal shutdown and returns `Ok(())`.
+/// The callback runs once for each complete `journalctl --output=json` line (which can parse
+/// into several display entries for multi-line messages). Dropping the returned future also
+/// kills the child process, so replacing a selected unit cannot leave a follower behind.
+/// Cancellation is a normal shutdown and returns `Ok(())`.
 pub async fn follow_unit_logs<F>(unit: UnitId, cancel: CancellationToken, mut on_line: F) -> Result<()>
 where
-  F: FnMut(String) -> Result<()> + Send,
+  F: FnMut(Vec<LogEntry>) -> Result<()> + Send,
 {
   let args = journal_follow_args(&unit);
   let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -164,7 +195,7 @@ where
         return Ok(());
       }
       line = lines.next_line() => match line.context("failed to read journalctl output")? {
-        Some(line) => on_line(line).context("journal line callback failed")?,
+        Some(line) => on_line(journal::parse_json_log_line(&line)).context("journal line callback failed")?,
         None => break,
       },
     }
@@ -190,7 +221,7 @@ fn journal_follow_args(unit: &UnitId) -> Vec<String> {
     "--follow".into(),
     "--lines=0".into(),
     "--quiet".into(),
-    "--output=short-iso".into(),
+    "--output=json".into(),
     "-u".into(),
     unit.name.clone(),
   ];
@@ -200,9 +231,9 @@ fn journal_follow_args(unit: &UnitId) -> Vec<String> {
   args
 }
 
-fn load_recent_logs_blocking(unit: &UnitId, line_count: usize) -> Result<Vec<String>> {
+fn load_recent_logs_blocking(unit: &UnitId, line_count: usize) -> Result<Vec<LogEntry>> {
   let line_count = line_count.to_string();
-  let mut args = vec!["--quiet", "--output=short-iso", "--lines", line_count.as_str(), "-u", unit.name.as_str()];
+  let mut args = vec!["--quiet", "--output=json", "--lines", line_count.as_str(), "-u", unit.name.as_str()];
   if unit.scope == systemd::UnitScope::User {
     args.push("--user");
   }
@@ -210,16 +241,16 @@ fn load_recent_logs_blocking(unit: &UnitId, line_count: usize) -> Result<Vec<Str
   let output = ssh::host_command("journalctl", &args).output()?;
   if !output.status.success() {
     let stderr = String::from_utf8_lossy(&output.stderr);
-    return Ok(vec![systemd::parse_journalctl_error(&stderr).message()]);
+    return Ok(vec![LogEntry::plain(systemd::parse_journalctl_error(&stderr).message())]);
   }
 
   let stdout = std::str::from_utf8(&output.stdout)?;
-  let lines: Vec<String> = stdout.lines().map(String::from).collect();
-  if lines.is_empty() {
+  let entries: Vec<LogEntry> = stdout.lines().flat_map(journal::parse_json_log_line).collect();
+  if entries.is_empty() {
     let diagnostic: LogDiagnostic = systemd::diagnose_missing_logs(unit);
-    Ok(vec![diagnostic.message()])
+    Ok(vec![LogEntry::plain(diagnostic.message())])
   } else {
-    Ok(lines)
+    Ok(entries)
   }
 }
 
@@ -310,7 +341,7 @@ mod tests {
   fn journal_follow_arguments_select_unit_and_output_format() {
     let args = journal_follow_args(&UnitId { name: "demo.service".into(), scope: UnitScope::Global });
 
-    assert_eq!(args, ["--follow", "--lines=0", "--quiet", "--output=short-iso", "-u", "demo.service"]);
+    assert_eq!(args, ["--follow", "--lines=0", "--quiet", "--output=json", "-u", "demo.service"]);
   }
 
   #[test]
