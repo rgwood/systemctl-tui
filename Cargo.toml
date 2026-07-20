@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/systemctl-core", "crates/systemctl-tui", "crates/systemctl-gui"]
+members = ["crates/systemctl-ui-core", "crates/systemctl-tui", "crates/systemctl-gui"]
 # The GUI needs GTK 4 system libraries, so a plain `cargo build` skips it.
 # Build it explicitly with `cargo build -p systemctl-gui`.
-default-members = ["crates/systemctl-core", "crates/systemctl-tui"]
+default-members = ["crates/systemctl-ui-core", "crates/systemctl-tui"]
 
 # build with `cargo build --profile profiling`
 # to analyze performance with tooling like perf / samply / superluminal

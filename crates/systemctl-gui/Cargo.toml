@@ -10,7 +10,7 @@ license = "MIT"
 publish = false
 
 [dependencies]
-systemctl-core = { path = "../systemctl-core" }
+systemctl-ui-core = { version = "0.1.0", path = "../systemctl-ui-core" }
 anyhow = "1.0.71"
 gtk4 = "0.10"
 tokio = { version = "1.28.2", features = ["full"] }

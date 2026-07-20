@@ -8,7 +8,7 @@ use std::{
 use anyhow::Result;
 use gtk::{glib, prelude::*};
 use gtk4 as gtk;
-use systemctl_core::systemd::{self, Scope, ServiceList, UnitId, UnitRuntimeInfo, UnitScope, UnitWithStatus};
+use systemctl_ui_core::systemd::{self, Scope, ServiceList, UnitId, UnitRuntimeInfo, UnitScope, UnitWithStatus};
 use tokio_util::sync::CancellationToken;
 
 mod gui_backend;

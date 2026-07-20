@@ -9,7 +9,7 @@ use anyhow::{anyhow, Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
-use systemctl_core::{
+use systemctl_ui_core::{
   ssh,
   systemd::{self, LogDiagnostic, Scope, ServiceList, UnitFile, UnitId, UnitRuntimeInfo, UnitWithStatus},
 };
@@ -226,7 +226,7 @@ fn load_recent_logs_blocking(unit: &UnitId, line_count: usize) -> Result<Vec<Str
 #[cfg(test)]
 mod tests {
   use super::*;
-  use systemctl_core::systemd::UnitScope;
+  use systemctl_ui_core::systemd::UnitScope;
 
   fn runtime_unit(name: &str) -> UnitWithStatus {
     UnitWithStatus {

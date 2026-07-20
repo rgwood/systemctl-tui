@@ -1,6 +1,6 @@
 [package]
-name = "systemctl-core"
-description = "Shared systemd/journald/SSH plumbing for systemctl-tui and systemctl-gui"
+name = "systemctl-ui-core"
+description = "Internal library for systemctl-tui and systemctl-gui. Not a general-purpose systemd wrapper; no API stability guarantees."
 repository = "https://github.com/rgwood/systemctl-tui"
 version = "0.1.0"
 edition = "2021"

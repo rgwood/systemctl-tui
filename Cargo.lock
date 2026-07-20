@@ -2300,27 +2300,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "systemctl-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "log",
- "nix 0.31.2",
- "serde_json",
- "tokio",
- "tokio-util",
- "tracing",
- "zbus",
-]
-
-[[package]]
 name = "systemctl-gui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "gtk4",
- "systemctl-core",
+ "systemctl-ui-core",
  "tokio",
  "tokio-util",
 ]
@@ -2347,7 +2332,7 @@ dependencies = [
  "log",
  "ratatui",
  "signal-hook 0.4.3",
- "systemctl-core",
+ "systemctl-ui-core",
  "terminal-light",
  "tokio",
  "tokio-util",
@@ -2357,6 +2342,21 @@ dependencies = [
  "tui-input",
  "tui-logger",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "systemctl-ui-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "log",
+ "nix 0.31.2",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zbus",
 ]
 
 [[package]]
