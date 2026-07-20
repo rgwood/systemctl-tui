@@ -57,6 +57,8 @@ pub enum LogOrder {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum UnitStatus {
+  // Unit form
+  Template,
   // Unit type
   Service,
   Timer,
@@ -76,7 +78,8 @@ pub enum UnitStatus {
 }
 
 impl UnitStatus {
-  const ALL: [UnitStatus; 12] = [
+  const ALL: [UnitStatus; 13] = [
+    UnitStatus::Template,
     UnitStatus::Service,
     UnitStatus::Timer,
     UnitStatus::Other,
@@ -95,10 +98,11 @@ impl UnitStatus {
 
   /// Hidden by default on first run: not-found units are dangling references
   /// that can't be started, and masked units are deliberately disabled.
-  const DEFAULT_HIDDEN: [UnitStatus; 2] = [UnitStatus::Masked, UnitStatus::NotFound];
+  const DEFAULT_HIDDEN: [UnitStatus; 3] = [UnitStatus::Template, UnitStatus::Masked, UnitStatus::NotFound];
 
   fn label(&self) -> &'static str {
     match self {
+      UnitStatus::Template => "templates",
       UnitStatus::Service => "services",
       UnitStatus::Timer => "timers",
       UnitStatus::Other => "other",
@@ -116,6 +120,7 @@ impl UnitStatus {
 
   fn shortcut_key(&self) -> KeyCode {
     match self {
+      UnitStatus::Template => KeyCode::Char('p'),
       UnitStatus::Service => KeyCode::Char('v'),
       UnitStatus::Timer => KeyCode::Char('t'),
       UnitStatus::Other => KeyCode::Char('o'),
@@ -178,6 +183,7 @@ impl UnitStatus {
 }
 
 const STATUS_CATEGORIES: &[(&str, &[UnitStatus])] = &[
+  ("Form", &[UnitStatus::Template]),
   ("Type", &[UnitStatus::Service, UnitStatus::Timer, UnitStatus::Other]),
   ("Activation", &[UnitStatus::Active, UnitStatus::Inactive, UnitStatus::Failed]),
   ("Enablement", &[UnitStatus::Enabled, UnitStatus::Disabled, UnitStatus::Static, UnitStatus::Masked]),
@@ -595,6 +601,13 @@ impl Home {
       .all_units
       .values()
       .filter(|u| {
+        // Templates are hidden while browsing by default, but searching should
+        // always be able to find one without making the user visit the filter first.
+        let passes_form = if u.is_template() {
+          !search_value.is_empty() || self.filtered_statuses.contains(&UnitStatus::Template)
+        } else {
+          true
+        };
         let passes_type = self.filtered_statuses.contains(&UnitStatus::unit_kind_bucket(u.kind()));
         let passes_activation = self.filtered_statuses.contains(&UnitStatus::activation_bucket(&u.activation_state));
 
@@ -610,7 +623,7 @@ impl Home {
 
         let passes_load = self.filtered_statuses.contains(&UnitStatus::load_bucket(&u.load_state));
 
-        passes_type && passes_activation && passes_enablement && passes_load
+        passes_form && passes_type && passes_activation && passes_enablement && passes_load
       })
       .collect();
     self.status_hidden_count = self.all_units.len() - status_filtered_units.len();
@@ -1773,9 +1786,13 @@ impl Component for Home {
       .map(|m| {
         let color = unit_color(&m.unit);
         let name = m.unit.short_name();
-        let kind_prefix = match m.unit.kind() {
-          UnitKind::Timer => "[T] ",
-          UnitKind::Service | UnitKind::Other => "",
+        let kind_prefix = if m.unit.is_template() {
+          "[@] "
+        } else {
+          match m.unit.kind() {
+            UnitKind::Timer => "[T] ",
+            UnitKind::Service | UnitKind::Other => "",
+          }
         };
 
         if m.match_indices.is_empty() {
@@ -2872,6 +2889,54 @@ mod tests {
     home.refresh_filtered_units();
 
     assert!(home.filtered_units.items.is_empty());
+  }
+
+  #[test]
+  fn templates_are_hidden_from_normal_browsing_but_instances_are_not() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let (journalctl_tx, _journalctl_rx) = std::sync::mpsc::channel();
+    home.journalctl_tx = Some(journalctl_tx);
+    for name in ["backup@.service", "backup.service", "getty@tty1.service"] {
+      let unit = test_unit(name);
+      home.all_units.insert(unit.id(), unit);
+    }
+
+    home.refresh_filtered_units();
+
+    let names = home.filtered_units.items.iter().map(|item| item.unit.name.as_str()).collect_vec();
+    assert_eq!(names, ["backup.service", "getty@tty1.service"]);
+  }
+
+  #[test]
+  fn search_finds_a_template_hidden_by_the_default_filter() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let (journalctl_tx, _journalctl_rx) = std::sync::mpsc::channel();
+    home.journalctl_tx = Some(journalctl_tx);
+    let template = test_unit("backup@.service");
+    home.all_units.insert(template.id(), template);
+    home.input = Input::default().with_value("backup@".to_string());
+
+    home.refresh_filtered_units();
+
+    assert_eq!(home.filtered_units.items.len(), 1);
+    assert_eq!(home.filtered_units.items[0].unit.name, "backup@.service");
+  }
+
+  #[test]
+  fn template_filter_adds_templates_to_normal_browsing() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let (journalctl_tx, _journalctl_rx) = std::sync::mpsc::channel();
+    home.journalctl_tx = Some(journalctl_tx);
+    for name in ["backup.service", "backup@.service"] {
+      let unit = test_unit(name);
+      home.all_units.insert(unit.id(), unit);
+    }
+    home.toggle_filtered_status(UnitStatus::Template);
+
+    home.refresh_filtered_units();
+
+    let names = home.filtered_units.items.iter().map(|item| item.unit.name.as_str()).collect_vec();
+    assert_eq!(names, ["backup.service", "backup@.service"]);
   }
 
   #[test]
