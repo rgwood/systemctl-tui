@@ -1,5 +1,6 @@
 use std::{
   cell::{Cell, RefCell},
+  collections::HashMap,
   rc::Rc,
   sync::mpsc,
   time::Duration,
@@ -8,7 +9,12 @@ use std::{
 use anyhow::Result;
 use gtk::{glib, prelude::*};
 use gtk4 as gtk;
-use systemctl_ui_core::systemd::{self, Scope, ServiceList, UnitId, UnitRuntimeInfo, UnitScope, UnitWithStatus};
+use systemctl_ui_core::{
+  format,
+  journal::LogEntry,
+  systemd::{self, Scope, ServiceList, TimerListEntry, UnitId, UnitKind, UnitRuntimeInfo, UnitScope, UnitWithStatus},
+  unit_descriptions,
+};
 use tokio_util::sync::CancellationToken;
 
 mod gui_backend;
@@ -18,20 +24,45 @@ struct Row {
   unit: UnitWithStatus,
 }
 
+/// One name/value row in the details grid. `link` makes the value a clickable
+/// reference to another unit (a timer's service or a service's timer).
+struct DetailRow {
+  name: &'static str,
+  value: String,
+  link: Option<UnitId>,
+  /// Wrapped rows span the full grid width below the columned rows and wrap up
+  /// to a few lines, for prose values like About that don't fit one cell.
+  wrap: bool,
+}
+
+impl DetailRow {
+  fn text(name: &'static str, value: impl Into<String>) -> Self {
+    Self { name, value: value.into(), link: None, wrap: false }
+  }
+
+  fn link(name: &'static str, value: impl Into<String>, link: UnitId) -> Self {
+    Self { name, value: value.into(), link: Some(link), wrap: false }
+  }
+
+  fn wrapped(name: &'static str, value: impl Into<String>) -> Self {
+    Self { name, value: value.into(), link: None, wrap: true }
+  }
+}
+
 enum Reply {
-  Units(Result<ServiceList, String>),
+  Units(Result<(ServiceList, Vec<(UnitScope, TimerListEntry)>), String>),
   Action(Result<(), String>),
   Details {
     unit: UnitId,
     generation: u64,
     details: Box<Result<UnitRuntimeInfo, String>>,
-    logs: Result<Vec<String>, String>,
+    logs: Result<Vec<LogEntry>, String>,
     definition: Result<String, String>,
   },
-  LogLine {
+  LogLines {
     unit: UnitId,
     generation: u64,
-    line: String,
+    entries: Vec<LogEntry>,
   },
   LogFollowError {
     unit: UnitId,
@@ -58,6 +89,8 @@ enum ScopeFilter {
 fn state_label(unit: &UnitWithStatus) -> &str {
   match (unit.activation_state.as_str(), unit.sub_state.as_str()) {
     ("active", "running") => "Running",
+    ("active", "waiting") => "Waiting",
+    ("active", "elapsed") => "Elapsed",
     ("active", _) => "Active",
     ("inactive", "dead") => "Stopped",
     ("inactive", _) => "Inactive",
@@ -67,6 +100,14 @@ fn state_label(unit: &UnitWithStatus) -> &str {
     ("reloading", _) => "Reloading…",
     _ => unit.activation_state.as_str(),
   }
+}
+
+/// Masked and not-found units can't be started and are hidden unless the user
+/// asks for them, matching the TUI's default.
+fn is_hidden_by_default(unit: &UnitWithStatus) -> bool {
+  unit.is_not_found()
+    || unit.load_state == "masked"
+    || matches!(unit.enablement_state.as_deref(), Some("masked" | "masked-runtime"))
 }
 
 fn category_icon(unit: &UnitWithStatus) -> &'static str {
@@ -116,6 +157,30 @@ fn unit_origin(unit: &UnitWithStatus) -> &'static str {
   }
 }
 
+fn scope_label(scope: UnitScope) -> &'static str {
+  match scope {
+    UnitScope::Global => "system",
+    UnitScope::User => "user",
+  }
+}
+
+/// "in 4h 12m" / "42m 10s ago", for timer columns. Falls back to the raw string.
+fn relative_timestamp(timestamp: &str) -> String {
+  match format::format_systemd_timestamp(timestamp, false) {
+    Some((absolute, relative)) => relative.unwrap_or(absolute),
+    None => timestamp.to_string(),
+  }
+}
+
+/// "2026-07-20 00:00 (in 4h 12m)", for details rows and tooltips.
+fn absolute_and_relative_timestamp(timestamp: &str) -> String {
+  match format::format_systemd_timestamp(timestamp, false) {
+    Some((absolute, Some(relative))) => format!("{absolute} ({relative})"),
+    Some((absolute, None)) => absolute,
+    None => timestamp.to_string(),
+  }
+}
+
 fn show_error(window: &gtk::ApplicationWindow, message: &str) {
   let dialog = gtk::MessageDialog::builder()
     .transient_for(window)
@@ -132,10 +197,21 @@ fn show_error(window: &gtk::ApplicationWindow, message: &str) {
 fn demo_units() -> Vec<UnitWithStatus> {
   [
     ("accounts-daemon.service", "Accounts Service", "active", "running", "enabled"),
+    ("anacron.timer", "Trigger anacron every hour", "active", "waiting", "enabled"),
+    ("anacron.service", "Run anacron jobs", "inactive", "dead", "static"),
     ("bluetooth.service", "Bluetooth service", "inactive", "dead", "enabled"),
     ("cron.service", "Regular background program processing daemon", "active", "running", "enabled"),
     ("docker.service", "Docker Application Container Engine", "failed", "failed", "enabled"),
+    ("logrotate.timer", "Daily rotation of log files", "active", "waiting", "enabled"),
+    ("logrotate.service", "Rotate log files", "inactive", "dead", "static"),
     ("NetworkManager.service", "Network Manager", "active", "running", "enabled"),
+    (
+      "snapd.snap-repair.timer",
+      "Timer to automatically fetch and run repair assertions",
+      "inactive",
+      "dead",
+      "enabled",
+    ),
     ("ssh.service", "OpenBSD Secure Shell server", "active", "running", "enabled"),
     ("systemd-resolved.service", "Network Name Resolution", "active", "running", "enabled"),
     ("systemd-timesyncd.service", "Network Time Synchronization", "inactive", "dead", "disabled"),
@@ -144,7 +220,7 @@ fn demo_units() -> Vec<UnitWithStatus> {
   .enumerate()
   .map(|(i, (name, description, active, sub, enabled))| UnitWithStatus {
     name: name.into(),
-    scope: if i == 2 { UnitScope::User } else { UnitScope::Global },
+    scope: if i == 4 { UnitScope::User } else { UnitScope::Global },
     description: description.into(),
     file_path: Some(Ok(if name == "docker.service" {
       "/run/systemd/transient/docker.service".into()
@@ -157,6 +233,44 @@ fn demo_units() -> Vec<UnitWithStatus> {
     enablement_state: Some(enabled.into()),
   })
   .collect()
+}
+
+/// systemd-show-style timestamp ("Sun 2026-07-19 18:33:22 PDT") at an offset from now,
+/// so demo timers get plausible relative times.
+fn demo_timestamp(offset_seconds: i64) -> String {
+  (chrono::Local::now() + chrono::TimeDelta::seconds(offset_seconds)).format("%a %Y-%m-%d %H:%M:%S %Z").to_string()
+}
+
+fn demo_timers() -> Vec<(UnitScope, TimerListEntry)> {
+  vec![
+    (
+      UnitScope::Global,
+      TimerListEntry {
+        timer: "anacron.timer".into(),
+        next_elapse: Some(demo_timestamp(14 * 60)),
+        last_trigger: Some(demo_timestamp(-42 * 60)),
+        activates: Some("anacron.service".into()),
+      },
+    ),
+    (
+      UnitScope::Global,
+      TimerListEntry {
+        timer: "logrotate.timer".into(),
+        next_elapse: Some(demo_timestamp(6 * 3600)),
+        last_trigger: Some(demo_timestamp(-18 * 3600)),
+        activates: Some("logrotate.service".into()),
+      },
+    ),
+    (
+      UnitScope::Global,
+      TimerListEntry {
+        timer: "snapd.snap-repair.timer".into(),
+        next_elapse: None,
+        last_trigger: None,
+        activates: Some("snapd.snap-repair.service".into()),
+      },
+    ),
+  ]
 }
 
 fn main() -> glib::ExitCode {
@@ -174,35 +288,54 @@ fn main() -> glib::ExitCode {
   app.run()
 }
 
-fn build_ui(app: &gtk::Application, demo: bool) {
-  let rows = Rc::new(RefCell::new(Vec::<Row>::new()));
-  let store = gtk::StringList::new(&[]);
-  let selection_holder = Rc::new(RefCell::new(None::<gtk::SingleSelection>));
-  let context_actions = gtk::gio::SimpleActionGroup::new();
+/// Which columns each unit list shows. Services carry service-shaped columns; timers
+/// get trigger times and the unit they activate, like `systemctl list-timers`.
+#[derive(Clone, Copy, PartialEq)]
+enum ColumnId {
+  Name,
+  Description,
+  State,
+  Startup,
+  Origin,
+  Scope,
+  NextTrigger,
+  LastTrigger,
+  Activates,
+}
+
+struct UnitListView {
+  view: gtk::ColumnView,
+  selection: gtk::SingleSelection,
+  store: gtk::StringList,
+}
+
+/// Opens the right-click menu for a clicked cell: (cell, list position, x, y).
+/// Populated late because the menu builder needs widgets created after the lists.
+type ContextMenuOpener = Rc<RefCell<Option<Box<dyn Fn(&gtk::Widget, u32, f64, f64)>>>>;
+
+/// Build one ColumnView over indices into `rows`. `timer_meta` feeds the timer columns.
+fn build_unit_list(
+  columns: &[(&'static str, ColumnId, bool)],
+  rows: Rc<RefCell<Vec<Row>>>,
+  timer_meta: Rc<RefCell<HashMap<UnitId, TimerListEntry>>>,
+  open_context_menu: ContextMenuOpener,
+) -> UnitListView {
   let view = gtk::ColumnView::new(None::<gtk::SingleSelection>);
   view.set_show_column_separators(true);
   view.set_show_row_separators(true);
   view.set_hexpand(true);
   view.set_vexpand(true);
 
-  for (title, value, expand) in [
-    ("Service", 0, false),
-    ("Description", 1, true),
-    ("State", 2, false),
-    ("Startup", 3, false),
-    ("Origin", 4, false),
-    ("Scope", 5, false),
-  ] {
+  for &(title, column_id, expand) in columns {
     let factory = gtk::SignalListItemFactory::new();
-    let setup_selection = selection_holder.clone();
-    let setup_actions = context_actions.clone();
+    let setup_menu = open_context_menu.clone();
     factory.connect_setup(move |_, item| {
       let list_item = item.downcast_ref::<gtk::ListItem>().unwrap().clone();
       let label = gtk::Label::new(None);
       label.set_xalign(0.0);
       label.set_ellipsize(gtk::pango::EllipsizeMode::End);
       label.add_css_class("cell-label");
-      if value == 0 {
+      if column_id == ColumnId::Name {
         let cell = gtk::Box::new(gtk::Orientation::Horizontal, 3);
         let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         dot.add_css_class("status-dot");
@@ -212,70 +345,66 @@ fn build_ui(app: &gtk::Application, demo: bool) {
         cell.append(&dot);
         cell.append(&icon);
         cell.append(&label);
-        item.downcast_ref::<gtk::ListItem>().unwrap().set_child(Some(&cell));
+        list_item.set_child(Some(&cell));
       } else {
-        item.downcast_ref::<gtk::ListItem>().unwrap().set_child(Some(&label));
+        list_item.set_child(Some(&label));
       }
-      let cell = item.downcast_ref::<gtk::ListItem>().unwrap().child().unwrap();
+      let cell = list_item.child().unwrap();
       let click = gtk::GestureClick::new();
       click.set_button(3);
       click.connect_pressed({
-        let setup_selection = setup_selection.clone();
-        let setup_actions = setup_actions.clone();
+        let setup_menu = setup_menu.clone();
         let context_cell = cell.clone();
         move |gesture, _, x, y| {
           let position = list_item.position();
           if position == gtk::INVALID_LIST_POSITION {
             return;
           }
-          if let Some(selection) = setup_selection.borrow().as_ref() {
-            selection.set_selected(position);
+          if let Some(open) = setup_menu.borrow().as_ref() {
+            open(&context_cell, position, x, y);
           }
-          let menu = gtk::gio::Menu::new();
-          menu.append(Some("View Logs"), Some("context.view-logs"));
-          menu.append(Some("View Unit File"), Some("context.view-unit-file"));
-          menu.append(Some("Start"), Some("context.start-service"));
-          menu.append(Some("Stop"), Some("context.stop-service"));
-          menu.append(Some("Restart"), Some("context.restart-service"));
-          menu.append(Some("Enable at Startup"), Some("context.enable-service"));
-          menu.append(Some("Disable at Startup"), Some("context.disable-service"));
-          let files = gtk::gio::Menu::new();
-          files.append(Some("Open in Default App"), Some("context.open-unit-file"));
-          files.append(Some("Show in Files"), Some("context.show-unit-file"));
-          files.append(Some("Copy Unit Name"), Some("context.copy-unit-name"));
-          menu.append_section(None, &files);
-          let popover = gtk::PopoverMenu::from_model(Some(&menu));
-          popover.set_parent(&context_cell);
-          popover.insert_action_group("context", Some(&setup_actions));
-          popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-          popover.connect_closed(|popover| {
-            let popover = popover.clone();
-            glib::idle_add_local_once(move || popover.unparent());
-          });
-          popover.popup();
           gesture.set_state(gtk::EventSequenceState::Claimed);
         }
       });
       cell.add_controller(click);
     });
+
     let bind_rows = rows.clone();
+    let bind_meta = timer_meta.clone();
     factory.connect_bind(move |_, item| {
       let item = item.downcast_ref::<gtk::ListItem>().unwrap();
       let Some(row_index) = item.item().as_ref().and_then(row_index) else { return };
       let rows = bind_rows.borrow();
       let unit = &rows[row_index].unit;
-      let text = match value {
-        0 => unit.short_name(),
-        1 => unit.description.as_str(),
-        2 => state_label(unit),
-        3 => unit.enablement_state.as_deref().unwrap_or("—"),
-        4 => unit_origin(unit),
-        _ => match unit.scope {
-          UnitScope::Global => "system",
-          UnitScope::User => "user",
+      let meta = bind_meta.borrow().get(&unit.id()).cloned();
+      let mut tooltip: Option<String> = None;
+      let text = match column_id {
+        ColumnId::Name => unit.short_name().to_string(),
+        ColumnId::Description => {
+          tooltip = unit_descriptions::explain(&unit.name, unit.scope).map(String::from);
+          unit.description.clone()
         },
+        ColumnId::State => state_label(unit).to_string(),
+        ColumnId::Startup => unit.enablement_state.clone().unwrap_or_else(|| "—".into()),
+        ColumnId::Origin => unit_origin(unit).to_string(),
+        ColumnId::Scope => scope_label(unit.scope).to_string(),
+        ColumnId::NextTrigger => match meta.as_ref().and_then(|meta| meta.next_elapse.as_deref()) {
+          Some(timestamp) => {
+            tooltip = Some(absolute_and_relative_timestamp(timestamp));
+            relative_timestamp(timestamp)
+          },
+          None => "—".into(),
+        },
+        ColumnId::LastTrigger => match meta.as_ref().and_then(|meta| meta.last_trigger.as_deref()) {
+          Some(timestamp) => {
+            tooltip = Some(absolute_and_relative_timestamp(timestamp));
+            relative_timestamp(timestamp)
+          },
+          None => "—".into(),
+        },
+        ColumnId::Activates => meta.and_then(|meta| meta.activates).unwrap_or_else(|| "—".into()),
       };
-      if value == 0 {
+      if column_id == ColumnId::Name {
         let cell = item.child().and_downcast::<gtk::Box>().unwrap();
         let dot = cell.first_child().and_downcast::<gtk::Box>().unwrap();
         for class in ["active", "failed", "transition", "inactive"] {
@@ -295,47 +424,136 @@ fn build_ui(app: &gtk::Application, demo: bool) {
         let icon = dot.next_sibling().and_downcast::<gtk::Image>().unwrap();
         icon.set_icon_name(Some(category_icon(unit)));
         let label = icon.next_sibling().and_downcast::<gtk::Label>().unwrap();
-        label.set_text(text);
+        label.set_text(&text);
         cell.set_tooltip_text(Some(&format!("{} — {} ({})", unit.name, unit.activation_state, unit.sub_state)));
       } else {
-        item.child().and_downcast::<gtk::Label>().unwrap().set_text(text);
+        let label = item.child().and_downcast::<gtk::Label>().unwrap();
+        label.set_text(&text);
+        label.set_tooltip_text(tooltip.as_deref());
       }
     });
+
     let column = gtk::ColumnViewColumn::new(Some(title), Some(factory));
     let sorter_rows = rows.clone();
+    let sorter_meta = timer_meta.clone();
     column.set_sorter(Some(&gtk::CustomSorter::new(move |left, right| {
       let Some(left_index) = row_index(left) else { return gtk::Ordering::Equal };
       let Some(right_index) = row_index(right) else { return gtk::Ordering::Equal };
       let rows = sorter_rows.borrow();
       let Some(left) = rows.get(left_index).map(|row| &row.unit) else { return gtk::Ordering::Equal };
       let Some(right) = rows.get(right_index).map(|row| &row.unit) else { return gtk::Ordering::Equal };
-      let ordering = match value {
-        0 => left.short_name().to_lowercase().cmp(&right.short_name().to_lowercase()),
-        1 => left.description.to_lowercase().cmp(&right.description.to_lowercase()),
-        2 => state_label(left).to_lowercase().cmp(&state_label(right).to_lowercase()),
-        3 => left.enablement_state.as_deref().unwrap_or("").cmp(right.enablement_state.as_deref().unwrap_or("")),
-        4 => unit_origin(left).cmp(unit_origin(right)),
-        _ => match (left.scope, right.scope) {
-          (UnitScope::Global, UnitScope::User) => std::cmp::Ordering::Less,
-          (UnitScope::User, UnitScope::Global) => std::cmp::Ordering::Greater,
-          _ => std::cmp::Ordering::Equal,
+      // Absolute "%Y-%m-%d %H:%M" timestamps sort chronologically as strings; timers
+      // with nothing scheduled sort last.
+      let timestamp_key = |unit: &UnitWithStatus, pick: fn(&TimerListEntry) -> Option<&String>| {
+        sorter_meta
+          .borrow()
+          .get(&unit.id())
+          .and_then(|meta| pick(meta).map(|t| format::format_systemd_timestamp(t, false).map_or(t.clone(), |(a, _)| a)))
+          .unwrap_or_else(|| "~".into())
+      };
+      let ordering = match column_id {
+        ColumnId::Name => left.short_name().to_lowercase().cmp(&right.short_name().to_lowercase()),
+        ColumnId::Description => left.description.to_lowercase().cmp(&right.description.to_lowercase()),
+        ColumnId::State => state_label(left).to_lowercase().cmp(&state_label(right).to_lowercase()),
+        ColumnId::Startup => {
+          left.enablement_state.as_deref().unwrap_or("").cmp(right.enablement_state.as_deref().unwrap_or(""))
+        },
+        ColumnId::Origin => unit_origin(left).cmp(unit_origin(right)),
+        ColumnId::Scope => scope_label(left.scope).cmp(scope_label(right.scope)),
+        ColumnId::NextTrigger => timestamp_key(left, |meta| meta.next_elapse.as_ref())
+          .cmp(&timestamp_key(right, |meta| meta.next_elapse.as_ref())),
+        ColumnId::LastTrigger => timestamp_key(left, |meta| meta.last_trigger.as_ref())
+          .cmp(&timestamp_key(right, |meta| meta.last_trigger.as_ref())),
+        ColumnId::Activates => {
+          let key = |unit: &UnitWithStatus| {
+            sorter_meta.borrow().get(&unit.id()).and_then(|meta| meta.activates.clone()).unwrap_or_default()
+          };
+          key(left).cmp(&key(right))
         },
       };
       ordering.then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase())).into()
     })));
     column.set_resizable(true);
     column.set_expand(expand);
-    if value == 0 {
+    if column_id == ColumnId::Name {
       column.set_fixed_width(230);
     }
     view.append_column(&column);
   }
 
+  let store = gtk::StringList::new(&[]);
   let sorted = gtk::SortListModel::new(Some(store.clone()), view.sorter());
   let selection = gtk::SingleSelection::new(Some(sorted));
   selection.set_autoselect(true);
   view.set_model(Some(&selection));
-  *selection_holder.borrow_mut() = Some(selection.clone());
+  UnitListView { view, selection, store }
+}
+
+fn build_ui(app: &gtk::Application, demo: bool) {
+  let rows = Rc::new(RefCell::new(Vec::<Row>::new()));
+  let timer_meta = Rc::new(RefCell::new(HashMap::<UnitId, TimerListEntry>::new()));
+  // service -> the timer that activates it, recomputed on every refresh
+  let activated_by = Rc::new(RefCell::new(HashMap::<UnitId, UnitId>::new()));
+  let context_actions = gtk::gio::SimpleActionGroup::new();
+  let open_context_menu = Rc::new(RefCell::new(None::<Box<dyn Fn(&gtk::Widget, u32, f64, f64)>>));
+
+  let services = Rc::new(build_unit_list(
+    &[
+      ("Service", ColumnId::Name, false),
+      ("Description", ColumnId::Description, true),
+      ("State", ColumnId::State, false),
+      ("Startup", ColumnId::Startup, false),
+      ("Origin", ColumnId::Origin, false),
+      ("Scope", ColumnId::Scope, false),
+    ],
+    rows.clone(),
+    timer_meta.clone(),
+    open_context_menu.clone(),
+  ));
+  let timers = Rc::new(build_unit_list(
+    &[
+      ("Timer", ColumnId::Name, false),
+      ("State", ColumnId::State, false),
+      ("Next trigger", ColumnId::NextTrigger, false),
+      ("Last trigger", ColumnId::LastTrigger, false),
+      ("Activates", ColumnId::Activates, true),
+      ("Startup", ColumnId::Startup, false),
+      ("Scope", ColumnId::Scope, false),
+    ],
+    rows.clone(),
+    timer_meta.clone(),
+    open_context_menu.clone(),
+  ));
+  // Soonest-firing timers first, like `systemctl list-timers`
+  if let Some(next_trigger_column) = timers.view.columns().item(2).and_downcast::<gtk::ColumnViewColumn>() {
+    timers.view.sort_by_column(Some(&next_trigger_column), gtk::SortType::Ascending);
+  }
+
+  let stack = gtk::Stack::new();
+  let services_scroller = gtk::ScrolledWindow::builder().child(&services.view).vexpand(true).hexpand(true).build();
+  let timers_scroller = gtk::ScrolledWindow::builder().child(&timers.view).vexpand(true).hexpand(true).build();
+  stack.add_titled(&services_scroller, Some("services"), "Services");
+  stack.add_titled(&timers_scroller, Some("timers"), "Timers");
+  let switcher = gtk::StackSwitcher::new();
+  switcher.set_stack(Some(&stack));
+
+  let on_timers_page = {
+    let stack = stack.clone();
+    move || stack.visible_child_name().as_deref() == Some("timers")
+  };
+  let current_selection = {
+    let services = services.clone();
+    let timers = timers.clone();
+    let on_timers_page = on_timers_page.clone();
+    move || if on_timers_page() { timers.selection.clone() } else { services.selection.clone() }
+  };
+  let selected_unit = {
+    let rows = rows.clone();
+    let current_selection = current_selection.clone();
+    move || -> Option<UnitWithStatus> {
+      selected_row_index(&current_selection()).and_then(|index| rows.borrow().get(index).map(|row| row.unit.clone()))
+    }
+  };
 
   let all_filter = gtk::ToggleButton::with_label("All");
   let active_filter = gtk::ToggleButton::with_label("Active");
@@ -346,10 +564,19 @@ fn build_ui(app: &gtk::Application, demo: bool) {
   let scope_filter = Rc::new(Cell::new(ScopeFilter::All));
   let scope = gtk::DropDown::from_strings(&["All scopes", "System", "User"]);
   scope.set_tooltip_text(Some("Filter by service scope"));
-  let search = gtk::SearchEntry::builder().placeholder_text("Filter services").hexpand(true).build();
+  let show_hidden = gtk::ToggleButton::builder()
+    .icon_name("view-reveal-symbolic")
+    .tooltip_text("Show masked and not-found units")
+    .build();
+  let search = gtk::SearchEntry::builder().placeholder_text("Filter units").hexpand(true).build();
   let start = gtk::Button::builder().icon_name("media-playback-start-symbolic").tooltip_text("Start service").build();
   let stop = gtk::Button::builder().icon_name("media-playback-stop-symbolic").tooltip_text("Stop service").build();
   let restart = gtk::Button::builder().icon_name("view-refresh-symbolic").tooltip_text("Restart service").build();
+  let run_now = gtk::Button::builder()
+    .icon_name("media-skip-forward-symbolic")
+    .tooltip_text("Run the timer's service now")
+    .visible(false)
+    .build();
   let enable = gtk::Button::builder().icon_name("emblem-default-symbolic").tooltip_text("Enable at startup").build();
   let disable =
     gtk::Button::builder().icon_name("action-unavailable-symbolic").tooltip_text("Disable at startup").build();
@@ -358,60 +585,43 @@ fn build_ui(app: &gtk::Application, demo: bool) {
 
   let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
   toolbar.add_css_class("toolbar");
+  toolbar.append(&switcher);
   toolbar.append(&all_filter);
   toolbar.append(&active_filter);
   toolbar.append(&failed_filter);
   toolbar.append(&inactive_filter);
+  toolbar.append(&show_hidden);
   toolbar.append(&scope);
   toolbar.append(&search);
   toolbar.append(&start);
   toolbar.append(&stop);
   toolbar.append(&restart);
+  toolbar.append(&run_now);
   toolbar.append(&enable);
   toolbar.append(&disable);
-  let scroller = gtk::ScrolledWindow::builder().child(&view).vexpand(true).hexpand(true).build();
 
-  let details_grid = gtk::Grid::builder()
-    .column_spacing(12)
-    .row_spacing(3)
+  let details_grid = gtk::Grid::builder().column_spacing(12).row_spacing(3).build();
+  // Prose (the About description) reads as a footnote under the grid, not a grid row
+  let details_about = gtk::Label::builder()
+    .xalign(0.0)
+    .wrap(true)
+    .wrap_mode(gtk::pango::WrapMode::WordChar)
+    .lines(3)
+    .ellipsize(gtk::pango::EllipsizeMode::End)
+    .selectable(true)
+    .visible(false)
+    .css_classes(["dim-label"])
+    .build();
+  let details_box = gtk::Box::builder()
+    .orientation(gtk::Orientation::Vertical)
+    .spacing(6)
     .margin_top(6)
     .margin_bottom(6)
     .margin_start(8)
     .margin_end(8)
     .build();
-  let detail_names = [
-    "Status",
-    "Startup",
-    "Origin",
-    "Scope",
-    "PID",
-    "Memory",
-    "Tasks",
-    "Restarts",
-    "Since",
-    "Result",
-    "Unit file",
-    "Source",
-    "Drop-ins",
-    "Preset",
-  ];
-  let detail_values = detail_names
-    .iter()
-    .enumerate()
-    .map(|(row, name)| {
-      let name_label = gtk::Label::new(Some(name));
-      name_label.set_xalign(1.0);
-      name_label.add_css_class("dim-label");
-      let value = gtk::Label::new(Some("—"));
-      value.set_xalign(0.0);
-      value.set_selectable(true);
-      value.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-      value.set_hexpand(true);
-      details_grid.attach(&name_label, ((row / 5) * 2) as i32, (row % 5) as i32, 1, 1);
-      details_grid.attach(&value, ((row / 5) * 2 + 1) as i32, (row % 5) as i32, 1, 1);
-      value
-    })
-    .collect::<Vec<_>>();
+  details_box.append(&details_grid);
+  details_box.append(&details_about);
 
   let logs_view = gtk::TextView::builder()
     .editable(false)
@@ -420,6 +630,35 @@ fn build_ui(app: &gtk::Application, demo: bool) {
     .wrap_mode(gtk::WrapMode::None)
     .build();
   logs_view.add_css_class("logs");
+  let log_buffer = logs_view.buffer();
+  log_buffer.create_tag(Some("dim"), &[("foreground", &"#87878c")]);
+  log_buffer.create_tag(Some("err"), &[("foreground", &"#c01c28")]);
+  log_buffer.create_tag(Some("warn"), &[("foreground", &"#b57500")]);
+  let append_log_entry = {
+    let buffer = log_buffer.clone();
+    move |entry: &LogEntry| {
+      let mut end = buffer.end_iter();
+      if buffer.char_count() > 0 {
+        buffer.insert(&mut end, "\n");
+      }
+      if let Some(timestamp) = &entry.timestamp {
+        buffer.insert_with_tags_by_name(&mut end, &format!("{timestamp} "), &["dim"]);
+      }
+      // journalctl-style priority colors: err and worse red, warnings yellow, debug dim
+      let tags: &[&str] = match entry.priority {
+        Some(0..=3) => &["err"],
+        Some(4) => &["warn"],
+        Some(7) => &["dim"],
+        _ => &[],
+      };
+      if tags.is_empty() {
+        buffer.insert(&mut end, &entry.content);
+      } else {
+        buffer.insert_with_tags_by_name(&mut end, &entry.content, tags);
+      }
+    }
+  };
+
   let logs_scroller = gtk::ScrolledWindow::builder().child(&logs_view).vexpand(true).hexpand(true).build();
   let logs_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
   logs_page.append(&logs_scroller);
@@ -431,14 +670,15 @@ fn build_ui(app: &gtk::Application, demo: bool) {
     .build();
   unit_file_view.add_css_class("unit-file");
   let unit_file_scroller = gtk::ScrolledWindow::builder().child(&unit_file_view).vexpand(true).hexpand(true).build();
+  let details_scroller = gtk::ScrolledWindow::builder().child(&details_box).vexpand(true).hexpand(true).build();
   let inspector = gtk::Notebook::new();
-  inspector.append_page(&details_grid, Some(&gtk::Label::new(Some("Details"))));
+  inspector.append_page(&details_scroller, Some(&gtk::Label::new(Some("Details"))));
   inspector.append_page(&logs_page, Some(&gtk::Label::new(Some("Logs (live)"))));
   inspector.append_page(&unit_file_scroller, Some(&gtk::Label::new(Some("Unit File"))));
   inspector.set_size_request(-1, 190);
 
   let workspace = gtk::Paned::new(gtk::Orientation::Vertical);
-  workspace.set_start_child(Some(&scroller));
+  workspace.set_start_child(Some(&stack));
   workspace.set_end_child(Some(&inspector));
   workspace.set_resize_start_child(true);
   workspace.set_shrink_end_child(false);
@@ -450,7 +690,7 @@ fn build_ui(app: &gtk::Application, demo: bool) {
   content.append(&workspace);
   let status_bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
   status_bar.add_css_class("status-bar");
-  let selected_summary = gtk::Label::new(Some("No service selected"));
+  let selected_summary = gtk::Label::new(Some("No unit selected"));
   selected_summary.set_xalign(0.0);
   selected_summary.set_ellipsize(gtk::pango::EllipsizeMode::End);
   selected_summary.set_hexpand(true);
@@ -461,7 +701,7 @@ fn build_ui(app: &gtk::Application, demo: bool) {
 
   let window = gtk::ApplicationWindow::builder()
     .application(app)
-    .title("Systemctl")
+    .title("systemctl-gui")
     .default_width(1100)
     .default_height(650)
     .child(&content)
@@ -469,7 +709,7 @@ fn build_ui(app: &gtk::Application, demo: bool) {
 
   let provider = gtk::CssProvider::new();
   provider.load_from_data(
-    ".toolbar { padding: 3px; } .status-bar { padding: 2px 5px; border-top: 1px solid alpha(currentColor, .15); } columnview.view > listview > row { min-height: 18px; padding: 0; } columnview.view > listview > row > cell { padding: 0; } .cell-label { padding: 0 3px; font-size: 12px; } .logs, .unit-file { font-size: 12px; } .status-dot { min-width: 6px; min-height: 6px; border-radius: 999px; margin-left: 3px; } .status-dot.active { background: #2ec27e; } .status-dot.failed { background: #e01b24; } .status-dot.transition { background: #f6d32d; } .status-dot.inactive { background: alpha(currentColor, .32); }",
+    ".toolbar { padding: 3px; } .status-bar { padding: 2px 5px; border-top: 1px solid alpha(currentColor, .15); } columnview.view > listview > row { min-height: 18px; padding: 0; } columnview.view > listview > row > cell { padding: 0; } .cell-label { padding: 0 3px; font-size: 12px; } .logs, .unit-file { font-size: 12px; } .status-dot { min-width: 6px; min-height: 6px; border-radius: 999px; margin-left: 3px; } .status-dot.active { background: #2ec27e; } .status-dot.failed { background: #e01b24; } .status-dot.transition { background: #f6d32d; } .status-dot.inactive { background: alpha(currentColor, .32); } .toolbar stackswitcher button { padding: 0 8px; }",
   );
   gtk::style_context_add_provider_for_display(
     &gtk::prelude::WidgetExt::display(&window),
@@ -477,62 +717,199 @@ fn build_ui(app: &gtk::Application, demo: bool) {
     gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
   );
 
+  // Select a unit in whichever list it belongs to, switching pages if needed.
+  let select_unit = Rc::new({
+    let rows = rows.clone();
+    let services = services.clone();
+    let timers = timers.clone();
+    let stack = stack.clone();
+    move |unit: &UnitId| {
+      let is_timer = unit.name.ends_with(".timer");
+      let target = if is_timer { &timers.selection } else { &services.selection };
+      let position = (0..target.n_items()).find(|&position| {
+        target
+          .item(position)
+          .as_ref()
+          .and_then(row_index)
+          .and_then(|index| rows.borrow().get(index).map(|row| row.unit.id() == *unit))
+          .unwrap_or(false)
+      });
+      if let Some(position) = position {
+        stack.set_visible_child_name(if is_timer { "timers" } else { "services" });
+        target.set_selected(position);
+      }
+    }
+  });
+
+  let set_details = Rc::new({
+    let details_grid = details_grid.clone();
+    let details_about = details_about.clone();
+    let select_unit = select_unit.clone();
+    move |detail_rows: Vec<DetailRow>| {
+      while let Some(child) = details_grid.first_child() {
+        details_grid.remove(&child);
+      }
+      const ROWS_PER_COLUMN: usize = 5;
+      let (wrapped, columned): (Vec<DetailRow>, Vec<DetailRow>) = detail_rows.into_iter().partition(|row| row.wrap);
+      for (index, detail) in columned.into_iter().enumerate() {
+        let name_label = gtk::Label::new(Some(detail.name));
+        name_label.set_xalign(1.0);
+        name_label.add_css_class("dim-label");
+        let value = gtk::Label::new(None);
+        value.set_xalign(0.0);
+        value.set_selectable(true);
+        value.set_hexpand(true);
+        value.set_tooltip_text(Some(&detail.value));
+        value.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        match detail.link {
+          Some(link) => {
+            value.set_markup(&format!("<a href=\"#\">{}</a>", glib::markup_escape_text(&detail.value)));
+            let select_unit = select_unit.clone();
+            value.connect_activate_link(move |_, _| {
+              select_unit(&link);
+              glib::Propagation::Stop
+            });
+          },
+          None => value.set_text(&detail.value),
+        }
+        let column = (index / ROWS_PER_COLUMN) * 2;
+        let row = index % ROWS_PER_COLUMN;
+        details_grid.attach(&name_label, column as i32, row as i32, 1, 1);
+        details_grid.attach(&value, (column + 1) as i32, row as i32, 1, 1);
+      }
+      let about = wrapped.into_iter().map(|detail| detail.value).collect::<Vec<_>>().join("\n");
+      details_about.set_visible(!about.is_empty());
+      details_about.set_tooltip_text(Some(&about));
+      details_about.set_text(&about);
+    }
+  });
+
   let (tx, rx) = mpsc::channel::<Reply>();
   let rebuild = {
     let rows = rows.clone();
-    let store = store.clone();
+    let services = services.clone();
+    let timers = timers.clone();
     let search = search.clone();
     let filter = filter.clone();
     let scope_filter = scope_filter.clone();
+    let show_hidden = show_hidden.clone();
     let all_filter = all_filter.clone();
     let active_filter = active_filter.clone();
     let failed_filter = failed_filter.clone();
     let inactive_filter = inactive_filter.clone();
+    let on_timers_page = on_timers_page.clone();
     Rc::new(move || {
       let needle = search.text().to_lowercase();
       let selected_filter = filter.get();
       let selected_scope = scope_filter.get();
-      let borrowed_rows = rows.borrow();
-      let active = borrowed_rows.iter().filter(|row| row.unit.activation_state == "active").count();
-      let failed = borrowed_rows.iter().filter(|row| row.unit.is_failed()).count();
-      let inactive = borrowed_rows.iter().filter(|row| row.unit.activation_state == "inactive").count();
-      all_filter.set_label(&format!("All {}", borrowed_rows.len()));
-      active_filter.set_label(&format!("Active {active}"));
-      failed_filter.set_label(&format!("Failed {failed}"));
-      inactive_filter.set_label(&format!("Inactive {inactive}"));
-      drop(borrowed_rows);
-      let indices: Vec<usize> = rows
-        .borrow()
+      let include_hidden = show_hidden.is_active();
+      let count_timers = on_timers_page();
+      let previously_selected: Vec<Option<UnitId>> = [&services.selection, &timers.selection]
         .iter()
-        .enumerate()
-        .filter(|(_, row)| {
+        .map(|selection| {
+          selected_row_index(selection).and_then(|index| rows.borrow().get(index).map(|row| row.unit.id()))
+        })
+        .collect();
+
+      {
+        let borrowed_rows = rows.borrow();
+        // The filter counts describe the visible page, not the whole inventory
+        let visible = borrowed_rows
+          .iter()
+          .filter(|row| (row.unit.kind() == UnitKind::Timer) == count_timers)
+          .filter(|row| include_hidden || !is_hidden_by_default(&row.unit));
+        let (mut total, mut active, mut failed, mut inactive) = (0, 0, 0, 0);
+        for row in visible {
+          total += 1;
+          match row.unit.activation_state.as_str() {
+            "active" => active += 1,
+            "inactive" => inactive += 1,
+            _ => {},
+          }
+          if row.unit.is_failed() {
+            failed += 1;
+          }
+        }
+        all_filter.set_label(&format!("All {total}"));
+        active_filter.set_label(&format!("Active {active}"));
+        failed_filter.set_label(&format!("Failed {failed}"));
+        inactive_filter.set_label(&format!("Inactive {inactive}"));
+        let hidden = borrowed_rows
+          .iter()
+          .filter(|row| (row.unit.kind() == UnitKind::Timer) == count_timers)
+          .filter(|row| is_hidden_by_default(&row.unit))
+          .count();
+        show_hidden.set_tooltip_text(Some(&format!("Show masked and not-found units ({hidden})")));
+      }
+
+      let (service_indices, timer_indices): (Vec<usize>, Vec<usize>) = {
+        let borrowed_rows = rows.borrow();
+        let mut service_indices = Vec::new();
+        let mut timer_indices = Vec::new();
+        for (index, row) in borrowed_rows.iter().enumerate() {
+          let unit = &row.unit;
           let matches_text =
-            row.unit.name.to_lowercase().contains(&needle) || row.unit.description.to_lowercase().contains(&needle);
+            unit.name.to_lowercase().contains(&needle) || unit.description.to_lowercase().contains(&needle);
           let matches_state = match selected_filter {
             StatusFilter::All => true,
-            StatusFilter::Active => row.unit.activation_state == "active",
-            StatusFilter::Failed => row.unit.is_failed(),
-            StatusFilter::Inactive => row.unit.activation_state == "inactive",
+            StatusFilter::Active => unit.activation_state == "active",
+            StatusFilter::Failed => unit.is_failed(),
+            StatusFilter::Inactive => unit.activation_state == "inactive",
           };
           let matches_scope = match selected_scope {
             ScopeFilter::All => true,
-            ScopeFilter::System => row.unit.scope == UnitScope::Global,
-            ScopeFilter::User => row.unit.scope == UnitScope::User,
+            ScopeFilter::System => unit.scope == UnitScope::Global,
+            ScopeFilter::User => unit.scope == UnitScope::User,
           };
-          matches_text && matches_state && matches_scope
-        })
-        .map(|(i, _)| i)
-        .collect();
-      store.splice(
-        0,
-        store.n_items(),
-        &indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().iter().map(String::as_str).collect::<Vec<_>>(),
-      );
+          let visible = include_hidden || !is_hidden_by_default(unit);
+          if matches_text && matches_state && matches_scope && visible {
+            if unit.kind() == UnitKind::Timer {
+              timer_indices.push(index);
+            } else {
+              service_indices.push(index);
+            }
+          }
+        }
+        (service_indices, timer_indices)
+      };
+
+      for (list, indices, previous) in
+        [(&services, &service_indices, &previously_selected[0]), (&timers, &timer_indices, &previously_selected[1])]
+      {
+        let strings: Vec<String> = indices.iter().map(|i| i.to_string()).collect();
+        list.store.splice(0, list.store.n_items(), &strings.iter().map(String::as_str).collect::<Vec<_>>());
+        // Keep the same unit selected across refreshes and filter changes
+        if let Some(previous) = previous {
+          let position = (0..list.selection.n_items()).find(|&position| {
+            list
+              .selection
+              .item(position)
+              .as_ref()
+              .and_then(row_index)
+              .and_then(|index| rows.borrow().get(index).map(|row| row.unit.id() == *previous))
+              .unwrap_or(false)
+          });
+          if let Some(position) = position {
+            list.selection.set_selected(position);
+          }
+        }
+      }
     })
   };
 
   if demo {
     *rows.borrow_mut() = demo_units().into_iter().map(|unit| Row { unit }).collect();
+    let mut meta = timer_meta.borrow_mut();
+    let mut reverse = activated_by.borrow_mut();
+    for (unit_scope, entry) in demo_timers() {
+      let timer_id = UnitId { name: entry.timer.clone(), scope: unit_scope };
+      if let Some(activates) = &entry.activates {
+        reverse.insert(UnitId { name: activates.clone(), scope: unit_scope }, timer_id.clone());
+      }
+      meta.insert(timer_id, entry);
+    }
+    drop(meta);
+    drop(reverse);
     rebuild();
   }
   search.connect_search_changed({
@@ -540,10 +917,10 @@ fn build_ui(app: &gtk::Application, demo: bool) {
     move |_| rebuild()
   });
   search.connect_stop_search({
-    let view = view.clone();
+    let stack = stack.clone();
     move |search| {
       search.set_text("");
-      view.grab_focus();
+      stack.grab_focus();
     }
   });
   scope.connect_selected_notify({
@@ -557,6 +934,10 @@ fn build_ui(app: &gtk::Application, demo: bool) {
       });
       rebuild();
     }
+  });
+  show_hidden.connect_toggled({
+    let rebuild = rebuild.clone();
+    move |_| rebuild()
   });
   for (button, value) in [
     (&all_filter, StatusFilter::All),
@@ -586,9 +967,15 @@ fn build_ui(app: &gtk::Application, demo: bool) {
       }
       let tx = tx.clone();
       std::thread::spawn(move || {
+        let patterns = ["*.service".to_string(), "*.timer".to_string()];
         let result = tokio::runtime::Runtime::new()
           .unwrap()
-          .block_on(gui_backend::load_service_inventory(Scope::All, &["*.service".into()]))
+          .block_on(async {
+            tokio::try_join!(
+              gui_backend::load_service_inventory(Scope::All, &patterns),
+              gui_backend::load_timer_lists(Scope::All)
+            )
+          })
           .map_err(|e| format!("{e:#}"));
         let _ = tx.send(Reply::Units(result));
       });
@@ -605,14 +992,12 @@ fn build_ui(app: &gtk::Application, demo: bool) {
   window.add_action(&focus_search_action);
   app.set_accels_for_action("win.focus-search", &["<Primary>f"]);
 
-  let run_action = Rc::new({
-    let rows = rows.clone();
-    let selection = selection.clone();
+  // Start/stop/restart/enable/disable a specific unit (usually the selection, but
+  // "run now" targets a timer's service).
+  let run_unit_action = Rc::new({
     let tx = tx.clone();
     let status = status.clone();
-    move |kind: &'static str| {
-      let Some(row_index) = selected_row_index(&selection) else { return };
-      let id: UnitId = rows.borrow()[row_index].unit.id();
+    move |kind: &'static str, id: UnitId| {
       if demo {
         status.set_text(&format!("Demo: {kind} {}", id.name));
         return;
@@ -637,6 +1022,27 @@ fn build_ui(app: &gtk::Application, demo: bool) {
       });
     }
   });
+  let run_action = Rc::new({
+    let selected_unit = selected_unit.clone();
+    let run_unit_action = run_unit_action.clone();
+    move |kind: &'static str| {
+      if let Some(unit) = selected_unit() {
+        run_unit_action(kind, unit.id());
+      }
+    }
+  });
+  let run_timer_service_now = Rc::new({
+    let selected_unit = selected_unit.clone();
+    let timer_meta = timer_meta.clone();
+    let run_unit_action = run_unit_action.clone();
+    move || {
+      let Some(unit) = selected_unit() else { return };
+      let target = timer_meta.borrow().get(&unit.id()).and_then(|meta| meta.activates.clone());
+      if let Some(target) = target {
+        run_unit_action("Starting", UnitId { name: target, scope: unit.scope });
+      }
+    }
+  });
   start.connect_clicked({
     let f = run_action.clone();
     move |_| f("Starting")
@@ -648,6 +1054,10 @@ fn build_ui(app: &gtk::Application, demo: bool) {
   restart.connect_clicked({
     let f = run_action.clone();
     move |_| f("Restarting")
+  });
+  run_now.connect_clicked({
+    let f = run_timer_service_now.clone();
+    move |_| f()
   });
   enable.connect_clicked({
     let f = run_action.clone();
@@ -673,6 +1083,55 @@ fn build_ui(app: &gtk::Application, demo: bool) {
     context_actions.add_action(&action);
   }
 
+  let run_now_action = gtk::gio::SimpleAction::new("run-timer-service", None);
+  run_now_action.connect_activate({
+    let run_timer_service_now = run_timer_service_now.clone();
+    move |_, _| run_timer_service_now()
+  });
+  context_actions.add_action(&run_now_action);
+
+  let kill_action = gtk::gio::SimpleAction::new("kill-service", Some(glib::VariantTy::STRING));
+  kill_action.connect_activate({
+    let selected_unit = selected_unit.clone();
+    let tx = tx.clone();
+    let status = status.clone();
+    move |_, parameter| {
+      let Some(signal) = parameter.and_then(|p| p.str()).map(String::from) else { return };
+      let Some(unit) = selected_unit() else { return };
+      let id = unit.id();
+      if demo {
+        status.set_text(&format!("Demo: kill {} with {signal}", id.name));
+        return;
+      }
+      status.set_text(&format!("Sending {signal} to {}…", id.name));
+      let tx = tx.clone();
+      std::thread::spawn(move || {
+        let token = CancellationToken::new();
+        let result = tokio::runtime::Runtime::new()
+          .unwrap()
+          .block_on(systemd::kill_service(id, signal, token))
+          .map_err(|e| format!("{e:#}"));
+        let _ = tx.send(Reply::Action(result));
+      });
+    }
+  });
+  context_actions.add_action(&kill_action);
+
+  let goto_unit_action = gtk::gio::SimpleAction::new("goto-unit", Some(glib::VariantTy::STRING));
+  goto_unit_action.connect_activate({
+    let select_unit = select_unit.clone();
+    move |_, parameter| {
+      let Some(target) = parameter.and_then(|p| p.str()) else { return };
+      let (scope, name) = match target.split_once(':') {
+        Some(("user", name)) => (UnitScope::User, name),
+        Some((_, name)) => (UnitScope::Global, name),
+        None => (UnitScope::Global, target),
+      };
+      select_unit(&UnitId { name: name.into(), scope });
+    }
+  });
+  context_actions.add_action(&goto_unit_action);
+
   let view_logs_action = gtk::gio::SimpleAction::new("view-logs", None);
   view_logs_action.connect_activate({
     let inspector = inspector.clone();
@@ -689,12 +1148,11 @@ fn build_ui(app: &gtk::Application, demo: bool) {
 
   let copy_name_action = gtk::gio::SimpleAction::new("copy-unit-name", None);
   copy_name_action.connect_activate({
-    let rows = rows.clone();
-    let selection = selection.clone();
+    let selected_unit = selected_unit.clone();
     let clipboard = gtk::prelude::WidgetExt::display(&window).clipboard();
     move |_, _| {
-      if let Some(index) = selected_row_index(&selection) {
-        clipboard.set_text(&rows.borrow()[index].unit.name);
+      if let Some(unit) = selected_unit() {
+        clipboard.set_text(&unit.name);
       }
     }
   });
@@ -703,12 +1161,11 @@ fn build_ui(app: &gtk::Application, demo: bool) {
   for (name, containing_folder) in [("open-unit-file", false), ("show-unit-file", true)] {
     let action = gtk::gio::SimpleAction::new(name, None);
     action.connect_activate({
-      let rows = rows.clone();
-      let selection = selection.clone();
+      let selected_unit = selected_unit.clone();
       let window = window.clone();
       move |_, _| {
-        let path = selected_row_index(&selection)
-          .and_then(|index| rows.borrow()[index].unit.file_path.as_ref().and_then(|path| path.as_ref().ok()).cloned());
+        let path =
+          selected_unit().and_then(|unit| unit.file_path.as_ref().and_then(|path| path.as_ref().ok()).cloned());
         let Some(path) = path.filter(|path| std::path::Path::new(path).is_absolute()) else {
           show_error(
             &window,
@@ -729,15 +1186,93 @@ fn build_ui(app: &gtk::Application, demo: bool) {
     context_actions.add_action(&action);
   }
 
+  // The context menu is built per-click so it can be state-aware: timers get timer
+  // verbs and a jump to their service, services get kill signals and a jump to the
+  // timer that schedules them (when one does).
+  *open_context_menu.borrow_mut() = Some(Box::new({
+    let rows = rows.clone();
+    let timer_meta = timer_meta.clone();
+    let activated_by = activated_by.clone();
+    let services = services.clone();
+    let timers = timers.clone();
+    let on_timers_page = on_timers_page.clone();
+    let context_actions = context_actions.clone();
+    move |cell: &gtk::Widget, position: u32, x: f64, y: f64| {
+      let selection = if on_timers_page() { &timers.selection } else { &services.selection };
+      selection.set_selected(position);
+      let Some(unit) =
+        selected_row_index(selection).and_then(|index| rows.borrow().get(index).map(|row| row.unit.clone()))
+      else {
+        return;
+      };
+
+      let menu = gtk::gio::Menu::new();
+      menu.append(Some("View Logs"), Some("context.view-logs"));
+      menu.append(Some("View Unit File"), Some("context.view-unit-file"));
+      if unit.kind() == UnitKind::Timer {
+        if unit.is_active() {
+          menu.append(Some("Stop Timer"), Some("context.stop-service"));
+        } else {
+          menu.append(Some("Start Timer"), Some("context.start-service"));
+        }
+        match unit.enablement_state.as_deref() {
+          Some("enabled" | "enabled-runtime") => menu.append(Some("Disable Timer"), Some("context.disable-service")),
+          Some("disabled") => menu.append(Some("Enable Timer"), Some("context.enable-service")),
+          _ => {},
+        }
+        if let Some(target) = timer_meta.borrow().get(&unit.id()).and_then(|meta| meta.activates.clone()) {
+          menu.append(Some(&format!("Run {target} Now")), Some("context.run-timer-service"));
+          menu.append(
+            Some(&format!("Go to {target}")),
+            Some(&format!("context.goto-unit('{}:{target}')", scope_prefix(unit.scope))),
+          );
+        }
+      } else {
+        menu.append(Some("Start"), Some("context.start-service"));
+        menu.append(Some("Stop"), Some("context.stop-service"));
+        menu.append(Some("Restart"), Some("context.restart-service"));
+        menu.append(Some("Enable at Startup"), Some("context.enable-service"));
+        menu.append(Some("Disable at Startup"), Some("context.disable-service"));
+        let kill = gtk::gio::Menu::new();
+        for signal in ["SIGTERM", "SIGHUP", "SIGINT", "SIGQUIT", "SIGKILL", "SIGUSR1", "SIGUSR2"] {
+          kill.append(Some(signal), Some(&format!("context.kill-service('{signal}')")));
+        }
+        menu.append_submenu(Some("Kill"), &kill);
+        if let Some(timer) = activated_by.borrow().get(&unit.id()) {
+          menu.append(
+            Some(&format!("Go to {}", timer.name)),
+            Some(&format!("context.goto-unit('{}:{}')", scope_prefix(timer.scope), timer.name)),
+          );
+        }
+      }
+      let files = gtk::gio::Menu::new();
+      files.append(Some("Open in Default App"), Some("context.open-unit-file"));
+      files.append(Some("Show in Files"), Some("context.show-unit-file"));
+      files.append(Some("Copy Unit Name"), Some("context.copy-unit-name"));
+      menu.append_section(None, &files);
+
+      let popover = gtk::PopoverMenu::from_model(Some(&menu));
+      popover.set_parent(cell);
+      popover.insert_action_group("context", Some(&context_actions));
+      popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+      popover.connect_closed(|popover| {
+        let popover = popover.clone();
+        glib::idle_add_local_once(move || popover.unparent());
+      });
+      popover.popup();
+    }
+  }));
+
   let log_generation = Rc::new(Cell::new(0_u64));
   let log_cancel = Rc::new(RefCell::new(None::<CancellationToken>));
   let log_current = Rc::new(RefCell::new(None::<UnitId>));
   let update_actions = Rc::new({
-    let rows = rows.clone();
-    let selection = selection.clone();
+    let selected_unit = selected_unit.clone();
+    let timer_meta = timer_meta.clone();
     let start = start.clone();
     let stop = stop.clone();
     let restart = restart.clone();
+    let run_now = run_now.clone();
     let enable = enable.clone();
     let disable = disable.clone();
     let selected_summary = selected_summary.clone();
@@ -746,21 +1281,33 @@ fn build_ui(app: &gtk::Application, demo: bool) {
     let log_cancel = log_cancel.clone();
     let log_current = log_current.clone();
     move || {
-      let selected = selected_row_index(&selection);
-      let active = selected.map(|index| rows.borrow()[index].unit.is_active());
+      let selected = selected_unit();
+      let is_timer = selected.as_ref().is_some_and(|unit| unit.kind() == UnitKind::Timer);
+      let active = selected.as_ref().map(|unit| unit.is_active());
       start.set_sensitive(active == Some(false));
       stop.set_sensitive(active == Some(true));
-      restart.set_sensitive(active.is_some());
-      let startup = selected.and_then(|index| rows.borrow()[index].unit.enablement_state.clone());
+      restart.set_sensitive(active.is_some() && !is_timer);
+      let timer_target = selected
+        .as_ref()
+        .filter(|unit| unit.kind() == UnitKind::Timer)
+        .and_then(|unit| timer_meta.borrow().get(&unit.id()).and_then(|meta| meta.activates.clone()));
+      run_now.set_visible(is_timer);
+      run_now.set_sensitive(timer_target.is_some());
+      if let Some(target) = &timer_target {
+        run_now.set_tooltip_text(Some(&format!("Run {target} now")));
+      }
+      let startup = selected.as_ref().and_then(|unit| unit.enablement_state.clone());
       enable.set_sensitive(matches!(startup.as_deref(), Some("disabled")));
       disable.set_sensitive(matches!(startup.as_deref(), Some("enabled" | "enabled-runtime")));
-      if let Some(index) = selected {
-        let rows = rows.borrow();
-        let unit = &rows[index].unit;
-        selected_summary.set_text(&format!(
-          "{}  ·  {}  ·  {}/{}",
-          unit.name, unit.description, unit.activation_state, unit.sub_state
-        ));
+      if let Some(unit) = selected {
+        let mut summary =
+          format!("{}  ·  {}  ·  {}/{}", unit.name, unit.description, unit.activation_state, unit.sub_state);
+        if is_timer {
+          if let Some(next) = timer_meta.borrow().get(&unit.id()).and_then(|meta| meta.next_elapse.as_deref()) {
+            summary.push_str(&format!("  ·  next run {}", relative_timestamp(next)));
+          }
+        }
+        selected_summary.set_text(&summary);
         let unit_id = unit.id();
         let is_new_selection = log_current.borrow().as_ref() != Some(&unit_id);
         if is_new_selection {
@@ -772,28 +1319,52 @@ fn build_ui(app: &gtk::Application, demo: bool) {
           log_generation.set(generation);
           let tx = tx.clone();
           if demo {
+            let is_demo_timer = unit.kind() == UnitKind::Timer;
             let details = UnitRuntimeInfo {
               fragment_path: format!("/usr/lib/systemd/system/{}", unit_id.name),
-              main_pid: unit.is_active().then_some(1234),
-              memory_current: unit.is_active().then_some(18 * 1024 * 1024),
-              tasks_current: unit.is_active().then_some(7),
-              n_restarts: Some(0),
-              active_enter_timestamp: Some("Sun 2026-07-12 09:41:03 PDT".into()),
+              main_pid: (unit.is_active() && !is_demo_timer).then_some(1234),
+              memory_current: (unit.is_active() && !is_demo_timer).then_some(18 * 1024 * 1024),
+              tasks_current: (unit.is_active() && !is_demo_timer).then_some(7),
+              n_restarts: (!is_demo_timer).then_some(0),
+              active_enter_timestamp: Some(demo_timestamp(-30 * 3600)),
+              triggered_unit: is_demo_timer.then(|| format!("{}.service", unit.short_name())),
+              timer_schedules: if is_demo_timer { vec!["OnCalendar=daily".into()] } else { vec![] },
+              persistent: is_demo_timer.then_some(true),
+              randomized_delay: is_demo_timer.then(|| "5min".into()),
+              accuracy: is_demo_timer.then(|| "1min".into()),
               ..UnitRuntimeInfo::default()
             };
             let _ = tx.send(Reply::Details {
               unit: unit_id.clone(),
               generation,
               details: Box::new(Ok(details)),
-            logs: Ok(vec![
-              format!("2026-07-12T09:41:03 systemd[1]: Starting {}…", unit_id.name),
-              format!("2026-07-12T09:41:03 systemd[1]: Started {}.", unit_id.name),
-            ]),
-            definition: Ok(format!(
-              "# /usr/lib/systemd/system/{}\n[Unit]\nDescription={}\n\n[Service]\nExecStart=/usr/bin/example-daemon\n\n[Install]\nWantedBy=multi-user.target\n",
-              unit_id.name, unit.description
-            )),
-          });
+              logs: Ok(vec![
+                LogEntry {
+                  timestamp: Some("2026-07-12 09:41".into()),
+                  content: format!("systemd[1]: Starting {}…", unit_id.name),
+                  priority: Some(6),
+                },
+                LogEntry {
+                  timestamp: Some("2026-07-12 09:41".into()),
+                  content: format!("systemd[1]: Started {}.", unit_id.name),
+                  priority: Some(6),
+                },
+                LogEntry {
+                  timestamp: Some("2026-07-12 09:42".into()),
+                  content: "demo[1234]: something looks off".into(),
+                  priority: Some(4),
+                },
+                LogEntry {
+                  timestamp: Some("2026-07-12 09:43".into()),
+                  content: "demo[1234]: something went wrong".into(),
+                  priority: Some(3),
+                },
+              ]),
+              definition: Ok(format!(
+                "# /usr/lib/systemd/system/{}\n[Unit]\nDescription={}\n\n[Service]\nExecStart=/usr/bin/example-daemon\n\n[Install]\nWantedBy=multi-user.target\n",
+                unit_id.name, unit.description
+              )),
+            });
           } else {
             let cancel = CancellationToken::new();
             *log_cancel.borrow_mut() = Some(cancel.clone());
@@ -815,9 +1386,9 @@ fn build_ui(app: &gtk::Application, demo: bool) {
               });
               let tx_lines = tx.clone();
               let followed_unit = unit_id.clone();
-              let result = runtime.block_on(gui_backend::follow_unit_logs(unit_id.clone(), cancel, move |line| {
+              let result = runtime.block_on(gui_backend::follow_unit_logs(unit_id.clone(), cancel, move |entries| {
                 tx_lines
-                  .send(Reply::LogLine { unit: followed_unit.clone(), generation, line })
+                  .send(Reply::LogLines { unit: followed_unit.clone(), generation, entries })
                   .map_err(|_| anyhow::anyhow!("GUI closed"))
               }));
               if let Err(error) = result {
@@ -831,36 +1402,65 @@ fn build_ui(app: &gtk::Application, demo: bool) {
           cancel.cancel();
         }
         *log_current.borrow_mut() = None;
-        selected_summary.set_text("No service selected");
+        selected_summary.set_text("No unit selected");
       }
     }
   });
-  selection.connect_selected_notify({
+  services.selection.connect_selected_notify({
     let update_actions = update_actions.clone();
     move |_| update_actions()
+  });
+  timers.selection.connect_selected_notify({
+    let update_actions = update_actions.clone();
+    move |_| update_actions()
+  });
+  stack.connect_visible_child_notify({
+    let update_actions = update_actions.clone();
+    let rebuild = rebuild.clone();
+    move |_| {
+      rebuild();
+      update_actions();
+    }
   });
   update_actions();
 
   glib::timeout_add_local(Duration::from_millis(50), {
     let rows = rows.clone();
-    let selection = selection.clone();
+    let timer_meta = timer_meta.clone();
+    let activated_by = activated_by.clone();
+    let selected_unit = selected_unit.clone();
     let rebuild = rebuild.clone();
     let status = status.clone();
     let load = load.clone();
-    let detail_values = detail_values.clone();
+    let set_details = set_details.clone();
     let logs_view = logs_view.clone();
+    let append_log_entry = append_log_entry.clone();
     let unit_file_view = unit_file_view.clone();
     let window = window.clone();
     let update_actions = update_actions.clone();
     let inventory_loading = inventory_loading.clone();
     let log_generation = log_generation.clone();
+    let current_selection = current_selection.clone();
     move || {
       while let Ok(reply) = rx.try_recv() {
         match reply {
-          Reply::Units(Ok(service_list)) => {
+          Reply::Units(Ok((service_list, timer_list))) => {
             inventory_loading.set(false);
             let count = service_list.units.len();
             *rows.borrow_mut() = service_list.units.into_iter().map(|unit| Row { unit }).collect();
+            {
+              let mut meta = timer_meta.borrow_mut();
+              let mut reverse = activated_by.borrow_mut();
+              meta.clear();
+              reverse.clear();
+              for (unit_scope, entry) in timer_list {
+                let timer_id = UnitId { name: entry.timer.clone(), scope: unit_scope };
+                if let Some(activates) = &entry.activates {
+                  reverse.insert(UnitId { name: activates.clone(), scope: unit_scope }, timer_id.clone());
+                }
+                meta.insert(timer_id, entry);
+              }
+            }
             rebuild();
             update_actions();
             status.set_text(&format!("{count} units"));
@@ -885,78 +1485,51 @@ fn build_ui(app: &gtk::Application, demo: bool) {
             }
           },
           Reply::Details { unit, generation, details, logs, definition } => {
-            let selected_id =
-              selected_row_index(&selection).and_then(|index| rows.borrow().get(index).map(|row| row.unit.id()));
-            if selected_id.as_ref() != Some(&unit) || generation != log_generation.get() {
+            let selected = selected_unit();
+            if selected.as_ref().map(|s| s.id()) != Some(unit.clone()) || generation != log_generation.get() {
               continue;
             }
 
             match *details {
               Ok(info) => {
-                let selected_index = selected_row_index(&selection);
-                let selected_unit =
-                  selected_index.and_then(|index| rows.borrow().get(index).map(|row| row.unit.clone()));
+                let selected_unit_status = selected.expect("checked above");
                 let discovered_path =
                   if info.fragment_path.is_empty() { &info.source_path } else { &info.fragment_path };
-                if let Some(index) = selected_index {
-                  if !discovered_path.is_empty() {
+                if !discovered_path.is_empty() {
+                  if let Some(index) = selected_row_index(&current_selection()) {
                     rows.borrow_mut()[index].unit.file_path = Some(Ok(discovered_path.clone()));
                   }
                 }
-                let values = selected_unit.map(|selected| {
-                  let origin = format!("{:?}", systemd::unit_origin(&selected, &info));
-                  vec![
-                    format!("{} / {}", selected.activation_state, selected.sub_state),
-                    selected.enablement_state.unwrap_or_else(|| "—".into()),
-                    origin,
-                    match selected.scope {
-                      UnitScope::Global => "system".into(),
-                      UnitScope::User => "user".into(),
-                    },
-                    info.main_pid.map_or_else(|| "—".into(), |value| value.to_string()),
-                    info
-                      .memory_current
-                      .map_or_else(|| "—".into(), |value| format!("{:.1} MiB", value as f64 / 1_048_576.0)),
-                    info.tasks_current.map_or_else(|| "—".into(), |value| value.to_string()),
-                    info.n_restarts.map_or_else(|| "—".into(), |value| value.to_string()),
-                    info.active_enter_timestamp.or(info.inactive_enter_timestamp).unwrap_or_else(|| "—".into()),
-                    info.result.unwrap_or_else(|| "—".into()),
-                    if info.fragment_path.is_empty() { "—".into() } else { info.fragment_path },
-                    if info.source_path.is_empty() { "—".into() } else { info.source_path },
-                    if info.drop_in_paths.is_empty() { "—".into() } else { info.drop_in_paths.join(", ") },
-                    info.unit_file_preset.unwrap_or_else(|| "—".into()),
-                  ]
-                });
-                if let Some(values) = values {
-                  for (label, value) in detail_values.iter().zip(values) {
-                    label.set_text(&value);
-                    label.set_tooltip_text(Some(&value));
-                  }
+                let detail_rows =
+                  build_detail_rows(&selected_unit_status, &info, &timer_meta.borrow(), &activated_by.borrow());
+                set_details(detail_rows);
+              },
+              Err(error) => set_details(vec![DetailRow::text("Error", error)]),
+            }
+            let buffer = logs_view.buffer();
+            buffer.set_text("");
+            match logs {
+              Ok(entries) => {
+                for entry in &entries {
+                  append_log_entry(entry);
                 }
               },
-              Err(error) => detail_values[0].set_text(&error),
+              Err(error) => buffer.set_text(&error),
             }
-            logs_view.buffer().set_text(&match logs {
-              Ok(lines) => lines.join("\n"),
-              Err(error) => error,
-            });
             unit_file_view.buffer().set_text(&match definition {
               Ok(definition) => definition,
               Err(error) => format!("Could not load the effective unit definition:\n\n{error}"),
             });
           },
-          Reply::LogLine { unit, generation, line } => {
-            let selected_id =
-              selected_row_index(&selection).and_then(|index| rows.borrow().get(index).map(|row| row.unit.id()));
-            if selected_id.as_ref() != Some(&unit) || generation != log_generation.get() {
+          Reply::LogLines { unit, generation, entries } => {
+            let selected_id = selected_unit().map(|s| s.id());
+            if selected_id != Some(unit) || generation != log_generation.get() {
               continue;
             }
             let buffer = logs_view.buffer();
-            let mut end = buffer.end_iter();
-            if buffer.char_count() > 0 {
-              buffer.insert(&mut end, "\n");
+            for entry in &entries {
+              append_log_entry(entry);
             }
-            buffer.insert(&mut end, &line);
             if buffer.line_count() > 2_000 {
               let mut start = buffer.start_iter();
               let mut keep_from =
@@ -986,4 +1559,98 @@ fn build_ui(app: &gtk::Application, demo: bool) {
 
   window.present();
   load();
+}
+
+fn scope_prefix(scope: UnitScope) -> &'static str {
+  match scope {
+    UnitScope::Global => "system",
+    UnitScope::User => "user",
+  }
+}
+
+/// Assemble the details rows for a unit: shared basics, then service stats or timer
+/// scheduling info, plus cross-links between timers and the units they activate.
+fn build_detail_rows(
+  unit: &UnitWithStatus,
+  info: &UnitRuntimeInfo,
+  timer_meta: &HashMap<UnitId, TimerListEntry>,
+  activated_by: &HashMap<UnitId, UnitId>,
+) -> Vec<DetailRow> {
+  let mut detail_rows = vec![
+    DetailRow::text("Status", format!("{} / {}", unit.activation_state, unit.sub_state)),
+    DetailRow::text("Startup", unit.enablement_state.clone().unwrap_or_else(|| "—".into())),
+    DetailRow::text("Origin", format!("{:?}", systemd::unit_origin(unit, info))),
+    DetailRow::text("Scope", scope_label(unit.scope)),
+  ];
+
+  if unit.kind() == UnitKind::Timer {
+    let meta = timer_meta.get(&unit.id());
+    let next_elapse = info.next_elapse.as_deref().or(meta.and_then(|meta| meta.next_elapse.as_deref()));
+    detail_rows
+      .push(DetailRow::text("Next trigger", next_elapse.map_or_else(|| "—".into(), absolute_and_relative_timestamp)));
+    detail_rows.push(DetailRow::text(
+      "Last trigger",
+      info
+        .last_trigger
+        .as_deref()
+        .or(meta.and_then(|meta| meta.last_trigger.as_deref()))
+        .map_or_else(|| "—".into(), absolute_and_relative_timestamp),
+    ));
+    let activates = info.triggered_unit.clone().or_else(|| meta.and_then(|meta| meta.activates.clone()));
+    match activates {
+      Some(target) => {
+        detail_rows.push(DetailRow::link("Activates", target.clone(), UnitId { name: target, scope: unit.scope }))
+      },
+      None => detail_rows.push(DetailRow::text("Activates", "—")),
+    }
+    if !info.timer_schedules.is_empty() {
+      detail_rows.push(DetailRow::text("Schedule", info.timer_schedules.join("   ")));
+    }
+    if info.persistent == Some(true) {
+      detail_rows.push(DetailRow::text("Persistent", "yes"));
+    }
+    if let Some(delay) = info.randomized_delay.as_deref().filter(|delay| *delay != "0") {
+      detail_rows.push(DetailRow::text("Random delay", delay));
+    }
+    if let Some(accuracy) = &info.accuracy {
+      detail_rows.push(DetailRow::text("Accuracy", accuracy));
+    }
+  } else {
+    detail_rows.push(DetailRow::text("PID", info.main_pid.map_or_else(|| "—".into(), |value| value.to_string())));
+    detail_rows.push(DetailRow::text("Memory", info.memory_current.map_or_else(|| "—".into(), format::format_bytes)));
+    detail_rows
+      .push(DetailRow::text("Tasks", info.tasks_current.map_or_else(|| "—".into(), |value| value.to_string())));
+    detail_rows
+      .push(DetailRow::text("Restarts", info.n_restarts.map_or_else(|| "—".into(), |value| value.to_string())));
+    if let Some(timer) = activated_by.get(&unit.id()) {
+      let mut value = timer.name.clone();
+      if let Some(next) = timer_meta.get(timer).and_then(|meta| meta.next_elapse.as_deref()) {
+        value.push_str(&format!(" — next run {}", relative_timestamp(next)));
+      }
+      detail_rows.push(DetailRow::link("Triggered by", value, timer.clone()));
+    }
+  }
+
+  detail_rows.push(DetailRow::text(
+    "Since",
+    info.active_enter_timestamp.clone().or(info.inactive_enter_timestamp.clone()).unwrap_or_else(|| "—".into()),
+  ));
+  detail_rows.push(DetailRow::text("Result", info.result.clone().unwrap_or_else(|| "—".into())));
+  detail_rows.push(DetailRow::text(
+    "Unit file",
+    if info.fragment_path.is_empty() { "—".into() } else { info.fragment_path.clone() },
+  ));
+  if !info.source_path.is_empty() {
+    detail_rows.push(DetailRow::text("Source", info.source_path.clone()));
+  }
+  if !info.drop_in_paths.is_empty() {
+    detail_rows.push(DetailRow::text("Drop-ins", info.drop_in_paths.join(", ")));
+  }
+  if let Some(preset) = &info.unit_file_preset {
+    detail_rows.push(DetailRow::text("Preset", preset));
+  }
+  if let Some(about) = unit_descriptions::explain(&unit.name, unit.scope) {
+    detail_rows.push(DetailRow::wrapped("About", about));
+  }
+  detail_rows
 }
