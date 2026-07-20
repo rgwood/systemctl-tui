@@ -434,22 +434,84 @@ fn parse_unit_runtime_info(output: &str) -> UnitRuntimeInfo {
   info
 }
 
-/// Parse the NEXT column from `systemctl list-timers --no-legend`.
+/// One row of `systemctl list-timers`: a timer, its next/last trigger, and the unit it activates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimerListEntry {
+  pub timer: String,
+  /// Absolute wall-clock timestamp such as `Fri 2026-07-17 01:09:35 PDT`, or `None`
+  /// for timers with nothing scheduled.
+  pub next_elapse: Option<String>,
+  pub last_trigger: Option<String>,
+  /// The unit this timer starts when it elapses.
+  pub activates: Option<String>,
+}
+
+/// Parse one `systemctl list-timers --no-legend` row.
 ///
-/// On every supported systemd version a scheduled timer starts with an
-/// absolute timestamp such as `Fri 2026-07-17 01:09:35 PDT`. Unscheduled
-/// timers start with `n/a` and have no useful next trigger.
-fn parse_timer_next_elapse(output: &str) -> Option<String> {
-  let line = output.lines().find(|line| !line.trim().is_empty())?;
-  let mut parts = line.split_whitespace();
-  let weekday = parts.next()?;
-  if weekday == "n/a" {
+/// The NEXT/LAST columns are either absolute timestamps (`Fri 2026-07-17 01:09:35 PDT`)
+/// or a placeholder (`n/a` on older systemd, `-` on newer). The LEFT/PASSED columns
+/// between them vary in width and wording across versions, so instead of counting
+/// columns this scans for timestamp-shaped token groups: the first is NEXT, the
+/// second is LAST. The final two tokens are the timer and the unit it activates.
+fn parse_timer_list_line(line: &str) -> Option<TimerListEntry> {
+  let tokens: Vec<&str> = line.split_whitespace().collect();
+  let placeholder = |token: &str| token == "n/a" || token == "-";
+
+  let is_date = |token: &str| {
+    let bytes = token.as_bytes();
+    bytes.len() == 10 && bytes[4] == b'-' && bytes[7] == b'-' && token.chars().filter(char::is_ascii_digit).count() == 8
+  };
+  let mut timestamps = Vec::new();
+  let mut i = 0;
+  while i < tokens.len() {
+    // A timestamp is 4 tokens: weekday, date, time, timezone.
+    if i + 3 < tokens.len() && is_date(tokens[i + 1]) && tokens[i + 2].contains(':') {
+      timestamps.push(format!("{} {} {} {}", tokens[i], tokens[i + 1], tokens[i + 2], tokens[i + 3]));
+      i += 4;
+    } else {
+      i += 1;
+    }
+  }
+
+  // The timer name is the second-to-last token, unless ACTIVATES is missing or a
+  // placeholder, in which case the timer is last.
+  let last = tokens.last()?;
+  let (timer, activates) = if last.ends_with(".timer") {
+    (last.to_string(), None)
+  } else {
+    (tokens.get(tokens.len().checked_sub(2)?)?.to_string(), Some(last.to_string()).filter(|t| !placeholder(t)))
+  };
+  if !timer.ends_with(".timer") {
     return None;
   }
-  let date = parts.next()?;
-  let time = parts.next()?;
-  let timezone = parts.next()?;
-  Some(format!("{weekday} {date} {time} {timezone}"))
+
+  let mut timestamps = timestamps.into_iter();
+  // An unscheduled NEXT is a placeholder, so the first timestamp found would be LAST.
+  let next_elapse = if placeholder(tokens.first()?) { None } else { timestamps.next() };
+  let last_trigger = timestamps.next();
+  Some(TimerListEntry { timer, next_elapse, last_trigger, activates })
+}
+
+/// Fetch all timers for a scope in one `systemctl list-timers` call, in systemd's
+/// order (soonest next trigger first, unscheduled timers last).
+pub fn get_timer_list(scope: UnitScope) -> Result<Vec<TimerListEntry>> {
+  let mut args = vec!["--quiet", "list-timers", "--all", "--no-legend", "--no-pager", "--full"];
+  if scope == UnitScope::User {
+    args.insert(0, "--user");
+  }
+
+  let output = ssh::host_command("systemctl", &args).output()?;
+  if !output.status.success() {
+    let stderr = String::from_utf8(output.stderr)?;
+    bail!(stderr);
+  }
+  Ok(str::from_utf8(&output.stdout)?.lines().filter_map(parse_timer_list_line).collect())
+}
+
+/// Parse the NEXT column from a single-unit `systemctl list-timers --no-legend` call.
+fn parse_timer_next_elapse(output: &str) -> Option<String> {
+  let line = output.lines().find(|line| !line.trim().is_empty())?;
+  parse_timer_list_line(line)?.next_elapse
 }
 
 fn get_timer_next_elapse(service: &UnitId) -> Result<Option<String>> {
@@ -1064,6 +1126,52 @@ Persistent=yes\n";
   fn unscheduled_timer_has_no_next_timestamp() {
     let output = "n/a n/a n/a n/a snapd.snap-repair.timer snapd.snap-repair.service\n";
     assert_eq!(parse_timer_next_elapse(output), None);
+    // Newer systemd prints "-" instead of "n/a"
+    assert_eq!(parse_timer_next_elapse("- - - - snapd.snap-repair.timer snapd.snap-repair.service\n"), None);
+  }
+
+  #[test]
+  fn timer_list_parses_rows_with_variable_width_columns() {
+    let output = "\
+Sun 2026-07-19 18:33:22 PDT    14min Sun 2026-07-19 17:33:34 PDT    42min ago anacron.timer anacron.service
+Mon 2026-07-20 00:44:19 PDT       6h Mon 2026-07-13 11:23:01 PDT            - fstrim.timer fstrim.service
+Sat 2026-07-25 08:22:20 PDT   5 days Mon 2026-07-13 16:07:39 PDT            - update-notifier-motd.timer update-notifier-motd.service
+-                                  - -                                      - snapd.snap-repair.timer snapd.snap-repair.service
+";
+    let entries: Vec<TimerListEntry> = output.lines().filter_map(parse_timer_list_line).collect();
+    assert_eq!(entries.len(), 4);
+    assert_eq!(entries[0].timer, "anacron.timer");
+    assert_eq!(entries[0].next_elapse.as_deref(), Some("Sun 2026-07-19 18:33:22 PDT"));
+    assert_eq!(entries[0].last_trigger.as_deref(), Some("Sun 2026-07-19 17:33:34 PDT"));
+    assert_eq!(entries[0].activates.as_deref(), Some("anacron.service"));
+    // "5 days" in the LEFT column must not be mistaken for part of a timestamp
+    assert_eq!(entries[2].next_elapse.as_deref(), Some("Sat 2026-07-25 08:22:20 PDT"));
+    assert_eq!(
+      entries[3],
+      TimerListEntry {
+        timer: "snapd.snap-repair.timer".into(),
+        next_elapse: None,
+        last_trigger: None,
+        activates: Some("snapd.snap-repair.service".into()),
+      }
+    );
+  }
+
+  #[test]
+  fn timer_list_handles_scheduled_but_never_run_timers() {
+    let entry = parse_timer_list_line("Mon 2026-07-20 00:00:00 UTC 5h left n/a n/a new.timer new.service").unwrap();
+    assert_eq!(entry.next_elapse.as_deref(), Some("Mon 2026-07-20 00:00:00 UTC"));
+    assert_eq!(entry.last_trigger, None);
+
+    let entry = parse_timer_list_line("- - Sun 2026-07-19 06:22:16 PDT 8h ago ran.timer ran.service").unwrap();
+    assert_eq!(entry.next_elapse, None);
+    assert_eq!(entry.last_trigger.as_deref(), Some("Sun 2026-07-19 06:22:16 PDT"));
+  }
+
+  #[test]
+  fn timer_list_ignores_non_timer_lines() {
+    assert_eq!(parse_timer_list_line(""), None);
+    assert_eq!(parse_timer_list_line("3 timers listed."), None);
   }
 
   #[test]
