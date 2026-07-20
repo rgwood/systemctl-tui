@@ -1,5 +1,15 @@
 When testing systemctl-tui, run it in debug mode (i.e. do not specify `--release`).
 
+## Repo layout
+
+This is a Cargo workspace with three crates:
+
+- `crates/systemctl-core` — shared systemd/journald/SSH plumbing, no UI dependencies
+- `crates/systemctl-tui` — the ratatui TUI (the main published binary)
+- `crates/systemctl-gui` — a GTK 4 GUI. Excluded from workspace default-members because it needs GTK system libraries (`libgtk-4-dev`); build it explicitly with `cargo build -p systemctl-gui`.
+
+A plain `cargo build`/`cargo test`/`cargo clippy` covers core + TUI only.
+
 ## Before committing or publishing
 
 Always run `cargo fmt` and `cargo clippy` before committing changes or creating a PR. Both must pass cleanly.
@@ -48,7 +58,7 @@ Note: the TUI renders to **stderr**, so don't redirect `2>` when driving it in t
 
 ### systemd version matrix
 
-`tests/remote-matrix.py` runs the remote-mode test suite against containers running real systemd versions (239→current: Rocky 8, Ubuntu 20.04/22.04/24.04, Debian 12, Fedora), plus two "hostile" hosts where remote mode must fail fast with a clear error: `no-systemd` (alpine) and `dead-systemd` (systemd installed but not booted). Pre-239 systemd can't boot in containers on cgroup-v2 hosts (and pre-230 lacks `ListUnitsByPatterns`), so graceful failure is the only testable contract for genuinely old hosts. It builds systemd+sshd container images, waits for system and user managers, and runs `integration-test.py --host ... --remote-suite` against each. Needs podman or docker. `--distro ubuntu-24.04` to run one; `--keep` leaves a failed container up for debugging. Slow (~10-20 min for the full matrix) — run it when touching remote-mode code (`src/ssh.rs`, journalctl/D-Bus plumbing) or before a release, not for routine changes. CI runs it on every PR.
+`tests/remote-matrix.py` runs the remote-mode test suite against containers running real systemd versions (239→current: Rocky 8, Ubuntu 20.04/22.04/24.04, Debian 12, Fedora), plus two "hostile" hosts where remote mode must fail fast with a clear error: `no-systemd` (alpine) and `dead-systemd` (systemd installed but not booted). Pre-239 systemd can't boot in containers on cgroup-v2 hosts (and pre-230 lacks `ListUnitsByPatterns`), so graceful failure is the only testable contract for genuinely old hosts. It builds systemd+sshd container images, waits for system and user managers, and runs `integration-test.py --host ... --remote-suite` against each. Needs podman or docker. `--distro ubuntu-24.04` to run one; `--keep` leaves a failed container up for debugging. Slow (~10-20 min for the full matrix) — run it when touching remote-mode code (`crates/systemctl-core/src/ssh.rs`, journalctl/D-Bus plumbing) or before a release, not for routine changes. CI runs it on every PR.
 
 ### Test checklist
 

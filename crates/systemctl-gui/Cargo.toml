@@ -1,0 +1,17 @@
+[package]
+name = "systemctl-gui"
+description = "A GTK 4 GUI for interacting with systemd services and their logs"
+homepage = "https://github.com/rgwood/systemctl-tui"
+repository = "https://github.com/rgwood/systemctl-tui"
+version = "0.1.0"
+edition = "2021"
+authors = ["Reilly Wood"]
+license = "MIT"
+publish = false
+
+[dependencies]
+systemctl-core = { path = "../systemctl-core" }
+anyhow = "1.0.71"
+gtk4 = "0.10"
+tokio = { version = "1.28.2", features = ["full"] }
+tokio-util = "0.7.8"
