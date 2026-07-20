@@ -6,7 +6,6 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Reilly Wood"]
 license = "MIT"
-publish = false
 
 [dependencies]
 anyhow = "1.0.71"
