@@ -292,6 +292,11 @@ async fn get_services(scope: UnitScope, services: &[String]) -> Result<Vec<UnitW
 #[derive(Debug, Clone, Default)]
 pub struct UnitRuntimeInfo {
   pub fragment_path: String,
+  /// Original source used to generate the unit, such as a SysV init script.
+  pub source_path: String,
+  pub drop_in_paths: Vec<String>,
+  pub transient: bool,
+  pub unit_file_preset: Option<String>,
   pub main_pid: Option<u32>,
   pub memory_current: Option<u64>,
   pub tasks_current: Option<u64>,
@@ -311,6 +316,50 @@ pub struct UnitRuntimeInfo {
   pub persistent: Option<bool>,
   pub randomized_delay: Option<String>,
   pub accuracy: Option<String>,
+}
+
+/// A coarse explanation of where systemd obtained a unit definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnitOrigin {
+  Local,
+  Vendor,
+  Runtime,
+  Generated,
+  Transient,
+  User,
+  Unknown,
+}
+
+/// Classify a unit using metadata returned by `systemctl show`.
+///
+/// `source_path` is used when `fragment_path` is empty, which is common for
+/// generated compatibility units. This intentionally describes provenance,
+/// not enablement state.
+pub fn classify_unit_origin(scope: UnitScope, fragment_path: &str, source_path: &str, transient: bool) -> UnitOrigin {
+  if transient {
+    return UnitOrigin::Transient;
+  }
+  if scope == UnitScope::User {
+    return UnitOrigin::User;
+  }
+
+  let path = if fragment_path.is_empty() { source_path } else { fragment_path };
+  if path.starts_with("/run/systemd/generator") {
+    UnitOrigin::Generated
+  } else if path.starts_with("/run/systemd/") {
+    UnitOrigin::Runtime
+  } else if path.starts_with("/etc/systemd/") || path.starts_with("/etc/init.d/") {
+    UnitOrigin::Local
+  } else if path.starts_with("/usr/lib/systemd/") || path.starts_with("/lib/systemd/") {
+    UnitOrigin::Vendor
+  } else {
+    UnitOrigin::Unknown
+  }
+}
+
+/// Classify a concrete unit using its on-demand runtime metadata.
+pub fn unit_origin(unit: &UnitWithStatus, info: &UnitRuntimeInfo) -> UnitOrigin {
+  classify_unit_origin(unit.scope, &info.fragment_path, &info.source_path, info.transient)
 }
 
 fn parse_timer_schedules(value: &str) -> Vec<String> {
@@ -351,6 +400,10 @@ fn parse_unit_runtime_info(output: &str) -> UnitRuntimeInfo {
     let value = value.trim();
     match key {
       "FragmentPath" => info.fragment_path = value.to_string(),
+      "SourcePath" => info.source_path = value.to_string(),
+      "DropInPaths" => info.drop_in_paths = value.split_whitespace().map(String::from).collect(),
+      "Transient" => info.transient = value == "yes",
+      "UnitFilePreset" => info.unit_file_preset = non_empty(value),
       "MainPID" => info.main_pid = value.parse().ok().filter(|&pid| pid != 0),
       // systemd prints u64::MAX (or "[not set]") for unavailable accounting values
       "MemoryCurrent" => info.memory_current = value.parse().ok().filter(|&v| v != u64::MAX),
@@ -419,7 +472,7 @@ fn get_timer_next_elapse(service: &UnitId) -> Result<Option<String>> {
 /// converts monotonic deadlines into an accurate wall-clock NEXT value, including
 /// across suspend.
 pub fn get_unit_runtime_info(service: &UnitId) -> Result<UnitRuntimeInfo> {
-  const PROPERTIES: &str = "FragmentPath,MainPID,MemoryCurrent,TasksCurrent,NRestarts,CPUUsageNSec,\
+  const PROPERTIES: &str = "FragmentPath,SourcePath,DropInPaths,Transient,UnitFilePreset,MainPID,MemoryCurrent,TasksCurrent,NRestarts,CPUUsageNSec,\
                             ActiveEnterTimestamp,InactiveEnterTimestamp,Result,ExecMainStatus,LastTriggerUSec,Unit,\
                             TimersCalendar,TimersMonotonic,Persistent,\
                             RandomizedDelayUSec,AccuracyUSec";
