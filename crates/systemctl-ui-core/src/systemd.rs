@@ -61,8 +61,15 @@ impl UnitId {
   ///
   /// `foo@.service` is a template; `foo@bar.service` is an instance.
   pub fn is_template(&self) -> bool {
-    self.name.contains("@.")
+    unit_name_is_template(&self.name)
   }
+}
+
+/// A template name has an empty instance string right before the type suffix
+/// (`foo@.service`). Checking for `@.` anywhere would misclassify instances
+/// whose name starts with a dot, like `foo@.hidden.service`.
+fn unit_name_is_template(name: &str) -> bool {
+  name.rsplit_once('.').is_some_and(|(stem, _)| stem.ends_with('@'))
 }
 
 impl UnitWithStatus {
@@ -93,7 +100,7 @@ impl UnitWithStatus {
   }
 
   pub fn is_template(&self) -> bool {
-    self.name.contains("@.")
+    unit_name_is_template(&self.name)
   }
 
   pub fn short_name(&self) -> &str {
@@ -1114,6 +1121,11 @@ mod tests {
     assert!(unit.id().is_template());
 
     unit.name = "backup@nightly.service".into();
+    assert!(!unit.is_template());
+    assert!(!unit.id().is_template());
+
+    // Instance names can start with a dot; this is an instance, not a template
+    unit.name = "backup@.hidden.service".into();
     assert!(!unit.is_template());
     assert!(!unit.id().is_template());
   }
