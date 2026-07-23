@@ -2,8 +2,8 @@
 source: src/components/home.rs
 expression: terminal.backend()
 ---
-"╭─Search (ctrl Press ? or F1 for help ─╮"
-"│         ╭─Unit filters─────╮         │"
+"╭─Search (╭─Unit filters─────╮or help ─╮"
+"│         │    templates    p│         │"
 "╰─────────│  ✓ services     v│─────────╯"
 "╭─Units (1│  ✓ timers       t│╭─Details╮"
 "│cron     │  ✓ other        o││Descript│"

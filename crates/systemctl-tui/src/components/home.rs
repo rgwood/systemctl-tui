@@ -57,6 +57,8 @@ pub enum LogOrder {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum UnitStatus {
+  // Unit form
+  Template,
   // Unit type
   Service,
   Timer,
@@ -76,7 +78,8 @@ pub enum UnitStatus {
 }
 
 impl UnitStatus {
-  const ALL: [UnitStatus; 12] = [
+  const ALL: [UnitStatus; 13] = [
+    UnitStatus::Template,
     UnitStatus::Service,
     UnitStatus::Timer,
     UnitStatus::Other,
@@ -95,10 +98,11 @@ impl UnitStatus {
 
   /// Hidden by default on first run: not-found units are dangling references
   /// that can't be started, and masked units are deliberately disabled.
-  const DEFAULT_HIDDEN: [UnitStatus; 2] = [UnitStatus::Masked, UnitStatus::NotFound];
+  const DEFAULT_HIDDEN: [UnitStatus; 3] = [UnitStatus::Template, UnitStatus::Masked, UnitStatus::NotFound];
 
   fn label(&self) -> &'static str {
     match self {
+      UnitStatus::Template => "templates",
       UnitStatus::Service => "services",
       UnitStatus::Timer => "timers",
       UnitStatus::Other => "other",
@@ -116,6 +120,7 @@ impl UnitStatus {
 
   fn shortcut_key(&self) -> KeyCode {
     match self {
+      UnitStatus::Template => KeyCode::Char('p'),
       UnitStatus::Service => KeyCode::Char('v'),
       UnitStatus::Timer => KeyCode::Char('t'),
       UnitStatus::Other => KeyCode::Char('o'),
@@ -178,6 +183,7 @@ impl UnitStatus {
 }
 
 const STATUS_CATEGORIES: &[(&str, &[UnitStatus])] = &[
+  ("Form", &[UnitStatus::Template]),
   ("Type", &[UnitStatus::Service, UnitStatus::Timer, UnitStatus::Other]),
   ("Activation", &[UnitStatus::Active, UnitStatus::Inactive, UnitStatus::Failed]),
   ("Enablement", &[UnitStatus::Enabled, UnitStatus::Disabled, UnitStatus::Static, UnitStatus::Masked]),
@@ -595,6 +601,13 @@ impl Home {
       .all_units
       .values()
       .filter(|u| {
+        // Templates are hidden while browsing by default, but searching should
+        // always be able to find one without making the user visit the filter first.
+        let passes_form = if u.is_template() {
+          !search_value.is_empty() || self.filtered_statuses.contains(&UnitStatus::Template)
+        } else {
+          true
+        };
         let passes_type = self.filtered_statuses.contains(&UnitStatus::unit_kind_bucket(u.kind()));
         let passes_activation = self.filtered_statuses.contains(&UnitStatus::activation_bucket(&u.activation_state));
 
@@ -610,7 +623,7 @@ impl Home {
 
         let passes_load = self.filtered_statuses.contains(&UnitStatus::load_bucket(&u.load_state));
 
-        passes_type && passes_activation && passes_enablement && passes_load
+        passes_form && passes_type && passes_activation && passes_enablement && passes_load
       })
       .collect();
     self.status_hidden_count = self.all_units.len() - status_filtered_units.len();
@@ -820,6 +833,18 @@ impl Component for Home {
 
         // lazy debounce to avoid spamming journalctl on slow connections/systems
         std::thread::sleep(Duration::from_millis(100));
+
+        // A template is a unit file used to create instances, not something systemd can
+        // inspect or run directly. Avoid passing it to systemctl/journalctl: systemctl
+        // rejects the name, while journalctl cannot tell us which instance the user meant.
+        if unit.is_template() {
+          let _ = tx.send(Action::SetLogs {
+            unit: unit.clone(),
+            logs: vec![LogEntry::plain(template_logs_message(&unit.name))],
+          });
+          let _ = tx.send(Action::Render);
+          continue;
+        }
 
         // get the unit file path + runtime info (one systemctl call for both)
         match systemd::get_unit_runtime_info(&unit) {
@@ -1384,8 +1409,11 @@ impl Component for Home {
               .then(|| self.menu_items.selected().map(|item| item.name.clone()))
               .flatten();
             let selected = self.filtered_units.selected()?;
+            let is_template = selected.unit.is_template();
             let is_timer = selected.unit.kind() == UnitKind::Timer;
-            let mut menu_items = if is_timer {
+            let mut menu_items = if is_template {
+              Vec::new()
+            } else if is_timer {
               let mut items = Vec::new();
               if selected.unit.is_active() {
                 items.push(MenuItem::new(
@@ -1434,7 +1462,7 @@ impl Component for Home {
               ]
             };
 
-            if is_timer {
+            if is_timer && !is_template {
               if let Some(target) = self.runtime_info.as_ref().and_then(|info| info.triggered_unit.as_ref()) {
                 let label = format!("Start {target} now");
                 menu_items.push(MenuItem::new(
@@ -1445,11 +1473,13 @@ impl Component for Home {
               }
             }
 
-            menu_items.push(MenuItem::new(
-              "Open logs in pager",
-              Action::OpenLogsInPager { logs: self.logs_for_pager() },
-              Some(KeyCode::Char('o')),
-            ));
+            if !is_template {
+              menu_items.push(MenuItem::new(
+                "Open logs in pager",
+                Action::OpenLogsInPager { logs: self.logs_for_pager() },
+                Some(KeyCode::Char('o')),
+              ));
+            }
 
             if let Some(Ok(file_path)) = &selected.unit.file_path {
               menu_items.push(MenuItem::new("Copy unit file path", Action::CopyUnitFilePath, Some(KeyCode::Char('c'))));
@@ -1756,9 +1786,13 @@ impl Component for Home {
       .map(|m| {
         let color = unit_color(&m.unit);
         let name = m.unit.short_name();
-        let kind_prefix = match m.unit.kind() {
-          UnitKind::Timer => "[T] ",
-          UnitKind::Service | UnitKind::Other => "",
+        let kind_prefix = if m.unit.is_template() {
+          "[@] "
+        } else {
+          match m.unit.kind() {
+            UnitKind::Timer => "[T] ",
+            UnitKind::Service | UnitKind::Other => "",
+          }
         };
 
         if m.match_indices.is_empty() {
@@ -1836,33 +1870,45 @@ impl Component for Home {
       rows.push(("Description", Line::from(m.unit.description.as_str())));
       explanation = crate::unit_descriptions::explain(&m.unit.name, m.unit.scope);
 
-      let active_color = match m.unit.activation_state.as_str() {
-        "active" => Color::Green,
-        "failed" => Color::Red,
-        _ => Color::Reset,
-      };
-      let mut active_spans = vec![Span::styled(
-        format!("{} ({})", m.unit.activation_state, m.unit.sub_state),
-        Style::default().fg(active_color),
-      )];
-      if let Some(info) = &self.runtime_info {
-        if m.unit.activation_state == "failed" {
-          if let Some(result) = info.result.as_deref().filter(|r| *r != "success") {
-            let status = info.exec_main_status.filter(|&s| s != 0).map(|s| format!(", status={s}")).unwrap_or_default();
-            active_spans.push(Span::styled(format!(" ({result}{status})"), Style::default().fg(Color::Red)));
-          }
-        }
-        let since = if m.unit.activation_state == "active" {
-          info.active_enter_timestamp.as_deref()
-        } else {
-          info.inactive_enter_timestamp.as_deref()
+      let mut active_spans = if m.unit.is_template() {
+        vec![Span::styled("template (not an instance)", dim)]
+      } else {
+        let active_color = match m.unit.activation_state.as_str() {
+          "active" => Color::Green,
+          "failed" => Color::Red,
+          _ => Color::Reset,
         };
-        if let Some((absolute, relative)) = since.and_then(|timestamp| format_systemd_timestamp(timestamp, is_remote)) {
-          let relative = relative.map(|r| format!(" ({r})")).unwrap_or_default();
-          active_spans.push(Span::styled(format!(" since {absolute}{relative}"), dim));
+        vec![Span::styled(
+          format!("{} ({})", m.unit.activation_state, m.unit.sub_state),
+          Style::default().fg(active_color),
+        )]
+      };
+      if !m.unit.is_template() {
+        if let Some(info) = &self.runtime_info {
+          if m.unit.activation_state == "failed" {
+            if let Some(result) = info.result.as_deref().filter(|r| *r != "success") {
+              let status =
+                info.exec_main_status.filter(|&s| s != 0).map(|s| format!(", status={s}")).unwrap_or_default();
+              active_spans.push(Span::styled(format!(" ({result}{status})"), Style::default().fg(Color::Red)));
+            }
+          }
+          let since = if m.unit.activation_state == "active" {
+            info.active_enter_timestamp.as_deref()
+          } else {
+            info.inactive_enter_timestamp.as_deref()
+          };
+          if let Some((absolute, relative)) = since.and_then(|timestamp| format_systemd_timestamp(timestamp, is_remote))
+          {
+            let relative = relative.map(|r| format!(" ({r})")).unwrap_or_default();
+            active_spans.push(Span::styled(format!(" since {absolute}{relative}"), dim));
+          }
         }
       }
       rows.push(("Active", Line::from(active_spans)));
+
+      if m.unit.is_template() {
+        rows.push(("Instance", Line::from(template_instance_example(&m.unit.name))));
+      }
 
       // Enablement, scope, and any load problem share a line
       let enablement_state = m.unit.enablement_state.as_deref().unwrap_or("");
@@ -2571,6 +2617,17 @@ fn format_cpu_nsec(nsec: u64) -> String {
   }
 }
 
+fn template_instance_example(template: &str) -> String {
+  template.replacen("@.", "@INSTANCE.", 1)
+}
+
+fn template_logs_message(template: &str) -> String {
+  format!(
+    "{template} is a unit template, not a running service. Logs belong to concrete instances such as {}.",
+    template_instance_example(template)
+  )
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -2636,6 +2693,29 @@ mod tests {
       &disable.action,
       Action::DisableService { unit, runtime: true } if unit == &timer_id
     ));
+  }
+
+  #[test]
+  fn template_actions_only_offer_unit_file_operations() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let mut template = test_unit("backup@.service");
+    template.file_path = Some(Ok("/usr/lib/systemd/system/backup@.service".into()));
+    home.filtered_units = StatefulList::with_items(vec![MatchedUnit { unit: template, match_indices: vec![] }]);
+    home.filtered_units.state.select(Some(0));
+
+    home.dispatch(Action::EnterMode(Mode::ActionMenu));
+
+    let names = home.menu_items.items.iter().map(|item| item.name.as_str()).collect_vec();
+    assert_eq!(names, ["Copy unit file path", "Edit unit file"]);
+  }
+
+  #[test]
+  fn template_message_explains_instance_names() {
+    assert_eq!(template_instance_example("backup@.service"), "backup@INSTANCE.service");
+    assert_eq!(
+      template_logs_message("backup@.service"),
+      "backup@.service is a unit template, not a running service. Logs belong to concrete instances such as backup@INSTANCE.service."
+    );
   }
 
   #[test]
@@ -2809,6 +2889,54 @@ mod tests {
     home.refresh_filtered_units();
 
     assert!(home.filtered_units.items.is_empty());
+  }
+
+  #[test]
+  fn templates_are_hidden_from_normal_browsing_but_instances_are_not() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let (journalctl_tx, _journalctl_rx) = std::sync::mpsc::channel();
+    home.journalctl_tx = Some(journalctl_tx);
+    for name in ["backup@.service", "backup.service", "getty@tty1.service"] {
+      let unit = test_unit(name);
+      home.all_units.insert(unit.id(), unit);
+    }
+
+    home.refresh_filtered_units();
+
+    let names = home.filtered_units.items.iter().map(|item| item.unit.name.as_str()).collect_vec();
+    assert_eq!(names, ["backup.service", "getty@tty1.service"]);
+  }
+
+  #[test]
+  fn search_finds_a_template_hidden_by_the_default_filter() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let (journalctl_tx, _journalctl_rx) = std::sync::mpsc::channel();
+    home.journalctl_tx = Some(journalctl_tx);
+    let template = test_unit("backup@.service");
+    home.all_units.insert(template.id(), template);
+    home.input = Input::default().with_value("backup@".to_string());
+
+    home.refresh_filtered_units();
+
+    assert_eq!(home.filtered_units.items.len(), 1);
+    assert_eq!(home.filtered_units.items[0].unit.name, "backup@.service");
+  }
+
+  #[test]
+  fn template_filter_adds_templates_to_normal_browsing() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let (journalctl_tx, _journalctl_rx) = std::sync::mpsc::channel();
+    home.journalctl_tx = Some(journalctl_tx);
+    for name in ["backup.service", "backup@.service"] {
+      let unit = test_unit(name);
+      home.all_units.insert(unit.id(), unit);
+    }
+    home.toggle_filtered_status(UnitStatus::Template);
+
+    home.refresh_filtered_units();
+
+    let names = home.filtered_units.items.iter().map(|item| item.unit.name.as_str()).collect_vec();
+    assert_eq!(names, ["backup.service", "backup@.service"]);
   }
 
   #[test]
