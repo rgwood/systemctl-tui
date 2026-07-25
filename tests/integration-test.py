@@ -445,6 +445,7 @@ def test_root_action_round_trip(binary: str, root_host: str) -> None:
     print("root action round-trip:")
     # make the test idempotent: earlier tests/runs may have left the unit running
     run(["ssh", root_host, "systemctl", "stop", "sctui-test.service"])
+    run(["ssh", root_host, "rm", "-f", "/run/sctui-reloaded"])
     start_app(binary, root_host, ["--scope", "global", "--limit-units", "sctui-test.service"])
     wait_for(lambda: "Description:" in capture())
     send_keys("Down")
@@ -457,6 +458,17 @@ def test_root_action_round_trip(binary: str, root_host: str) -> None:
 
     send_keys("Enter")
     check("actions menu opens again", wait_for(lambda: "Actions for" in capture()), capture())
+    check("reloadable unit offers reload", wait_for(lambda: "Reload" in capture()), capture())
+    send_keys("l")
+    check(
+        "unit reload runs ExecReload",
+        wait_for(lambda: run(["ssh", root_host, "test", "-f", "/run/sctui-reloaded"]).returncode == 0, timeout=20),
+        capture(),
+    )
+    check("unit stays active after reload", wait_for(lambda: "active (running)" in capture(), timeout=20), capture())
+
+    send_keys("Enter")
+    check("actions menu opens after reload", wait_for(lambda: "Actions for" in capture()), capture())
     send_keys("t")
     check("stop succeeds", wait_for(lambda: "inactive (dead)" in capture(), timeout=20), capture())
 
@@ -501,9 +513,42 @@ def test_root_kill_round_trip(binary: str, root_host: str) -> None:
 
         remote_pid = run(["ssh", root_host, "systemctl", "show", "--property=MainPID", "--value", "sctui-test.service"])
         check("MainPID cleared after kill", remote_pid.stdout.strip() == "0", remote_pid.stdout + remote_pid.stderr)
+
+        send_keys("Enter")
+        check("failed unit offers reset", wait_for(lambda: "Reset failed" in capture()), capture())
+        send_keys("f")
+        check("reset clears failed state", wait_for(lambda: "inactive (dead)" in capture(), timeout=20), capture())
+        remote_state = run(["ssh", root_host, "systemctl", "is-failed", "sctui-test.service"])
+        check("remote unit confirms reset state", remote_state.stdout.strip() == "inactive", remote_state.stdout + remote_state.stderr)
     finally:
         run(["ssh", root_host, "systemctl", "reset-failed", "sctui-test.service"])
         run(["ssh", root_host, "systemctl", "stop", "sctui-test.service"])
+
+
+def test_root_mask_round_trip(binary: str, root_host: str) -> None:
+    print("root mask round-trip:")
+    run(["ssh", root_host, "systemctl", "unmask", "sctui-mask-test.service"])
+    try:
+        start_app(binary, root_host, ["--scope", "global", "--limit-units", "sctui-mask-test.service"])
+        check("mask fixture is listed", wait_for(lambda: "sctui-mask-test" in capture()), capture())
+        send_keys("Down")
+        check("fixture starts static", wait_for(lambda: "Enablement: static" in capture()), capture())
+
+        send_keys("Enter")
+        check("static unit offers mask", wait_for(lambda: "Mask" in capture()), capture())
+        send_keys("m")
+        check("mask updates the UI", wait_for(lambda: "Enablement: masked" in capture(), timeout=20), capture())
+        masked_state = run(["ssh", root_host, "systemctl", "is-enabled", "sctui-mask-test.service"])
+        check("remote unit confirms masked state", masked_state.stdout.strip() == "masked", masked_state.stdout + masked_state.stderr)
+
+        send_keys("Enter")
+        check("masked unit remains visible and offers unmask", wait_for(lambda: "Unmask" in capture()), capture())
+        send_keys("u")
+        check("unmask restores static state", wait_for(lambda: "Enablement: static" in capture(), timeout=20), capture())
+        unmasked_state = run(["ssh", root_host, "systemctl", "is-enabled", "sctui-mask-test.service"])
+        check("remote unit confirms static state", unmasked_state.stdout.strip() == "static", unmasked_state.stdout + unmasked_state.stderr)
+    finally:
+        run(["ssh", root_host, "systemctl", "unmask", "sctui-mask-test.service"])
 
 
 def test_root_timer_action_round_trip(binary: str, root_host: str) -> None:
@@ -585,8 +630,8 @@ def test_user_scope_action_succeeds(binary: str, host: str) -> None:
     send_keys("Down")
     send_keys("Enter")
     wait_for(lambda: "Actions for" in capture())
-    send_keys("r")
-    check("restart succeeds as user", wait_for(lambda: "active (running)" in capture(), timeout=20), capture())
+    send_keys("s")
+    check("start succeeds as user", wait_for(lambda: "active (running)" in capture(), timeout=20), capture())
 
 
 def test_log_rendering(binary: str, host: str) -> None:
@@ -756,6 +801,7 @@ def main() -> int:
             run_test(test_user_bus_is_user_bus, args.binary, args.host)
             run_test(test_root_action_round_trip, args.binary, root_host)
             run_test(test_root_kill_round_trip, args.binary, root_host)
+            run_test(test_root_mask_round_trip, args.binary, root_host)
             run_test(test_root_timer_action_round_trip, args.binary, root_host)
             run_test(test_polkit_rejection, args.binary, args.host)
             run_test(test_user_scope_action_succeeds, args.binary, args.host)

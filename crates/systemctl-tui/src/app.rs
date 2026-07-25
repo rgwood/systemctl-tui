@@ -146,7 +146,7 @@ impl App {
 
                 let new_unit_file_contents = read_unit_file_contents();
                 if unit_file_contents != new_unit_file_contents {
-                  action_tx.send(Action::ReloadService(unit))?;
+                  action_tx.send(Action::DaemonReload(unit))?;
                 }
 
                 action_tx.send(Action::EnterMode(Mode::ServiceList))?;

@@ -96,9 +96,9 @@ impl UnitStatus {
 
   const NONE: [UnitStatus; 0] = [];
 
-  /// Hidden by default on first run: not-found units are dangling references
-  /// that can't be started, and masked units are deliberately disabled.
-  const DEFAULT_HIDDEN: [UnitStatus; 3] = [UnitStatus::Template, UnitStatus::Masked, UnitStatus::NotFound];
+  /// Hidden by default on first run: templates aren't concrete units and
+  /// not-found units are dangling references that can't be started.
+  const DEFAULT_HIDDEN: [UnitStatus; 2] = [UnitStatus::Template, UnitStatus::NotFound];
 
   fn label(&self) -> &'static str {
     match self {
@@ -693,10 +693,16 @@ impl Home {
     self.service_action(service, "Stop".into(), cancel_token, future, false);
   }
 
-  fn reload_service(&mut self, service: UnitId) {
+  fn reload_unit(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
-    let future = systemd::reload(service.scope, cancel_token.clone());
+    let future = systemd::reload_unit(service.clone(), cancel_token.clone());
     self.service_action(service, "Reload".into(), cancel_token, future, false);
+  }
+
+  fn daemon_reload(&mut self, service: UnitId) {
+    let cancel_token = CancellationToken::new();
+    let future = systemd::daemon_reload(service.scope, cancel_token.clone());
+    self.service_action(service, "Reload unit files".into(), cancel_token, future, false);
   }
 
   fn restart_service(&mut self, service: UnitId) {
@@ -715,6 +721,24 @@ impl Home {
     let cancel_token = CancellationToken::new();
     let future = systemd::disable_service(service.clone(), runtime, cancel_token.clone());
     self.service_action(service, "Disable".into(), cancel_token, future, true);
+  }
+
+  fn mask_unit(&mut self, unit: UnitId) {
+    let cancel_token = CancellationToken::new();
+    let future = systemd::mask_unit(unit.clone(), cancel_token.clone());
+    self.service_action(unit, "Mask".into(), cancel_token, future, true);
+  }
+
+  fn unmask_unit(&mut self, unit: UnitId, runtime: bool) {
+    let cancel_token = CancellationToken::new();
+    let future = systemd::unmask_unit(unit.clone(), runtime, cancel_token.clone());
+    self.service_action(unit, "Unmask".into(), cancel_token, future, true);
+  }
+
+  fn reset_failed_unit(&mut self, unit: UnitId) {
+    let cancel_token = CancellationToken::new();
+    let future = systemd::reset_failed_unit(unit.clone(), cancel_token.clone());
+    self.service_action(unit, "Reset failed state".into(), cancel_token, future, false);
   }
 
   fn is_status_filter_active(&self) -> bool {
@@ -1405,63 +1429,105 @@ impl Component for Home {
             let selected = self.filtered_units.selected()?;
             let is_template = selected.unit.is_template();
             let is_timer = selected.unit.kind() == UnitKind::Timer;
+            let unit = selected.unit.id();
+            let enablement = selected.unit.enablement_state.as_deref();
+            let is_masked = matches!(enablement, Some("masked" | "masked-runtime"));
             let mut menu_items = if is_template {
               Vec::new()
             } else if is_timer {
               let mut items = Vec::new();
               if selected.unit.is_active() {
-                items.push(MenuItem::new(
-                  "Stop timer",
-                  Action::StopService(selected.unit.id()),
-                  Some(KeyCode::Char('t')),
-                ));
-              } else {
-                items.push(MenuItem::new(
-                  "Start timer",
-                  Action::StartService(selected.unit.id()),
-                  Some(KeyCode::Char('s')),
-                ));
+                items.push(MenuItem::new("Stop timer", Action::StopService(unit.clone()), Some(KeyCode::Char('t'))));
+              } else if !is_masked {
+                items.push(MenuItem::new("Start timer", Action::StartService(unit.clone()), Some(KeyCode::Char('s'))));
               }
-
-              match selected.unit.enablement_state.as_deref() {
-                Some(enablement @ ("enabled" | "enabled-runtime")) => items.push(MenuItem::new(
-                  "Disable timer",
-                  Action::DisableService { unit: selected.unit.id(), runtime: enablement == "enabled-runtime" },
-                  Some(KeyCode::Char('d')),
-                )),
-                Some("disabled") => items.push(MenuItem::new(
-                  "Enable timer",
-                  Action::EnableService(selected.unit.id()),
-                  Some(KeyCode::Char('n')),
-                )),
-                _ => {},
+              if selected.unit.is_failed() {
+                items.push(MenuItem::new(
+                  "Reset failed",
+                  Action::ResetFailedUnit(unit.clone()),
+                  Some(KeyCode::Char('f')),
+                ));
               }
               items
             } else {
-              vec![
-                MenuItem::new("Start", Action::StartService(selected.unit.id()), Some(KeyCode::Char('s'))),
-                MenuItem::new("Stop", Action::StopService(selected.unit.id()), Some(KeyCode::Char('t'))),
-                MenuItem::new("Restart", Action::RestartService(selected.unit.id()), Some(KeyCode::Char('r'))),
-                MenuItem::new("Reload", Action::ReloadService(selected.unit.id()), Some(KeyCode::Char('l'))),
-                MenuItem::new("Enable", Action::EnableService(selected.unit.id()), Some(KeyCode::Char('n'))),
-                MenuItem::new(
-                  "Disable",
-                  Action::DisableService {
-                    unit: selected.unit.id(),
-                    runtime: selected.unit.enablement_state.as_deref() == Some("enabled-runtime"),
-                  },
-                  Some(KeyCode::Char('d')),
-                ),
-                MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('K'))),
-              ]
+              let mut items = Vec::new();
+              match selected.unit.activation_state.as_str() {
+                "active" | "reloading" => {
+                  items.push(MenuItem::new("Stop", Action::StopService(unit.clone()), Some(KeyCode::Char('t'))));
+                  if !is_masked {
+                    items.push(MenuItem::new(
+                      "Restart",
+                      Action::RestartService(unit.clone()),
+                      Some(KeyCode::Char('r')),
+                    ));
+                    if self.runtime_info.as_ref().is_some_and(|info| info.can_reload == Some(true)) {
+                      items.push(MenuItem::new("Reload", Action::ReloadUnit(unit.clone()), Some(KeyCode::Char('l'))));
+                    }
+                  }
+                  items.push(MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('K'))));
+                },
+                "activating" => {
+                  items.push(MenuItem::new("Stop", Action::StopService(unit.clone()), Some(KeyCode::Char('t'))));
+                  items.push(MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('K'))));
+                },
+                "failed" => {
+                  if !is_masked {
+                    items.push(MenuItem::new("Start", Action::StartService(unit.clone()), Some(KeyCode::Char('s'))));
+                  }
+                  items.push(MenuItem::new(
+                    "Reset failed",
+                    Action::ResetFailedUnit(unit.clone()),
+                    Some(KeyCode::Char('f')),
+                  ));
+                },
+                "deactivating" => {},
+                _ if !is_masked => {
+                  items.push(MenuItem::new("Start", Action::StartService(unit.clone()), Some(KeyCode::Char('s'))));
+                },
+                _ => {},
+              }
+              items
             };
+
+            match enablement {
+              Some("enabled") => menu_items.push(MenuItem::new(
+                if is_timer { "Disable timer" } else { "Disable" },
+                Action::DisableService { unit: unit.clone(), runtime: false },
+                Some(KeyCode::Char('d')),
+              )),
+              Some("enabled-runtime") => menu_items.push(MenuItem::new(
+                if is_timer { "Disable timer" } else { "Disable" },
+                Action::DisableService { unit: unit.clone(), runtime: true },
+                Some(KeyCode::Char('d')),
+              )),
+              Some("disabled") => menu_items.push(MenuItem::new(
+                if is_timer { "Enable timer" } else { "Enable" },
+                Action::EnableService(unit.clone()),
+                Some(KeyCode::Char('n')),
+              )),
+              Some("masked") => menu_items.push(MenuItem::new(
+                "Unmask",
+                Action::UnmaskUnit { unit: unit.clone(), runtime: false },
+                Some(KeyCode::Char('u')),
+              )),
+              Some("masked-runtime") => menu_items.push(MenuItem::new(
+                "Unmask",
+                Action::UnmaskUnit { unit: unit.clone(), runtime: true },
+                Some(KeyCode::Char('u')),
+              )),
+              _ => {},
+            }
+            if enablement.is_some_and(|state| !matches!(state, "masked" | "masked-runtime" | "generated" | "transient"))
+            {
+              menu_items.push(MenuItem::new("Mask", Action::MaskUnit(unit.clone()), Some(KeyCode::Char('m'))));
+            }
 
             if is_timer && !is_template {
               if let Some(target) = self.runtime_info.as_ref().and_then(|info| info.triggered_unit.as_ref()) {
                 let label = format!("Start {target} now");
                 menu_items.push(MenuItem::new(
                   &label,
-                  Action::StartService(UnitId { name: target.clone(), scope: selected.unit.scope }),
+                  Action::StartService(UnitId { name: target.clone(), scope: unit.scope }),
                   Some(KeyCode::Char('g')),
                 ));
               }
@@ -1563,20 +1629,19 @@ impl Component for Home {
         self.refresh_filtered_units(); // copy the updated unit file path to the filtered list
       },
       Action::SetUnitRuntimeInfo { unit, info } => {
-        let target_changed = self.runtime_info.as_ref().and_then(|current| current.triggered_unit.as_ref())
-          != info.triggered_unit.as_ref();
-        let rebuild_timer_menu = self.mode == Mode::ActionMenu
-          && target_changed
-          && self
-            .filtered_units
-            .selected()
-            .is_some_and(|selected| selected.unit.id() == unit && selected.unit.kind() == UnitKind::Timer);
+        let menu_relevant_info_changed = self
+          .runtime_info
+          .as_ref()
+          .is_none_or(|current| current.triggered_unit != info.triggered_unit || current.can_reload != info.can_reload);
+        let rebuild_action_menu = self.mode == Mode::ActionMenu
+          && menu_relevant_info_changed
+          && self.filtered_units.selected().is_some_and(|selected| selected.unit.id() == unit);
         if let Some(selected) = self.filtered_units.selected() {
           if selected.unit.id() == unit {
             self.runtime_info = Some(*info);
           }
         }
-        if rebuild_timer_menu {
+        if rebuild_action_menu {
           return Some(Action::EnterMode(Mode::ActionMenu));
         }
       },
@@ -1632,10 +1697,14 @@ impl Component for Home {
 
       Action::StartService(service_name) => self.start_service(service_name),
       Action::StopService(service_name) => self.stop_service(service_name),
-      Action::ReloadService(service_name) => self.reload_service(service_name),
+      Action::ReloadUnit(service_name) => self.reload_unit(service_name),
+      Action::DaemonReload(service_name) => self.daemon_reload(service_name),
       Action::RestartService(service_name) => self.restart_service(service_name),
       Action::EnableService(service_name) => self.enable_service(service_name),
       Action::DisableService { unit, runtime } => self.disable_service(unit, runtime),
+      Action::MaskUnit(unit) => self.mask_unit(unit),
+      Action::UnmaskUnit { unit, runtime } => self.unmask_unit(unit, runtime),
+      Action::ResetFailedUnit(unit) => self.reset_failed_unit(unit),
       Action::RefreshServices => {
         let tx = self.action_tx.clone().unwrap();
         let scope = self.scope;
@@ -1696,16 +1765,13 @@ impl Component for Home {
         return Some(Action::Render);
       },
       Action::SetUnitFiles(unit_files) => {
-        let selected_timer = (self.mode == Mode::ActionMenu)
+        let selected_action_unit = (self.mode == Mode::ActionMenu)
           .then(|| {
-            self.filtered_units.selected().and_then(|selected| {
-              (selected.unit.kind() == UnitKind::Timer)
-                .then(|| (selected.unit.id(), selected.unit.enablement_state.clone()))
-            })
+            self.filtered_units.selected().map(|selected| (selected.unit.id(), selected.unit.enablement_state.clone()))
           })
           .flatten();
         self.merge_unit_files(unit_files);
-        if let Some((unit, old_enablement)) = selected_timer {
+        if let Some((unit, old_enablement)) = selected_action_unit {
           let enablement_changed =
             self.all_units.get(&unit).map(|unit| &unit.enablement_state) != Some(&old_enablement);
           if enablement_changed {
@@ -1911,7 +1977,7 @@ impl Component for Home {
       let enablement_color = match enablement_state {
         "enabled" => Color::Green,
         "disabled" => Color::Yellow,
-        "masked" => Color::Red,
+        "masked" | "masked-runtime" => Color::Red,
         _ => Color::Reset,
       };
       let scope = match m.unit.scope {
@@ -2659,7 +2725,7 @@ mod tests {
     home.dispatch(Action::EnterMode(Mode::ActionMenu));
 
     let names = home.menu_items.items.iter().map(|item| item.name.as_str()).collect_vec();
-    assert_eq!(names, ["Stop timer", "Disable timer", "Start backup.service now", "Open logs in pager"]);
+    assert_eq!(names, ["Stop timer", "Disable timer", "Mask", "Start backup.service now", "Open logs in pager"]);
   }
 
   #[test]
@@ -2675,7 +2741,7 @@ mod tests {
     home.dispatch(Action::EnterMode(Mode::ActionMenu));
 
     let names = home.menu_items.items.iter().map(|item| item.name.as_str()).collect_vec();
-    assert_eq!(names, ["Start timer", "Enable timer", "Open logs in pager"]);
+    assert_eq!(names, ["Start timer", "Enable timer", "Mask", "Open logs in pager"]);
   }
 
   #[test]
@@ -2697,17 +2763,94 @@ mod tests {
   }
 
   #[test]
-  fn template_actions_only_offer_unit_file_operations() {
+  fn template_actions_offer_unit_file_operations_but_no_runtime_actions() {
     let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
     let mut template = test_unit("backup@.service");
     template.file_path = Some(Ok("/usr/lib/systemd/system/backup@.service".into()));
+    template.enablement_state = Some("static".into());
     home.filtered_units = StatefulList::with_items(vec![MatchedUnit { unit: template, match_indices: vec![] }]);
     home.filtered_units.state.select(Some(0));
 
     home.dispatch(Action::EnterMode(Mode::ActionMenu));
 
     let names = home.menu_items.items.iter().map(|item| item.name.as_str()).collect_vec();
-    assert_eq!(names, ["Copy unit file path", "Edit unit file"]);
+    assert_eq!(names, ["Mask", "Copy unit file path", "Edit unit file"]);
+  }
+
+  #[test]
+  fn active_service_actions_reflect_reload_support() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let mut service = test_unit("example.service");
+    service.enablement_state = Some("enabled".into());
+    home.filtered_units = StatefulList::with_items(vec![MatchedUnit { unit: service.clone(), match_indices: vec![] }]);
+    home.filtered_units.state.select(Some(0));
+
+    home.runtime_info = Some(UnitRuntimeInfo { can_reload: Some(false), ..Default::default() });
+    home.dispatch(Action::EnterMode(Mode::ActionMenu));
+    let names = home.menu_items.items.iter().map(|item| item.name.as_str()).collect_vec();
+    assert_eq!(names, ["Stop", "Restart", "Kill", "Disable", "Mask", "Open logs in pager"]);
+
+    home.runtime_info = Some(UnitRuntimeInfo { can_reload: Some(true), ..Default::default() });
+    home.dispatch(Action::EnterMode(Mode::ActionMenu));
+    let names = home.menu_items.items.iter().map(|item| item.name.as_str()).collect_vec();
+    assert_eq!(names, ["Stop", "Restart", "Reload", "Kill", "Disable", "Mask", "Open logs in pager"]);
+    assert!(matches!(
+      &home.menu_items.items[2].action,
+      Action::ReloadUnit(unit) if unit == &service.id()
+    ));
+  }
+
+  #[test]
+  fn inactive_and_failed_service_actions_are_state_aware() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let mut service = test_unit("example.service");
+    service.activation_state = "inactive".into();
+    service.sub_state = "dead".into();
+    service.enablement_state = Some("disabled".into());
+    home.filtered_units = StatefulList::with_items(vec![MatchedUnit { unit: service, match_indices: vec![] }]);
+    home.filtered_units.state.select(Some(0));
+
+    home.dispatch(Action::EnterMode(Mode::ActionMenu));
+    let names = home.menu_items.items.iter().map(|item| item.name.as_str()).collect_vec();
+    assert_eq!(names, ["Start", "Enable", "Mask", "Open logs in pager"]);
+
+    home.filtered_units.items[0].unit.activation_state = "failed".into();
+    home.filtered_units.items[0].unit.sub_state = "failed".into();
+    home.dispatch(Action::EnterMode(Mode::ActionMenu));
+    let names = home.menu_items.items.iter().map(|item| item.name.as_str()).collect_vec();
+    assert_eq!(names, ["Start", "Reset failed", "Enable", "Mask", "Open logs in pager"]);
+  }
+
+  #[test]
+  fn masked_units_are_visible_and_only_offer_unmask_as_a_unit_file_action() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let (journalctl_tx, _journalctl_rx) = std::sync::mpsc::channel();
+    home.journalctl_tx = Some(journalctl_tx);
+    let mut service = test_unit("masked-example.service");
+    service.activation_state = "inactive".into();
+    service.sub_state = "dead".into();
+    service.enablement_state = Some("masked".into());
+    let service_id = service.id();
+    home.set_units(vec![service]);
+    home.filtered_units.state.select(Some(0));
+
+    assert_eq!(home.filtered_units.items.len(), 1);
+    assert_eq!(home.filtered_units.items[0].unit.name, "masked-example.service");
+
+    home.dispatch(Action::EnterMode(Mode::ActionMenu));
+    let names = home.menu_items.items.iter().map(|item| item.name.as_str()).collect_vec();
+    assert_eq!(names, ["Unmask", "Open logs in pager"]);
+    assert!(matches!(
+      &home.menu_items.items[0].action,
+      Action::UnmaskUnit { unit, runtime: false } if unit == &service_id
+    ));
+
+    home.filtered_units.items[0].unit.enablement_state = Some("masked-runtime".into());
+    home.dispatch(Action::EnterMode(Mode::ActionMenu));
+    assert!(matches!(
+      &home.menu_items.items[0].action,
+      Action::UnmaskUnit { unit, runtime: true } if unit == &service_id
+    ));
   }
 
   #[test]

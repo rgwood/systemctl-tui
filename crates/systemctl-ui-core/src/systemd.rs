@@ -326,6 +326,7 @@ pub struct UnitRuntimeInfo {
   pub inactive_enter_timestamp: Option<String>,
   pub result: Option<String>,
   pub exec_main_status: Option<i32>,
+  pub can_reload: Option<bool>,
   /// The next trigger as an absolute wall-clock timestamp, calculated by
   /// `systemctl list-timers`. `NextElapseUSecMonotonic` is deliberately not
   /// used here: it is an absolute CLOCK_MONOTONIC value, not a countdown.
@@ -434,6 +435,13 @@ fn parse_unit_runtime_info(output: &str) -> UnitRuntimeInfo {
       "InactiveEnterTimestamp" => info.inactive_enter_timestamp = non_empty(value),
       "Result" => info.result = non_empty(value),
       "ExecMainStatus" => info.exec_main_status = value.parse().ok(),
+      "CanReload" => {
+        info.can_reload = match value {
+          "yes" => Some(true),
+          "no" => Some(false),
+          _ => None,
+        }
+      },
       "LastTriggerUSec" => info.last_trigger = non_empty(value),
       "Unit" => info.triggered_unit = non_empty(value),
       "TimersCalendar" | "TimersMonotonic" => {
@@ -555,7 +563,7 @@ fn get_timer_next_elapse(service: &UnitId) -> Result<Option<String>> {
 /// across suspend.
 pub fn get_unit_runtime_info(service: &UnitId) -> Result<UnitRuntimeInfo> {
   const PROPERTIES: &str = "FragmentPath,SourcePath,DropInPaths,Transient,UnitFilePreset,MainPID,MemoryCurrent,TasksCurrent,NRestarts,CPUUsageNSec,\
-                            ActiveEnterTimestamp,InactiveEnterTimestamp,Result,ExecMainStatus,LastTriggerUSec,Unit,\
+                            ActiveEnterTimestamp,InactiveEnterTimestamp,Result,ExecMainStatus,CanReload,LastTriggerUSec,Unit,\
                             TimersCalendar,TimersMonotonic,Persistent,\
                             RandomizedDelayUSec,AccuracyUSec";
   let mut args = vec!["--quiet", "show", "-p", PROPERTIES];
@@ -620,8 +628,26 @@ pub async fn stop_service(service: UnitId, cancel_token: CancellationToken) -> R
   }
 }
 
-pub async fn reload(scope: UnitScope, cancel_token: CancellationToken) -> Result<()> {
-  async fn reload_(scope: UnitScope) -> Result<()> {
+pub async fn reload_unit(unit: UnitId, cancel_token: CancellationToken) -> Result<()> {
+  async fn reload(unit: UnitId) -> Result<()> {
+    let connection = get_connection(unit.scope).await?;
+    let manager_proxy = ManagerProxy::new(&connection).await?;
+    manager_proxy.reload_unit(unit.name, "replace".into()).await?;
+    Ok(())
+  }
+
+  tokio::select! {
+    _ = cancel_token.cancelled() => {
+        anyhow::bail!("cancelled");
+    }
+    result = reload(unit) => {
+        result
+    }
+  }
+}
+
+pub async fn daemon_reload(scope: UnitScope, cancel_token: CancellationToken) -> Result<()> {
+  async fn reload(scope: UnitScope) -> Result<()> {
     let connection = get_connection(scope).await?;
     let manager_proxy: ManagerProxy<'_> = ManagerProxy::new(&connection).await?;
     let error_message = match scope {
@@ -637,7 +663,7 @@ pub async fn reload(scope: UnitScope, cancel_token: CancellationToken) -> Result
     _ = cancel_token.cancelled() => {
         anyhow::bail!("cancelled");
     }
-    result = reload_(scope) => {
+    result = reload(scope) => {
         result
     }
   }
@@ -747,6 +773,70 @@ pub async fn disable_service(service: UnitId, runtime: bool, cancel_token: Cance
   }
 }
 
+pub async fn mask_unit(unit: UnitId, cancel_token: CancellationToken) -> Result<()> {
+  async fn mask(unit: UnitId) -> Result<()> {
+    let connection = get_connection(unit.scope).await?;
+    let manager_proxy = ManagerProxy::new(&connection).await?;
+    let changes = manager_proxy.mask_unit_files(vec![unit.name], false, false).await?;
+
+    for (change_type, name, destination) in changes {
+      info!("{}: {} -> {}", change_type, name, destination);
+    }
+    manager_proxy.reload().await?;
+    Ok(())
+  }
+
+  tokio::select! {
+    _ = cancel_token.cancelled() => {
+      anyhow::bail!("cancelled");
+    }
+    result = mask(unit) => {
+      result
+    }
+  }
+}
+
+pub async fn unmask_unit(unit: UnitId, runtime: bool, cancel_token: CancellationToken) -> Result<()> {
+  async fn unmask(unit: UnitId, runtime: bool) -> Result<()> {
+    let connection = get_connection(unit.scope).await?;
+    let manager_proxy = ManagerProxy::new(&connection).await?;
+    let changes = manager_proxy.unmask_unit_files(vec![unit.name], runtime).await?;
+
+    for (change_type, name, destination) in changes {
+      info!("{}: {} -> {}", change_type, name, destination);
+    }
+    manager_proxy.reload().await?;
+    Ok(())
+  }
+
+  tokio::select! {
+    _ = cancel_token.cancelled() => {
+      anyhow::bail!("cancelled");
+    }
+    result = unmask(unit, runtime) => {
+      result
+    }
+  }
+}
+
+pub async fn reset_failed_unit(unit: UnitId, cancel_token: CancellationToken) -> Result<()> {
+  async fn reset_failed(unit: UnitId) -> Result<()> {
+    let connection = get_connection(unit.scope).await?;
+    let manager_proxy = ManagerProxy::new(&connection).await?;
+    manager_proxy.reset_failed_unit(unit.name).await?;
+    Ok(())
+  }
+
+  tokio::select! {
+    _ = cancel_token.cancelled() => {
+      anyhow::bail!("cancelled");
+    }
+    result = reset_failed(unit) => {
+      result
+    }
+  }
+}
+
 pub async fn kill_service(service: UnitId, signal: String, cancel_token: CancellationToken) -> Result<()> {
   async fn kill(service: UnitId, signal: String) -> Result<()> {
     let signal_num: nix::sys::signal::Signal =
@@ -792,6 +882,10 @@ pub trait Manager {
   #[zbus(name = "StopUnit", allow_interactive_auth)]
   fn stop_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
 
+  /// [📖](https://www.freedesktop.org/software/systemd/man/org.freedesktop.systemd1.html#ReloadUnit())
+  #[zbus(name = "ReloadUnit", allow_interactive_auth)]
+  fn reload_unit(&self, name: String, mode: String) -> zbus::Result<zvariant::OwnedObjectPath>;
+
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#KillUnit()) Call interface method `KillUnit`.
   #[zbus(name = "KillUnit", allow_interactive_auth)]
   fn kill_unit(&self, name: String, whom: String, signal: i32) -> zbus::Result<()>;
@@ -812,6 +906,23 @@ pub trait Manager {
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#DisableUnitFiles()) Call interface method `DisableUnitFiles`.
   #[zbus(name = "DisableUnitFiles", allow_interactive_auth)]
   fn disable_unit_files(&self, files: Vec<String>, runtime: bool) -> zbus::Result<Vec<(String, String, String)>>;
+
+  /// [📖](https://www.freedesktop.org/software/systemd/man/org.freedesktop.systemd1.html#MaskUnitFiles())
+  #[zbus(name = "MaskUnitFiles", allow_interactive_auth)]
+  fn mask_unit_files(
+    &self,
+    files: Vec<String>,
+    runtime: bool,
+    force: bool,
+  ) -> zbus::Result<Vec<(String, String, String)>>;
+
+  /// [📖](https://www.freedesktop.org/software/systemd/man/org.freedesktop.systemd1.html#UnmaskUnitFiles())
+  #[zbus(name = "UnmaskUnitFiles", allow_interactive_auth)]
+  fn unmask_unit_files(&self, files: Vec<String>, runtime: bool) -> zbus::Result<Vec<(String, String, String)>>;
+
+  /// [📖](https://www.freedesktop.org/software/systemd/man/org.freedesktop.systemd1.html#ResetFailedUnit())
+  #[zbus(name = "ResetFailedUnit", allow_interactive_auth)]
+  fn reset_failed_unit(&self, name: String) -> zbus::Result<()>;
 
   /// [📖](https://www.freedesktop.org/software/systemd/man/systemd.directives.html#ListUnits()) Call interface method `ListUnits`.
   #[zbus(name = "ListUnits")]
@@ -1148,6 +1259,7 @@ mod tests {
   #[test]
   fn parses_captured_timer_runtime_output() {
     let output = "FragmentPath=/usr/lib/systemd/system/example.timer\n\
+CanReload=yes\n\
 LastTriggerUSec=Wed 2026-07-15 12:00:00 PDT\n\
 Unit=example.service\n\
 TimersCalendar={ OnCalendar=daily ; next_elapse=Thu 2026-07-16 00:00:00 PDT }\n\
@@ -1158,8 +1270,16 @@ Persistent=yes\n";
     let info = parse_unit_runtime_info(output);
 
     assert_eq!(info.triggered_unit.as_deref(), Some("example.service"));
+    assert_eq!(info.can_reload, Some(true));
     assert_eq!(info.timer_schedules, ["OnCalendar=daily", "OnUnitActiveSec=3h", "OnStartupSec=1h"]);
     assert_eq!(info.persistent, Some(true));
+  }
+
+  #[test]
+  fn parses_unit_reload_support() {
+    assert_eq!(parse_unit_runtime_info("CanReload=yes\n").can_reload, Some(true));
+    assert_eq!(parse_unit_runtime_info("CanReload=no\n").can_reload, Some(false));
+    assert_eq!(parse_unit_runtime_info("CanReload=\n").can_reload, None);
   }
 
   #[test]

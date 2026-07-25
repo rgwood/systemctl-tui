@@ -1,0 +1,7 @@
+[Unit]
+Description=systemctl-tui mask integration test unit
+
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+RemainAfterExit=yes

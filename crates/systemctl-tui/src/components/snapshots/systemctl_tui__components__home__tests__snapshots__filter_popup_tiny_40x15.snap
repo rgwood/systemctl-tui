@@ -13,7 +13,7 @@ expression: terminal.backend()
 "│[T] backu│  ✓ enabled      e│╰────────╯"
 "│ssh      │  ✓ disabled     d│╭─Logs — ╮"
 "│         │  ✓ static       s││        │"
-"│         │    masked       m││        │"
+"│         │  ✓ masked       m││        │"
 "│         │  ✓ loaded       l││        │"
 "╰─────────│    not-found    u│╰────────╯"
 "Toggle: <s╰──────────────────╯e: nv0.7.0"
