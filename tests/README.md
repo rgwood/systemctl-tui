@@ -4,7 +4,7 @@ systemctl-tui is a full-screen terminal app, so its integration tests drive the 
 
 ## integration-test.py
 
-The main test suite. Launches the app in a tmux session, sends keystrokes, and checks the captured screen: startup, navigation, search, the actions menu, log rendering, resize handling, a keystroke-drop regression test, and clean exit.
+The main test suite. Launches the app in a tmux session, sends keystrokes, and checks the captured screen: startup, navigation, search, unit commands, log rendering, resize handling, a keystroke-drop regression test, and clean exit.
 
 ```
 ./tests/integration-test.py                        # against local systemd

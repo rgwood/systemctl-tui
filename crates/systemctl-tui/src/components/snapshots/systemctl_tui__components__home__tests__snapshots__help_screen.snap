@@ -1,5 +1,5 @@
 ---
-source: src/components/home.rs
+source: crates/systemctl-tui/src/components/home.rs
 expression: terminal.backend()
 ---
 "╭─Search (ctrl+f or /)──────────────────────────────────────────────────────────────────────── Press ? or F1 for help ─╮"
@@ -17,11 +17,12 @@ expression: terminal.backend()
 "│                            ││    │Shortcuts                                       │                                  │"
 "│                            ││    │                                                │                                  │"
 "│                            ││    │ctrl+C or ctrl+Q to quit                        │                                  │"
+"│                            ││    │ctrl+P opens all commands                       │                                  │"
 "│                            ││    │ctrl+L toggles the logger pane                  │                                  │"
 "│                            ││    │ctrl+R reverses the log order                   │                                  │"
 "│                            ││    │PageUp / PageDown scroll the logs               │                                  │"
 "│                            ││    │Home / End scroll to top/bottom                 │                                  │"
-"│                            ││    │Enter or Space open the action menu             │                                  │"
+"│                            ││    │Enter or Space open unit commands               │                                  │"
 "│                            ││    │f / F2 filter units                             │                                  │"
 "│                            ││    │? / F1 open this help pane                      │                                  │"
 "│                            ││    │mouse: drag to select+copy logs, wheel to scroll│                                  │"
@@ -32,7 +33,6 @@ expression: terminal.backend()
 "│                            ││    │g / G jump to first/last unit                   │                                  │"
 "│                            ││    │ctrl+U / ctrl+D scroll the logs                 │                                  │"
 "│                            ││    ╰────────────────────────────────────────────────╯                                  │"
-"│                            ││                                                                                        │"
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"

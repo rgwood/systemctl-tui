@@ -1,0 +1,19 @@
+---
+source: crates/systemctl-tui/src/components/home.rs
+expression: terminal.backend()
+---
+"╭─All commands─────────────────────────╮"
+"│╭ Search commands ───────────────────╮│"
+"││                                    ││"
+"│╰────────────────────────────────────╯│"
+"│  Stop                               t│"
+"│  Restart                            r│"
+"│  Kill                               K│"
+"│  Disable                            d│"
+"│  Mask                               m│"
+"│  Open logs in pager                 o│"
+"│  Copy unit file path                c│"
+"│  Edit unit file                     e│"
+"│  Search units             Ctrl+F or /│"
+"│  Filter units                      F2│"
+"╰──────────────────────────────────────╯"

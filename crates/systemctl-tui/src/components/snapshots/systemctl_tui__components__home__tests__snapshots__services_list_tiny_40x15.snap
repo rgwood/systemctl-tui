@@ -1,5 +1,5 @@
 ---
-source: src/components/home.rs
+source: crates/systemctl-tui/src/components/home.rs
 expression: terminal.backend()
 ---
 "╭─Search (ctrl Press ? or F1 for help ─╮"
@@ -16,4 +16,4 @@ expression: terminal.backend()
 "│                            ││        │"
 "│                            ││        │"
 "╰────────────────────────────╯╰────────╯"
-"Actions: enter | Filter: F2 | Naviv0.7.0"
+"Unit commands: enter | All commandv0.7.0"

@@ -21,14 +21,13 @@ pub struct App {
   pub home: Arc<Mutex<Home>>,
   pub limit_units: Vec<String>,
   pub should_quit: bool,
-  pub should_suspend: bool,
 }
 
 impl App {
   pub fn new(scope: Scope, limit_units: Vec<String>, log_order: LogOrder) -> Result<Self> {
     let home = Home::new(scope, &limit_units, log_order);
     let home = Arc::new(Mutex::new(home));
-    Ok(Self { scope, home, limit_units, should_quit: false, should_suspend: false })
+    Ok(Self { scope, home, limit_units, should_quit: false })
   }
 
   pub async fn run(&mut self) -> Result<()> {
@@ -76,7 +75,7 @@ impl App {
     // Fetch unit files (includes enablement state and disabled units not returned by ListUnits)
     action_tx.send(Action::RefreshUnitFiles)?;
 
-    let mut terminal = TerminalHandler::new(self.home.clone());
+    let terminal = TerminalHandler::new(self.home.clone());
     let mut event = EventHandler::new(self.home.clone(), action_tx.clone());
 
     terminal.render().await;
@@ -95,8 +94,6 @@ impl App {
           Action::DebouncedRender => debounce_tx.send(Action::Render).unwrap(),
           Action::Noop => {},
           Action::Quit => self.should_quit = true,
-          Action::Suspend => self.should_suspend = true,
-          Action::Resume => self.should_suspend = false,
           Action::Resize(_, _) => terminal.render().await,
           // This would normally be in home.rs, but it needs to do some terminal and event handling stuff that's easier here
           Action::EditUnitFile { unit, path } => {
@@ -177,16 +174,7 @@ impl App {
           },
         }
       }
-      if self.should_suspend {
-        terminal.suspend()?;
-        event.stop();
-        terminal.task.await?;
-        event.task.await?;
-        terminal = TerminalHandler::new(self.home.clone());
-        event = EventHandler::new(self.home.clone(), action_tx.clone());
-        action_tx.send(Action::Resume)?;
-        action_tx.send(Action::Render)?;
-      } else if self.should_quit {
+      if self.should_quit {
         terminal.stop()?;
         event.stop();
         terminal.task.await?;

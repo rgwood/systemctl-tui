@@ -46,6 +46,7 @@ pub enum Mode {
   SignalMenu,
   StatusFilter,
   UnitExplanation,
+  CommandPalette,
 }
 
 #[derive(Debug, Default, Copy, Clone, Eq, PartialEq)]
@@ -259,6 +260,9 @@ pub struct Home {
   pub filter_return_mode: Mode,
   pub input: Input,
   pub menu_items: StatefulList<MenuItem>,
+  pub command_input: Input,
+  pub command_items: StatefulList<CommandItem>,
+  pub command_palette_return_mode: Mode,
   pub cancel_token: Option<CancellationToken>,
   pub spinner_tick: u8,
   pub error_message: String,
@@ -299,6 +303,10 @@ pub struct Home {
   pub menu_item_rects: Vec<(Rect, usize)>,
   /// Area of the action/signal menu popup, as of the most recent render.
   pub menu_popup_rect: Rect,
+  /// Screen rects of each command in the command palette, paired with its index.
+  pub command_item_rects: Vec<(Rect, usize)>,
+  /// Area of the command palette popup, as of the most recent render.
+  pub command_popup_rect: Rect,
   /// Screen rect of the clickable description in the details pane, as of the most recent render.
   /// `Some` only when the selected unit has a baked-in explanation.
   pub explanation_button_rect: Option<Rect>,
@@ -308,6 +316,28 @@ pub struct MenuItem {
   pub name: String,
   pub action: Action,
   pub key: Option<KeyCode>,
+}
+
+pub struct CommandItem {
+  pub name: String,
+  pub category: String,
+  pub shortcut: String,
+  pub actions: Vec<Action>,
+}
+
+impl CommandItem {
+  fn new(
+    name: impl Into<String>,
+    category: impl Into<String>,
+    shortcut: impl Into<String>,
+    actions: Vec<Action>,
+  ) -> Self {
+    Self { name: name.into(), category: category.into(), shortcut: shortcut.into(), actions }
+  }
+
+  fn search_text(&self) -> String {
+    format!("{} {} {}", self.name, self.category, self.shortcut)
+  }
 }
 
 impl MenuItem {
@@ -362,6 +392,10 @@ impl<T> StatefulList<T> {
   }
 
   fn next(&mut self) {
+    if self.items.is_empty() {
+      self.state.select(None);
+      return;
+    }
     let i = match self.state.selected() {
       Some(i) => {
         if i >= self.items.len().saturating_sub(1) {
@@ -376,6 +410,10 @@ impl<T> StatefulList<T> {
   }
 
   fn previous(&mut self) {
+    if self.items.is_empty() {
+      self.state.select(None);
+      return;
+    }
     let i = match self.state.selected() {
       Some(i) => {
         if i == 0 {
@@ -419,6 +457,197 @@ impl Home {
       LogOrder::NewestFirst => self.logs.iter().rev().map(LogEntry::to_plain_string).collect(),
       LogOrder::OldestFirst => self.logs.iter().map(LogEntry::to_plain_string).collect(),
     }
+  }
+
+  fn unit_menu_items(&self) -> Vec<MenuItem> {
+    let Some(selected) = self.filtered_units.selected() else {
+      return Vec::new();
+    };
+    let is_template = selected.unit.is_template();
+    let is_timer = selected.unit.kind() == UnitKind::Timer;
+    let unit = selected.unit.id();
+    let enablement = selected.unit.enablement_state.as_deref();
+    let is_masked = matches!(enablement, Some("masked" | "masked-runtime"));
+    let mut menu_items = if is_template {
+      Vec::new()
+    } else if is_timer {
+      let mut items = Vec::new();
+      if selected.unit.is_active() {
+        items.push(MenuItem::new("Stop timer", Action::StopService(unit.clone()), Some(KeyCode::Char('t'))));
+      } else if !is_masked {
+        items.push(MenuItem::new("Start timer", Action::StartService(unit.clone()), Some(KeyCode::Char('s'))));
+      }
+      if selected.unit.is_failed() {
+        items.push(MenuItem::new("Reset failed", Action::ResetFailedUnit(unit.clone()), Some(KeyCode::Char('f'))));
+      }
+      items
+    } else {
+      let mut items = Vec::new();
+      match selected.unit.activation_state.as_str() {
+        "active" | "reloading" => {
+          items.push(MenuItem::new("Stop", Action::StopService(unit.clone()), Some(KeyCode::Char('t'))));
+          if !is_masked {
+            items.push(MenuItem::new("Restart", Action::RestartService(unit.clone()), Some(KeyCode::Char('r'))));
+            if self.runtime_info.as_ref().is_some_and(|info| info.can_reload == Some(true)) {
+              items.push(MenuItem::new("Reload", Action::ReloadUnit(unit.clone()), Some(KeyCode::Char('l'))));
+            }
+          }
+          items.push(MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('K'))));
+        },
+        "activating" => {
+          items.push(MenuItem::new("Stop", Action::StopService(unit.clone()), Some(KeyCode::Char('t'))));
+          items.push(MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('K'))));
+        },
+        "failed" => {
+          if !is_masked {
+            items.push(MenuItem::new("Start", Action::StartService(unit.clone()), Some(KeyCode::Char('s'))));
+          }
+          items.push(MenuItem::new("Reset failed", Action::ResetFailedUnit(unit.clone()), Some(KeyCode::Char('f'))));
+        },
+        "deactivating" => {},
+        _ if !is_masked => {
+          items.push(MenuItem::new("Start", Action::StartService(unit.clone()), Some(KeyCode::Char('s'))));
+        },
+        _ => {},
+      }
+      items
+    };
+
+    match enablement {
+      Some("enabled") => menu_items.push(MenuItem::new(
+        if is_timer { "Disable timer" } else { "Disable" },
+        Action::DisableService { unit: unit.clone(), runtime: false },
+        Some(KeyCode::Char('d')),
+      )),
+      Some("enabled-runtime") => menu_items.push(MenuItem::new(
+        if is_timer { "Disable timer" } else { "Disable" },
+        Action::DisableService { unit: unit.clone(), runtime: true },
+        Some(KeyCode::Char('d')),
+      )),
+      Some("disabled") => menu_items.push(MenuItem::new(
+        if is_timer { "Enable timer" } else { "Enable" },
+        Action::EnableService(unit.clone()),
+        Some(KeyCode::Char('n')),
+      )),
+      Some("masked") => menu_items.push(MenuItem::new(
+        "Unmask",
+        Action::UnmaskUnit { unit: unit.clone(), runtime: false },
+        Some(KeyCode::Char('u')),
+      )),
+      Some("masked-runtime") => menu_items.push(MenuItem::new(
+        "Unmask",
+        Action::UnmaskUnit { unit: unit.clone(), runtime: true },
+        Some(KeyCode::Char('u')),
+      )),
+      _ => {},
+    }
+    if enablement.is_some_and(|state| !matches!(state, "masked" | "masked-runtime" | "generated" | "transient")) {
+      menu_items.push(MenuItem::new("Mask", Action::MaskUnit(unit.clone()), Some(KeyCode::Char('m'))));
+    }
+
+    if is_timer && !is_template {
+      if let Some(target) = self.runtime_info.as_ref().and_then(|info| info.triggered_unit.as_ref()) {
+        let label = format!("Start {target} now");
+        menu_items.push(MenuItem::new(
+          &label,
+          Action::StartService(UnitId { name: target.clone(), scope: unit.scope }),
+          Some(KeyCode::Char('g')),
+        ));
+      }
+    }
+
+    if !is_template {
+      menu_items.push(MenuItem::new(
+        "Open logs in pager",
+        Action::OpenLogsInPager { logs: self.logs_for_pager() },
+        Some(KeyCode::Char('o')),
+      ));
+    }
+
+    if let Some(Ok(file_path)) = &selected.unit.file_path {
+      menu_items.push(MenuItem::new("Copy unit file path", Action::CopyUnitFilePath, Some(KeyCode::Char('c'))));
+      // Remote unit files can't be opened in a local editor, so we show them read-only instead
+      let label = if crate::ssh::remote_host().is_some() { "View unit file" } else { "Edit unit file" };
+      menu_items.push(MenuItem::new(
+        label,
+        Action::EditUnitFile { unit: selected.unit.id(), path: file_path.clone() },
+        Some(KeyCode::Char('e')),
+      ));
+    }
+
+    menu_items
+  }
+
+  fn available_commands(&self) -> Vec<CommandItem> {
+    let mut commands = Vec::new();
+
+    if let Some(selected) = self.filtered_units.selected() {
+      let category = format!("Selected unit · {}", selected.unit.name);
+      commands.extend(self.unit_menu_items().into_iter().map(|item| {
+        let shortcut = item.key_string();
+        CommandItem::new(item.name, category.clone(), shortcut, vec![item.action])
+      }));
+    }
+
+    commands.extend([
+      CommandItem::new("Search units", "Units", "Ctrl+F or /", vec![Action::EnterMode(Mode::Search)]),
+      CommandItem::new("Filter units", "Units", "F2", vec![Action::EnterMode(Mode::StatusFilter)]),
+      CommandItem::new("Refresh units", "Units", "", vec![Action::RefreshServices, Action::RefreshUnitFiles]),
+      CommandItem::new("Reverse log order", "Logs", "Ctrl+R", vec![Action::ToggleLogOrder, Action::Render]),
+    ]);
+
+    if let Some(unit) = self.selected_service() {
+      let manager = match unit.scope {
+        UnitScope::Global => "system manager",
+        UnitScope::User => "user manager",
+      };
+      commands.push(CommandItem::new(
+        format!("Reload {manager} (daemon-reload)"),
+        "Systemd",
+        "",
+        vec![Action::DaemonReload(unit)],
+      ));
+    }
+
+    commands.extend([
+      CommandItem::new("Toggle debug logger", "Application", "Ctrl+L", vec![Action::ToggleShowLogger]),
+      CommandItem::new("Show help", "Application", "? / F1", vec![Action::ToggleHelp, Action::Render]),
+      CommandItem::new("Quit", "Application", "q / Ctrl+Q", vec![Action::Quit]),
+    ]);
+    commands
+  }
+
+  fn refresh_command_palette(&mut self) {
+    let query = self.command_input.value();
+    let previously_selected = self.command_items.selected().map(|item| item.name.clone());
+    let mut commands = self.available_commands();
+
+    if !query.is_empty() {
+      let mut matches = commands
+        .into_iter()
+        .filter_map(|command| {
+          self.fuzzy_matcher.fuzzy_match(&command.search_text(), query).map(|score| (score, command))
+        })
+        .collect_vec();
+      matches.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+      commands = matches.into_iter().map(|(_, command)| command).collect();
+    }
+
+    let selected_index =
+      previously_selected.and_then(|name| commands.iter().position(|command| command.name == name)).unwrap_or(0);
+    self.command_items = StatefulList::with_items(commands);
+    if !self.command_items.items.is_empty() {
+      self.command_items.state.select(Some(selected_index.min(self.command_items.items.len() - 1)));
+    }
+  }
+
+  fn execute_selected_command(&self) -> Vec<Action> {
+    let Some(command) = self.command_items.selected() else {
+      return vec![];
+    };
+    let mut actions = vec![Action::EnterMode(self.command_palette_return_mode)];
+    actions.extend(command.actions.clone());
+    actions
   }
 
   pub fn set_units(&mut self, units: Vec<UnitWithStatus>) {
@@ -702,7 +931,7 @@ impl Home {
   fn daemon_reload(&mut self, service: UnitId) {
     let cancel_token = CancellationToken::new();
     let future = systemd::daemon_reload(service.scope, cancel_token.clone());
-    self.service_action(service, "Reload unit files".into(), cancel_token, future, false);
+    self.service_action(service, "Reload unit files".into(), cancel_token, future, true);
   }
 
   fn restart_service(&mut self, service: UnitId) {
@@ -985,11 +1214,42 @@ impl Component for Home {
   }
 
   fn handle_key_events(&mut self, key: KeyEvent) -> Vec<Action> {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p') {
+      return match self.mode {
+        Mode::CommandPalette => vec![Action::EnterMode(self.command_palette_return_mode)],
+        Mode::Search | Mode::ServiceList => vec![Action::EnterMode(Mode::CommandPalette)],
+        _ => vec![],
+      };
+    }
+
+    if self.mode == Mode::CommandPalette {
+      return match key.code {
+        KeyCode::Esc => vec![Action::EnterMode(self.command_palette_return_mode)],
+        KeyCode::Down | KeyCode::Tab => {
+          self.command_items.next();
+          vec![Action::Render]
+        },
+        KeyCode::Up | KeyCode::BackTab => {
+          self.command_items.previous();
+          vec![Action::Render]
+        },
+        KeyCode::Enter => self.execute_selected_command(),
+        KeyCode::Char('c' | 'q') if key.modifiers.contains(KeyModifiers::CONTROL) => vec![Action::Quit],
+        _ => {
+          let previous_query = self.command_input.value().to_owned();
+          self.command_input.handle_event(&crossterm::event::Event::Key(key));
+          if previous_query != self.command_input.value() {
+            self.refresh_command_palette();
+          }
+          vec![Action::Render]
+        },
+      };
+    }
+
     if key.modifiers.contains(KeyModifiers::CONTROL) {
       match key.code {
         KeyCode::Char('c') => return vec![Action::Quit],
         KeyCode::Char('q') => return vec![Action::Quit],
-        KeyCode::Char('z') => return vec![Action::Suspend],
         KeyCode::Char('f') => return vec![Action::EnterMode(Mode::Search)],
         KeyCode::Char('l') => return vec![Action::ToggleShowLogger],
         KeyCode::Char('r') => return vec![Action::ToggleLogOrder, Action::Render],
@@ -1196,6 +1456,7 @@ impl Component for Home {
           vec![]
         },
       },
+      Mode::CommandPalette => unreachable!("command palette keys are handled before global shortcuts"),
     }
   }
 
@@ -1217,6 +1478,41 @@ impl Component for Home {
     if self.mode == Mode::Error || self.mode == Mode::UnitExplanation {
       return match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => vec![Action::EnterMode(Mode::ServiceList)],
+        _ => vec![],
+      };
+    }
+
+    if self.mode == Mode::CommandPalette {
+      let hovered_item = self.command_item_rects.iter().find(|(rect, _)| rect.contains(pos)).map(|(_, idx)| *idx);
+
+      return match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+          if let Some(idx) = hovered_item {
+            self.command_items.state.select(Some(idx));
+            self.execute_selected_command()
+          } else if !self.command_popup_rect.contains(pos) {
+            vec![Action::EnterMode(self.command_palette_return_mode)]
+          } else {
+            vec![]
+          }
+        },
+        MouseEventKind::Moved => {
+          if let Some(idx) = hovered_item {
+            if Some(idx) != self.command_items.state.selected() {
+              self.command_items.state.select(Some(idx));
+              return vec![Action::Render];
+            }
+          }
+          vec![]
+        },
+        MouseEventKind::ScrollDown => {
+          self.command_items.next();
+          vec![Action::Render]
+        },
+        MouseEventKind::ScrollUp => {
+          self.command_items.previous();
+          vec![Action::Render]
+        },
         _ => vec![],
       };
     }
@@ -1422,141 +1718,16 @@ impl Component for Home {
       },
       Action::EnterMode(mode) => {
         if mode == Mode::ActionMenu {
-          {
-            let previously_selected_action = (self.mode == Mode::ActionMenu)
-              .then(|| self.menu_items.selected().map(|item| item.name.clone()))
-              .flatten();
-            let selected = self.filtered_units.selected()?;
-            let is_template = selected.unit.is_template();
-            let is_timer = selected.unit.kind() == UnitKind::Timer;
-            let unit = selected.unit.id();
-            let enablement = selected.unit.enablement_state.as_deref();
-            let is_masked = matches!(enablement, Some("masked" | "masked-runtime"));
-            let mut menu_items = if is_template {
-              Vec::new()
-            } else if is_timer {
-              let mut items = Vec::new();
-              if selected.unit.is_active() {
-                items.push(MenuItem::new("Stop timer", Action::StopService(unit.clone()), Some(KeyCode::Char('t'))));
-              } else if !is_masked {
-                items.push(MenuItem::new("Start timer", Action::StartService(unit.clone()), Some(KeyCode::Char('s'))));
-              }
-              if selected.unit.is_failed() {
-                items.push(MenuItem::new(
-                  "Reset failed",
-                  Action::ResetFailedUnit(unit.clone()),
-                  Some(KeyCode::Char('f')),
-                ));
-              }
-              items
-            } else {
-              let mut items = Vec::new();
-              match selected.unit.activation_state.as_str() {
-                "active" | "reloading" => {
-                  items.push(MenuItem::new("Stop", Action::StopService(unit.clone()), Some(KeyCode::Char('t'))));
-                  if !is_masked {
-                    items.push(MenuItem::new(
-                      "Restart",
-                      Action::RestartService(unit.clone()),
-                      Some(KeyCode::Char('r')),
-                    ));
-                    if self.runtime_info.as_ref().is_some_and(|info| info.can_reload == Some(true)) {
-                      items.push(MenuItem::new("Reload", Action::ReloadUnit(unit.clone()), Some(KeyCode::Char('l'))));
-                    }
-                  }
-                  items.push(MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('K'))));
-                },
-                "activating" => {
-                  items.push(MenuItem::new("Stop", Action::StopService(unit.clone()), Some(KeyCode::Char('t'))));
-                  items.push(MenuItem::new("Kill", Action::EnterMode(Mode::SignalMenu), Some(KeyCode::Char('K'))));
-                },
-                "failed" => {
-                  if !is_masked {
-                    items.push(MenuItem::new("Start", Action::StartService(unit.clone()), Some(KeyCode::Char('s'))));
-                  }
-                  items.push(MenuItem::new(
-                    "Reset failed",
-                    Action::ResetFailedUnit(unit.clone()),
-                    Some(KeyCode::Char('f')),
-                  ));
-                },
-                "deactivating" => {},
-                _ if !is_masked => {
-                  items.push(MenuItem::new("Start", Action::StartService(unit.clone()), Some(KeyCode::Char('s'))));
-                },
-                _ => {},
-              }
-              items
-            };
-
-            match enablement {
-              Some("enabled") => menu_items.push(MenuItem::new(
-                if is_timer { "Disable timer" } else { "Disable" },
-                Action::DisableService { unit: unit.clone(), runtime: false },
-                Some(KeyCode::Char('d')),
-              )),
-              Some("enabled-runtime") => menu_items.push(MenuItem::new(
-                if is_timer { "Disable timer" } else { "Disable" },
-                Action::DisableService { unit: unit.clone(), runtime: true },
-                Some(KeyCode::Char('d')),
-              )),
-              Some("disabled") => menu_items.push(MenuItem::new(
-                if is_timer { "Enable timer" } else { "Enable" },
-                Action::EnableService(unit.clone()),
-                Some(KeyCode::Char('n')),
-              )),
-              Some("masked") => menu_items.push(MenuItem::new(
-                "Unmask",
-                Action::UnmaskUnit { unit: unit.clone(), runtime: false },
-                Some(KeyCode::Char('u')),
-              )),
-              Some("masked-runtime") => menu_items.push(MenuItem::new(
-                "Unmask",
-                Action::UnmaskUnit { unit: unit.clone(), runtime: true },
-                Some(KeyCode::Char('u')),
-              )),
-              _ => {},
-            }
-            if enablement.is_some_and(|state| !matches!(state, "masked" | "masked-runtime" | "generated" | "transient"))
-            {
-              menu_items.push(MenuItem::new("Mask", Action::MaskUnit(unit.clone()), Some(KeyCode::Char('m'))));
-            }
-
-            if is_timer && !is_template {
-              if let Some(target) = self.runtime_info.as_ref().and_then(|info| info.triggered_unit.as_ref()) {
-                let label = format!("Start {target} now");
-                menu_items.push(MenuItem::new(
-                  &label,
-                  Action::StartService(UnitId { name: target.clone(), scope: unit.scope }),
-                  Some(KeyCode::Char('g')),
-                ));
-              }
-            }
-
-            if !is_template {
-              menu_items.push(MenuItem::new(
-                "Open logs in pager",
-                Action::OpenLogsInPager { logs: self.logs_for_pager() },
-                Some(KeyCode::Char('o')),
-              ));
-            }
-
-            if let Some(Ok(file_path)) = &selected.unit.file_path {
-              menu_items.push(MenuItem::new("Copy unit file path", Action::CopyUnitFilePath, Some(KeyCode::Char('c'))));
-              // Remote unit files can't be opened in a local editor, so we show them read-only instead
-              let label = if crate::ssh::remote_host().is_some() { "View unit file" } else { "Edit unit file" };
-              menu_items.push(MenuItem::new(
-                label,
-                Action::EditUnitFile { unit: selected.unit.id(), path: file_path.clone() },
-                Some(KeyCode::Char('e')),
-              ));
-            }
-
-            let selected_index = previously_selected_action
-              .and_then(|name| menu_items.iter().position(|item| item.name == name))
-              .unwrap_or(0);
-            self.menu_items = StatefulList::with_items(menu_items);
-            self.menu_items.state.select(Some(selected_index));
+          self.filtered_units.selected()?;
+          let previously_selected_action =
+            (self.mode == Mode::ActionMenu).then(|| self.menu_items.selected().map(|item| item.name.clone())).flatten();
+          let menu_items = self.unit_menu_items();
+          let selected_index = previously_selected_action
+            .and_then(|name| menu_items.iter().position(|item| item.name == name))
+            .unwrap_or(0);
+          self.menu_items = StatefulList::with_items(menu_items);
+          if !self.menu_items.items.is_empty() {
+            self.menu_items.state.select(Some(selected_index.min(self.menu_items.items.len() - 1)));
           }
         } else if mode == Mode::SignalMenu {
           {
@@ -1584,6 +1755,10 @@ impl Component for Home {
         } else if mode == Mode::StatusFilter {
           self.filter_cursor = 0;
           self.filter_return_mode = self.mode;
+        } else if mode == Mode::CommandPalette {
+          self.command_palette_return_mode = self.mode;
+          self.command_input = Input::default();
+          self.refresh_command_palette();
         }
 
         self.mode = mode;
@@ -2374,7 +2549,7 @@ impl Component for Home {
     }
 
     if self.mode == Mode::Help {
-      let popup = f.area().centered(Constraint::Length(50), Constraint::Length(20));
+      let popup = f.area().centered(Constraint::Length(50), Constraint::Length(21));
 
       let primary = |s| Span::styled(s, Style::default().fg(theme.primary));
       let help_lines = vec![
@@ -2382,11 +2557,12 @@ impl Component for Home {
         Line::from(Span::styled("Shortcuts", Style::default().add_modifier(Modifier::UNDERLINED))),
         Line::from(""),
         Line::from(vec![primary("ctrl+C"), Span::raw(" or "), primary("ctrl+Q"), Span::raw(" to quit")]),
+        Line::from(vec![primary("ctrl+P"), Span::raw(" opens all commands")]),
         Line::from(vec![primary("ctrl+L"), Span::raw(" toggles the logger pane")]),
         Line::from(vec![primary("ctrl+R"), Span::raw(" reverses the log order")]),
         Line::from(vec![primary("PageUp"), Span::raw(" / "), primary("PageDown"), Span::raw(" scroll the logs")]),
         Line::from(vec![primary("Home"), Span::raw(" / "), primary("End"), Span::raw(" scroll to top/bottom")]),
-        Line::from(vec![primary("Enter"), Span::raw(" or "), primary("Space"), Span::raw(" open the action menu")]),
+        Line::from(vec![primary("Enter"), Span::raw(" or "), primary("Space"), Span::raw(" open unit commands")]),
         Line::from(vec![primary("f"), Span::raw(" / "), primary("F2"), Span::raw(" filter units")]),
         Line::from(vec![primary("?"), Span::raw(" / "), primary("F1"), Span::raw(" open this help pane")]),
         Line::from(vec![primary("mouse"), Span::raw(": drag to select+copy logs, wheel to scroll")]),
@@ -2482,12 +2658,14 @@ impl Component for Home {
     let version_rect = help_line_rects[1];
 
     let help_line = match self.mode {
-      Mode::Search => Line::from(span("Actions: enter | Filter: F2 | Navigate: tab", theme.primary)),
+      Mode::Search => {
+        Line::from(span("Unit commands: enter | All commands: ctrl+p | Filter: F2 | Navigate: tab", theme.primary))
+      },
       Mode::ServiceList => {
         // In remote mode `e` views the unit file (read-only) rather than editing it
         let edit_help = if crate::ssh::remote_host().is_some() { "View: e" } else { "Edit: e" };
         let mut spans = vec![Span::styled(
-          format!("Actions: enter | Logs: o | {edit_help} | Filter: f/F2"),
+          format!("Unit commands: enter | All commands: ctrl+p | Logs: o | {edit_help} | Filter: f/F2"),
           Style::default().fg(theme.primary),
         )];
         if self.is_status_filter_active() {
@@ -2497,18 +2675,21 @@ impl Component for Home {
         Line::from(spans)
       },
       Mode::Help => Line::from(span("Close menu: <esc>", theme.primary)),
-      Mode::ActionMenu => Line::from(span("Execute action: <enter> | Close menu: <esc>", theme.primary)),
+      Mode::ActionMenu => Line::from(span("Run command: <enter> | Close menu: <esc>", theme.primary)),
       Mode::Processing => Line::from(span("Cancel task: <esc>", theme.primary)),
       Mode::Error => Line::from(span("Close menu: <esc>", theme.primary)),
       Mode::UnitExplanation => Line::from(span("Close: <esc>", theme.primary)),
       Mode::SignalMenu => Line::from(span("Send signal: <enter> | Close menu: <esc>", theme.primary)),
       Mode::StatusFilter => Line::from(span("Toggle: <space> | All: a | None: n | Close: <esc>", theme.primary)),
+      Mode::CommandPalette => {
+        Line::from(span("Run command: <enter> | Navigate: <up>/<down> | Close: <esc>", theme.primary))
+      },
     };
 
     f.render_widget(help_line, help_rect);
     f.render_widget(Line::from(version), version_rect);
 
-    let title = format!("Actions for {}", selected_unit_name);
+    let title = format!("Commands for {}", selected_unit_name);
     let mut min_width = title.len() as u16 + 2; // title plus corners
     let item_width = self.menu_items.items.iter().map(|item| item.name.chars().count() as u16 + 5).max().unwrap_or(0);
     min_width = min_width.max(item_width);
@@ -2517,6 +2698,7 @@ impl Component for Home {
 
     self.filter_item_rects.clear();
     self.menu_item_rects.clear();
+    self.command_item_rects.clear();
     if self.mode == Mode::StatusFilter {
       // Custom grouped layout for the status filter popup
       let mut lines: Vec<Line> = Vec::new();
@@ -2578,9 +2760,116 @@ impl Component for Home {
       f.render_widget(paragraph, popup);
     }
 
+    if self.mode == Mode::CommandPalette {
+      let area = f.area();
+      let popup_width = 64.min(area.width).max(1);
+      let categories = self.command_items.items.iter().map(|command| command.category.as_str()).unique().collect_vec();
+      let category_count = categories.len();
+      let grouped_line_count = self.command_items.items.len() + category_count;
+      let show_categories =
+        self.command_input.value().is_empty() && grouped_line_count.saturating_add(5) <= usize::from(area.height);
+
+      let mut lines: Vec<(Line, Option<usize>)> = Vec::new();
+      if self.command_items.items.is_empty() {
+        lines.push((Line::from(Span::styled("  No matching commands", Style::default().fg(theme.muted))), None));
+      } else if show_categories {
+        for category in categories {
+          let commands = self
+            .command_items
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, command)| command.category == category)
+            .collect_vec();
+          if commands.is_empty() {
+            continue;
+          }
+          lines.push((
+            Line::from(Span::styled(
+              format!(" {category}"),
+              Style::default().fg(theme.muted).add_modifier(Modifier::BOLD),
+            )),
+            None,
+          ));
+          for (index, command) in commands {
+            lines.push((
+              command_palette_line(
+                command,
+                self.command_items.state.selected() == Some(index),
+                popup_width,
+                theme,
+                false,
+              ),
+              Some(index),
+            ));
+          }
+        }
+      } else {
+        let show_inline_category = popup_width >= 50;
+        for (index, command) in self.command_items.items.iter().enumerate() {
+          lines.push((
+            command_palette_line(
+              command,
+              self.command_items.state.selected() == Some(index),
+              popup_width,
+              theme,
+              show_inline_category,
+            ),
+            Some(index),
+          ));
+        }
+      }
+
+      let desired_height = (lines.len() as u16).saturating_add(5);
+      let popup_height = desired_height.min(area.height).max(1);
+      let popup = area.centered(Constraint::Length(popup_width), Constraint::Length(popup_height));
+      self.command_popup_rect = popup;
+
+      let outer = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .title("─All commands");
+      f.render_widget(Clear, popup);
+      f.render_widget(outer, popup);
+
+      let inner = popup.inner(Margin::new(1, 1));
+      let search_height = inner.height.min(3);
+      let search_rect = Rect { x: inner.x, y: inner.y, width: inner.width, height: search_height };
+      let search_width = search_rect.width.saturating_sub(2).max(1);
+      let scroll = self.command_input.visual_scroll(search_width as usize);
+      let search = Paragraph::new(self.command_input.value())
+        .scroll((0, scroll as u16))
+        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Search commands "));
+      f.render_widget(search, search_rect);
+
+      let list_rect = Rect {
+        x: inner.x,
+        y: inner.y.saturating_add(search_height),
+        width: inner.width,
+        height: inner.height.saturating_sub(search_height),
+      };
+      let visible_lines = usize::from(list_rect.height);
+      let selected_line =
+        lines.iter().position(|(_, command_index)| *command_index == self.command_items.state.selected()).unwrap_or(0);
+      let start = selected_line.saturating_sub(visible_lines.saturating_sub(1));
+      for (row, (line, command_index)) in lines.into_iter().skip(start).take(visible_lines).enumerate() {
+        let rect = Rect { x: list_rect.x, y: list_rect.y + row as u16, width: list_rect.width, height: 1 };
+        f.render_widget(Paragraph::new(line), rect);
+        if let Some(command_index) = command_index {
+          self.command_item_rects.push((rect, command_index));
+        }
+      }
+
+      if search_rect.width > 2 && search_rect.height > 2 {
+        let cursor_x = search_rect.x + 1 + (self.command_input.cursor() as u16).saturating_sub(scroll as u16);
+        f.set_cursor_position((cursor_x.min(search_rect.x + search_rect.width - 2), search_rect.y + 1));
+      }
+    }
+
     if self.mode == Mode::ActionMenu || self.mode == Mode::SignalMenu {
       let title = match self.mode {
-        Mode::ActionMenu => format!("Actions for {}", selected_unit_name),
+        Mode::ActionMenu => format!("Commands for {}", selected_unit_name),
         Mode::SignalMenu => format!("Signals for {}", selected_unit_name),
         _ => unreachable!(),
       };
@@ -2674,6 +2963,38 @@ fn word_wrap(text: &str, width: usize) -> Vec<String> {
     lines.push(current);
   }
   lines
+}
+
+fn command_palette_line(
+  command: &CommandItem,
+  selected: bool,
+  popup_width: u16,
+  theme: Theme,
+  show_category: bool,
+) -> Line<'static> {
+  let category = if show_category { format!(" {:<13}", format!("{}:", command.category)) } else { "  ".into() };
+  let inner_width = usize::from(popup_width.saturating_sub(2));
+  let shortcut_width = command.shortcut.chars().count();
+  let name_width =
+    inner_width.saturating_sub(category.chars().count()).saturating_sub(shortcut_width).saturating_sub(1);
+  let name = command.name.chars().take(name_width).collect::<String>();
+  let gap = inner_width
+    .saturating_sub(category.chars().count())
+    .saturating_sub(name.chars().count())
+    .saturating_sub(shortcut_width)
+    .max(1);
+
+  let line = Line::from(vec![
+    Span::styled(category, Style::default().fg(theme.muted)),
+    Span::raw(name),
+    Span::raw(" ".repeat(gap)),
+    Span::styled(command.shortcut.to_string(), Style::default().fg(theme.kbd).add_modifier(Modifier::BOLD)),
+  ]);
+  if selected {
+    line.style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
+  } else {
+    line
+  }
 }
 
 fn format_cpu_nsec(nsec: u64) -> String {
@@ -3009,6 +3330,106 @@ mod tests {
   }
 
   #[test]
+  fn command_palette_preserves_the_unit_search_and_return_mode() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    home.mode = Mode::Search;
+    home.input = Input::default().with_value("ssh".into());
+
+    let open_actions = home.handle_key_events(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+    let [open] = open_actions.as_slice() else {
+      panic!("Ctrl+P should open the command palette");
+    };
+    home.dispatch(open.clone());
+
+    assert_eq!(home.mode, Mode::CommandPalette);
+    assert_eq!(home.command_palette_return_mode, Mode::Search);
+    assert_eq!(home.input.value(), "ssh");
+    assert_eq!(home.command_input.value(), "");
+    assert_eq!(home.command_items.selected().map(|command| command.name.as_str()), Some("Search units"));
+
+    let close_actions = home.handle_key_events(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    let [close] = close_actions.as_slice() else {
+      panic!("Escape should close the command palette");
+    };
+    assert!(matches!(close, Action::EnterMode(Mode::Search)));
+  }
+
+  #[test]
+  fn command_palette_fuzzy_search_finds_daemon_reload() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let unit = test_unit("cron.service");
+    let unit_id = unit.id();
+    home.filtered_units = StatefulList::with_items(vec![MatchedUnit { unit, match_indices: vec![] }]);
+    home.filtered_units.state.select(Some(0));
+    home.mode = Mode::ServiceList;
+    home.dispatch(Action::EnterMode(Mode::CommandPalette));
+
+    for character in "daemon".chars() {
+      home.handle_key_events(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+
+    assert_eq!(home.command_input.value(), "daemon");
+    assert_eq!(home.command_items.items.len(), 1);
+    assert_eq!(home.command_items.items[0].name, "Reload system manager (daemon-reload)");
+
+    let actions = home.handle_key_events(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+      actions.as_slice(),
+      [Action::EnterMode(Mode::ServiceList), Action::DaemonReload(selected)] if selected == &unit_id
+    ));
+  }
+
+  #[test]
+  fn all_commands_reuses_the_focused_unit_commands() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let mut unit = test_unit("cron.service");
+    unit.enablement_state = Some("enabled".into());
+    home.filtered_units = StatefulList::with_items(vec![MatchedUnit { unit, match_indices: vec![] }]);
+    home.filtered_units.state.select(Some(0));
+    home.runtime_info = Some(UnitRuntimeInfo { can_reload: Some(true), ..Default::default() });
+
+    home.dispatch(Action::EnterMode(Mode::ActionMenu));
+    let focused_commands =
+      home.menu_items.items.iter().map(|item| (item.name.clone(), item.key_string())).collect_vec();
+
+    home.dispatch(Action::EnterMode(Mode::ServiceList));
+    home.dispatch(Action::EnterMode(Mode::CommandPalette));
+    let all_commands = home
+      .command_items
+      .items
+      .iter()
+      .filter(|item| item.category == "Selected unit · cron.service")
+      .map(|item| (item.name.clone(), item.shortcut.clone()))
+      .collect_vec();
+
+    assert_eq!(all_commands, focused_commands);
+  }
+
+  #[test]
+  fn command_palette_handles_an_empty_result() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    home.mode = Mode::ServiceList;
+    home.dispatch(Action::EnterMode(Mode::CommandPalette));
+    home.command_input = Input::default().with_value("definitely-not-a-command".into());
+    home.refresh_command_palette();
+
+    assert!(home.command_items.items.is_empty());
+    assert!(matches!(
+      home.handle_key_events(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)).as_slice(),
+      [Action::Render]
+    ));
+    assert!(home.handle_key_events(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).is_empty());
+  }
+
+  #[test]
+  fn command_palette_does_not_interrupt_processing() {
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    home.mode = Mode::Processing;
+
+    assert!(home.handle_key_events(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL)).is_empty());
+  }
+
+  #[test]
   fn search_can_match_the_timer_suffix() {
     let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
     let (journalctl_tx, _journalctl_rx) = std::sync::mpsc::channel();
@@ -3099,7 +3520,7 @@ mod tests {
       unit: timer_id,
       info: Box::new(UnitRuntimeInfo { triggered_unit: Some("backup.service".into()), ..Default::default() }),
     });
-    home.dispatch(follow_up.expect("the action menu should be rebuilt"));
+    home.dispatch(follow_up.expect("the unit commands should be rebuilt"));
 
     assert!(home.menu_items.items.iter().any(|item| item.name == "Start backup.service now"));
     assert_eq!(home.menu_items.selected().map(|item| item.name.as_str()), Some("Disable timer"));
@@ -3254,6 +3675,24 @@ mod tests {
       let mut home = fixture();
       home.dispatch(Action::EnterMode(Mode::ActionMenu));
       let terminal = render(&mut home, 120, 40);
+      insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn command_palette_open() {
+      let mut home = fixture();
+      home.mode = Mode::ServiceList;
+      home.dispatch(Action::EnterMode(Mode::CommandPalette));
+      let terminal = render(&mut home, 120, 40);
+      insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn command_palette_tiny_40x15() {
+      let mut home = fixture();
+      home.mode = Mode::ServiceList;
+      home.dispatch(Action::EnterMode(Mode::CommandPalette));
+      let terminal = render(&mut home, 40, 15);
       insta::assert_snapshot!(terminal.backend());
     }
 

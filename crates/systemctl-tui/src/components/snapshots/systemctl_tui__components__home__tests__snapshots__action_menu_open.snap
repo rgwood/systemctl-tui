@@ -1,5 +1,5 @@
 ---
-source: src/components/home.rs
+source: crates/systemctl-tui/src/components/home.rs
 expression: terminal.backend()
 ---
 "╭─Search (ctrl+f or /)──────────────────────────────────────────────────────────────────────── Press ? or F1 for help ─╮"
@@ -17,16 +17,16 @@ expression: terminal.backend()
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"
-"│                            ││                ╭Actions for cron.service╮                                              │"
-"│                            ││                │ t Stop                 │                                              │"
-"│                            ││                │ r Restart              │                                              │"
-"│                            ││                │ K Kill                 │                                              │"
-"│                            ││                │ d Disable              │                                              │"
-"│                            ││                │ m Mask                 │                                              │"
-"│                            ││                │ o Open logs in pager   │                                              │"
-"│                            ││                │ c Copy unit file path  │                                              │"
-"│                            ││                │ e Edit unit file       │                                              │"
-"│                            ││                ╰────────────────────────╯                                              │"
+"│                            ││                ╭Commands for cron.service╮                                             │"
+"│                            ││                │ t Stop                  │                                             │"
+"│                            ││                │ r Restart               │                                             │"
+"│                            ││                │ K Kill                  │                                             │"
+"│                            ││                │ d Disable               │                                             │"
+"│                            ││                │ m Mask                  │                                             │"
+"│                            ││                │ o Open logs in pager    │                                             │"
+"│                            ││                │ c Copy unit file path   │                                             │"
+"│                            ││                │ e Edit unit file        │                                             │"
+"│                            ││                ╰─────────────────────────╯                                             │"
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"
@@ -41,4 +41,4 @@ expression: terminal.backend()
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"
 "╰────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────────────────╯"
-"Execute action: <enter> | Close menu: <esc>                                                                       v0.7.0"
+"Run command: <enter> | Close menu: <esc>                                                                          v0.7.0"
