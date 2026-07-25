@@ -2233,9 +2233,22 @@ impl Component for Home {
       }
     }
 
+    fn label_width(rows: &[(&str, Line)]) -> u16 {
+      rows.iter().map(|(label, _)| label.len() + 2).max().unwrap_or(0) as u16
+    }
+
+    fn value_width(rows: &[(&str, Line)]) -> u16 {
+      rows.iter().map(|(_, value)| value.width()).max().unwrap_or(0) as u16
+    }
+
+    const MIN_DETAILS_VALUE_WIDTH: u16 = 20;
+    const COLUMN_GAP: u16 = 2;
+
     let timer_details = selected_item.is_some_and(|m| m.unit.kind() == UnitKind::Timer);
-    let two_column_min_width = if timer_details { 120 } else { 90 };
-    let two_columns = right_panel.width >= two_column_min_width && !stat_rows.is_empty();
+    let details_inner_width = right_panel.width.saturating_sub(2);
+    let stat_column_width = label_width(&stat_rows) + value_width(&stat_rows);
+    let two_column_min_width = label_width(&rows) + MIN_DETAILS_VALUE_WIDTH + COLUMN_GAP + stat_column_width;
+    let two_columns = !stat_rows.is_empty() && details_inner_width >= two_column_min_width;
     if !two_columns && !stat_rows.is_empty() {
       if timer_details {
         // Timer metadata is the main reason to select a timer. Keep it readable on
@@ -2253,10 +2266,6 @@ impl Component for Home {
         }
         rows.push(("Runtime", Line::from(spans)));
       }
-    }
-
-    fn label_width(rows: &[(&str, Line)]) -> u16 {
-      rows.iter().map(|(label, _)| label.len() + 2).max().unwrap_or(0) as u16
     }
 
     fn split_labels_values<'a>(rows: Vec<(&'a str, Line<'a>)>) -> (Vec<Line<'a>>, Vec<Line<'a>>) {
@@ -2284,9 +2293,10 @@ impl Component for Home {
         Direction::Horizontal,
         [
           Constraint::Length(label_width(&rows)),
-          Constraint::Fill(2),
-          Constraint::Length(label_width(&stat_rows) + 1),
           Constraint::Fill(1),
+          Constraint::Length(COLUMN_GAP),
+          Constraint::Length(label_width(&stat_rows)),
+          Constraint::Length(value_width(&stat_rows)),
         ],
       )
       .split(details_inner)
@@ -2390,9 +2400,9 @@ impl Component for Home {
 
     if two_columns {
       let (stat_labels, mut stat_values) = split_labels_values(stat_rows);
-      register_copyable_fields(&mut stat_values, panes[3], self.mouse_position, None, &mut self.copyable_fields);
-      f.render_widget(Paragraph::new(stat_labels).alignment(ratatui::layout::Alignment::Right), panes[2]);
-      f.render_widget(Paragraph::new(stat_values), panes[3]);
+      register_copyable_fields(&mut stat_values, panes[4], self.mouse_position, None, &mut self.copyable_fields);
+      f.render_widget(Paragraph::new(stat_labels).alignment(ratatui::layout::Alignment::Right), panes[3]);
+      f.render_widget(Paragraph::new(stat_values), panes[4]);
     }
 
     let logs: Box<dyn Iterator<Item = &LogEntry>> = match self.log_order {
