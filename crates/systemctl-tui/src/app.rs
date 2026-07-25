@@ -100,9 +100,28 @@ impl App {
           Action::Resize(_, _) => terminal.render().await,
           // This would normally be in home.rs, but it needs to do some terminal and event handling stuff that's easier here
           Action::EditUnitFile { unit, path } => {
-            // The unit file lives on the remote host; we can't open it in a local editor
-            if crate::ssh::remote_host().is_some() {
-              action_tx.send(Action::EnterError("Editing unit files on remote hosts is not supported (yet)".into()))?;
+            // The unit file lives on the remote host; we can't open it in a local editor,
+            // but we can fetch it over SSH and show it read-only in the local pager
+            if let Some(ssh_host) = crate::ssh::remote_host() {
+              match ssh_host.command("cat", &[&path]).output() {
+                Ok(output) if output.status.success() => {
+                  // Name the temp file after the unit file so the pager prompt shows e.g. "docker.service"
+                  let file_name = std::path::Path::new(&path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "unit-file.txt".into());
+                  let contents = String::from_utf8_lossy(&output.stdout).into_owned();
+                  show_in_pager(self.home.clone(), &terminal, &mut event, &action_tx, &file_name, &contents).await?;
+                },
+                Ok(output) => {
+                  let stderr = String::from_utf8_lossy(&output.stderr);
+                  action_tx
+                    .send(Action::EnterError(format!("Failed to read unit file `{path}`: {}", stderr.trim())))?;
+                },
+                Err(e) => {
+                  action_tx.send(Action::EnterError(format!("Failed to read unit file `{path}`: {e}")))?;
+                },
+              }
               continue;
             }
             event.stop();
@@ -141,34 +160,15 @@ impl App {
             }
           },
           Action::OpenLogsInPager { logs } => {
-            event.stop();
-            let mut tui = terminal.tui.lock().await;
-            tui.exit()?;
-
-            let temp_path = std::env::temp_dir().join("systemctl-tui-logs.txt");
-            if let Err(e) = std::fs::write(&temp_path, logs.join("\n")) {
-              tui.enter()?;
-              tui.clear()?;
-              event = EventHandler::new(self.home.clone(), action_tx.clone());
-              action_tx.send(Action::EnterError(format!("Failed to write temp file: {e}")))?;
-            } else {
-              let pager = std::env::var("PAGER").unwrap_or_else(|_| "less".to_string());
-              match Command::new(&pager).arg(&temp_path).status() {
-                Ok(_) => {
-                  tui.enter()?;
-                  tui.clear()?;
-                  event = EventHandler::new(self.home.clone(), action_tx.clone());
-                  action_tx.send(Action::EnterMode(Mode::ServiceList))?;
-                },
-                Err(e) => {
-                  tui.enter()?;
-                  tui.clear()?;
-                  event = EventHandler::new(self.home.clone(), action_tx.clone());
-                  action_tx.send(Action::EnterError(format!("Failed to open pager `{pager}`: {e}")))?;
-                },
-              }
-              let _ = std::fs::remove_file(&temp_path);
-            }
+            show_in_pager(
+              self.home.clone(),
+              &terminal,
+              &mut event,
+              &action_tx,
+              "systemctl-tui-logs.txt",
+              &logs.join("\n"),
+            )
+            .await?;
           },
           _ => {
             if let Some(_action) = self.home.lock().await.dispatch(action) {
@@ -196,4 +196,45 @@ impl App {
     }
     Ok(())
   }
+}
+
+/// Drop out of the TUI, show `contents` in the user's pager via a temp file named `file_name`,
+/// then restore the TUI. Replaces `event` with a fresh handler (the old one is stopped).
+async fn show_in_pager(
+  home: Arc<Mutex<Home>>,
+  terminal: &TerminalHandler,
+  event: &mut EventHandler,
+  action_tx: &mpsc::UnboundedSender<Action>,
+  file_name: &str,
+  contents: &str,
+) -> Result<()> {
+  event.stop();
+  let mut tui = terminal.tui.lock().await;
+  tui.exit()?;
+
+  let temp_path = std::env::temp_dir().join(file_name);
+  if let Err(e) = std::fs::write(&temp_path, contents) {
+    tui.enter()?;
+    tui.clear()?;
+    *event = EventHandler::new(home, action_tx.clone());
+    action_tx.send(Action::EnterError(format!("Failed to write temp file: {e}")))?;
+  } else {
+    let pager = std::env::var("PAGER").unwrap_or_else(|_| "less".to_string());
+    match Command::new(&pager).arg(&temp_path).status() {
+      Ok(_) => {
+        tui.enter()?;
+        tui.clear()?;
+        *event = EventHandler::new(home, action_tx.clone());
+        action_tx.send(Action::EnterMode(Mode::ServiceList))?;
+      },
+      Err(e) => {
+        tui.enter()?;
+        tui.clear()?;
+        *event = EventHandler::new(home, action_tx.clone());
+        action_tx.send(Action::EnterError(format!("Failed to open pager `{pager}`: {e}")))?;
+      },
+    }
+    let _ = std::fs::remove_file(&temp_path);
+  }
+  Ok(())
 }
