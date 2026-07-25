@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/systemctl-tui.svg)](https://crates.io/crates/systemctl-tui)
 
 A fast, simple TUI for interacting with [systemd](https://en.wikipedia.org/wiki/Systemd) units and their logs.
-![Screenshot from 2025-01-23 21-44-31](https://github.com/user-attachments/assets/caac6034-d4e3-4c54-8163-24a8a6d39cb4)
+<img width="1800" height="1222" alt="image" src="https://github.com/user-attachments/assets/924d3cf2-cac6-474b-9127-756520fede6d" />
 
 `systemctl-tui` can quickly browse service and timer status and logs, manage services and timers, and view/edit unit files. It aims to do a small number of things well.
 
