@@ -167,10 +167,18 @@ def test_startup_and_browse(binary: str, host: str | None) -> None:
     send_keys("Escape")
     time.sleep(1)
 
-    # action menu
+    # global command palette
+    send_keys("C-p")
+    check("command palette opens", wait_for(lambda: "Search commands" in capture()), capture())
+    type_text("daemon")
+    check("command palette fuzzy search works", wait_for(lambda: "daemon-reload" in capture()), capture())
+    send_keys("Escape")
+    time.sleep(1)
+
+    # unit commands
     send_keys("Enter")
     time.sleep(1)
-    check("action menu opens", "Actions for" in capture(), capture())
+    check("unit commands open", "Commands for" in capture(), capture())
     send_keys("Escape")
     time.sleep(1)
 
@@ -219,7 +227,7 @@ def test_timer_browsing(binary: str, host: str | None) -> None:
     check("computed next trigger is shown", wait_for(lambda: "Next trigger:" in capture()), capture())
 
     send_keys("Enter")
-    check("timer action menu opens", wait_for(lambda: "Actions for systemd-tmpfiles-clean.timer" in capture()), capture())
+    check("timer commands open", wait_for(lambda: "Commands for systemd-tmpfiles-clean.timer" in capture()), capture())
     screen = capture()
     check("timer menu has an arm/disarm action", "Start timer" in screen or "Stop timer" in screen, screen)
     check(
@@ -348,12 +356,12 @@ def test_mouse(binary: str, host: str | None) -> None:
     check("drag selection copies log text", wait_for(lambda: re.search(r"Copied \d+ chars", capture()) is not None), capture())
     time.sleep(2.1)
 
-    # 5. clicking outside the action menu closes it
+    # 5. clicking outside the unit commands popup closes it
     send_keys("Enter")
-    check("action menu opens", wait_for(lambda: "Actions for" in capture()), capture())
+    check("unit commands open", wait_for(lambda: "Commands for" in capture()), capture())
     click(5, 5)
     time.sleep(0.4)
-    check("click outside closes action menu", "Actions for" not in capture(), capture())
+    check("click outside closes unit commands", "Commands for" not in capture(), capture())
     check("app alive after closing menu", app_alive())
 
     # 6. clicking a status filter entry toggles it
@@ -452,12 +460,12 @@ def test_root_action_round_trip(binary: str, root_host: str) -> None:
     check("starts inactive", wait_for(lambda: "inactive" in capture()), capture())
 
     send_keys("Enter")
-    check("actions menu opens", wait_for(lambda: "Actions for" in capture()), capture())
+    check("unit commands open", wait_for(lambda: "Commands for" in capture()), capture())
     send_keys("s")
     check("start succeeds", wait_for(lambda: "active (running)" in capture(), timeout=20), capture())
 
     send_keys("Enter")
-    check("actions menu opens again", wait_for(lambda: "Actions for" in capture()), capture())
+    check("unit commands open again", wait_for(lambda: "Commands for" in capture()), capture())
     check("reloadable unit offers reload", wait_for(lambda: "Reload" in capture()), capture())
     send_keys("l")
     check(
@@ -468,7 +476,7 @@ def test_root_action_round_trip(binary: str, root_host: str) -> None:
     check("unit stays active after reload", wait_for(lambda: "active (running)" in capture(), timeout=20), capture())
 
     send_keys("Enter")
-    check("actions menu opens after reload", wait_for(lambda: "Actions for" in capture()), capture())
+    check("unit commands open after reload", wait_for(lambda: "Commands for" in capture()), capture())
     send_keys("t")
     check("stop succeeds", wait_for(lambda: "inactive (dead)" in capture(), timeout=20), capture())
 
@@ -493,7 +501,7 @@ def test_root_kill_round_trip(binary: str, root_host: str) -> None:
         check("starts inactive", wait_for(lambda: "inactive" in capture()), capture())
 
         send_keys("Enter")
-        check("actions menu opens", wait_for(lambda: "Actions for" in capture()), capture())
+        check("unit commands open", wait_for(lambda: "Commands for" in capture()), capture())
         send_keys("s")
         check("start succeeds", wait_for(lambda: "active (running)" in capture(), timeout=20), capture())
 
@@ -501,7 +509,7 @@ def test_root_kill_round_trip(binary: str, root_host: str) -> None:
         check("MainPID recorded before kill", main_pid.stdout.strip().isdigit() and main_pid.stdout.strip() != "0", main_pid.stdout + main_pid.stderr)
 
         send_keys("Enter")
-        check("actions menu opens again", wait_for(lambda: "Actions for" in capture()), capture())
+        check("unit commands open again", wait_for(lambda: "Commands for" in capture()), capture())
         send_keys("K")
         check("signal menu opens", wait_for(lambda: "Signals for" in capture()), capture())
 
@@ -610,7 +618,7 @@ def test_polkit_rejection(binary: str, host: str) -> None:
     wait_for(lambda: "Description:" in capture())
     send_keys("Down")
     send_keys("Enter")
-    wait_for(lambda: "Actions for" in capture())
+    wait_for(lambda: "Commands for" in capture())
     send_keys("s")
 
     def error_shown() -> bool:
@@ -629,7 +637,7 @@ def test_user_scope_action_succeeds(binary: str, host: str) -> None:
     wait_for(lambda: "Description:" in capture())
     send_keys("Down")
     send_keys("Enter")
-    wait_for(lambda: "Actions for" in capture())
+    wait_for(lambda: "Commands for" in capture())
     send_keys("s")
     check("start succeeds as user", wait_for(lambda: "active (running)" in capture(), timeout=20), capture())
 

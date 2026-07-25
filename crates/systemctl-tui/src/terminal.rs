@@ -45,18 +45,6 @@ impl Tui {
     Ok(())
   }
 
-  pub fn suspend(&self) -> Result<()> {
-    self.exit()?;
-    #[cfg(not(windows))]
-    signal_hook::low_level::raise(signal_hook::consts::signal::SIGTSTP)?;
-    Ok(())
-  }
-
-  pub fn resume(&self) -> Result<()> {
-    self.enter()?;
-    Ok(())
-  }
-
   pub fn exit(&self) -> Result<()> {
     exit()
   }
@@ -93,7 +81,6 @@ impl Drop for Tui {
 enum Message {
   Render,
   Stop,
-  Suspend,
 }
 
 pub struct TerminalHandler {
@@ -118,11 +105,6 @@ impl TerminalHandler {
             exit().unwrap_or_default();
             break;
           },
-          Some(Message::Suspend) => {
-            let t = tui.lock().await;
-            t.suspend().unwrap_or_default();
-            break;
-          },
           Some(Message::Render) => {
             let mut t = tui.lock().await;
             let mut home = home.lock().await;
@@ -133,11 +115,6 @@ impl TerminalHandler {
       }
     });
     Self { task, tx, home: cloned_home, tui: cloned_tui }
-  }
-
-  pub fn suspend(&self) -> Result<()> {
-    self.tx.send(Message::Suspend)?;
-    Ok(())
   }
 
   pub fn stop(&self) -> Result<()> {

@@ -7,8 +7,6 @@ use crate::{
 #[derive(Debug, Clone)]
 pub enum Action {
   Quit,
-  Resume,
-  Suspend,
   Render,
   DebouncedRender,
   SpinnerTick,
