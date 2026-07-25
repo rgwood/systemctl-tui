@@ -86,7 +86,27 @@ enum ScopeFilter {
   User,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum UnitPage {
+  Services,
+  Timers,
+  Templates,
+}
+
+fn unit_page(unit: &UnitWithStatus) -> UnitPage {
+  if unit.is_template() {
+    UnitPage::Templates
+  } else if unit.kind() == UnitKind::Timer {
+    UnitPage::Timers
+  } else {
+    UnitPage::Services
+  }
+}
+
 fn state_label(unit: &UnitWithStatus) -> &str {
+  if unit.is_template() {
+    return "Template";
+  }
   match (unit.activation_state.as_str(), unit.sub_state.as_str()) {
     ("active", "running") => "Running",
     ("active", "waiting") => "Waiting",
@@ -102,12 +122,23 @@ fn state_label(unit: &UnitWithStatus) -> &str {
   }
 }
 
-/// Masked and not-found units can't be started and are hidden unless the user
-/// asks for them, matching the TUI's default.
-fn is_hidden_by_default(unit: &UnitWithStatus) -> bool {
-  unit.is_not_found()
-    || unit.load_state == "masked"
-    || matches!(unit.enablement_state.as_deref(), Some("masked" | "masked-runtime"))
+fn is_masked(unit: &UnitWithStatus) -> bool {
+  unit.load_state == "masked" || matches!(unit.enablement_state.as_deref(), Some("masked" | "masked-runtime"))
+}
+
+fn is_visible(unit: &UnitWithStatus, show_masked: bool, show_not_found: bool) -> bool {
+  (show_masked || !is_masked(unit)) && (show_not_found || !unit.is_not_found())
+}
+
+fn template_instance_example(template: &str) -> String {
+  template.replacen("@.", "@INSTANCE.", 1)
+}
+
+fn template_logs_message(template: &str) -> String {
+  format!(
+    "{template} is a unit template, not a running service. Logs belong to concrete instances such as {}.",
+    template_instance_example(template)
+  )
 }
 
 fn category_icon(unit: &UnitWithStatus) -> &'static str {
@@ -215,6 +246,7 @@ fn demo_units() -> Vec<UnitWithStatus> {
     ("ssh.service", "OpenBSD Secure Shell server", "active", "running", "enabled"),
     ("systemd-resolved.service", "Network Name Resolution", "active", "running", "enabled"),
     ("systemd-timesyncd.service", "Network Time Synchronization", "inactive", "dead", "disabled"),
+    ("backup@.service", "Run a named backup job", "inactive", "dead", "disabled"),
   ]
   .into_iter()
   .enumerate()
@@ -293,6 +325,7 @@ fn main() -> glib::ExitCode {
 #[derive(Clone, Copy, PartialEq)]
 enum ColumnId {
   Name,
+  Kind,
   Description,
   State,
   Startup,
@@ -380,6 +413,11 @@ fn build_unit_list(
       let mut tooltip: Option<String> = None;
       let text = match column_id {
         ColumnId::Name => unit.short_name().to_string(),
+        ColumnId::Kind => match unit.kind() {
+          UnitKind::Service => "Service".into(),
+          UnitKind::Timer => "Timer".into(),
+          UnitKind::Other => "Other".into(),
+        },
         ColumnId::Description => {
           tooltip = unit_descriptions::explain(&unit.name, unit.scope).map(String::from);
           unit.description.clone()
@@ -425,7 +463,12 @@ fn build_unit_list(
         icon.set_icon_name(Some(category_icon(unit)));
         let label = icon.next_sibling().and_downcast::<gtk::Label>().unwrap();
         label.set_text(&text);
-        cell.set_tooltip_text(Some(&format!("{} — {} ({})", unit.name, unit.activation_state, unit.sub_state)));
+        let status = if unit.is_template() {
+          "template (not an instance)".into()
+        } else {
+          format!("{} ({})", unit.activation_state, unit.sub_state)
+        };
+        cell.set_tooltip_text(Some(&format!("{} — {status}", unit.name)));
       } else {
         let label = item.child().and_downcast::<gtk::Label>().unwrap();
         label.set_text(&text);
@@ -453,6 +496,7 @@ fn build_unit_list(
       };
       let ordering = match column_id {
         ColumnId::Name => left.short_name().to_lowercase().cmp(&right.short_name().to_lowercase()),
+        ColumnId::Kind => (left.kind() as u8).cmp(&(right.kind() as u8)),
         ColumnId::Description => left.description.to_lowercase().cmp(&right.description.to_lowercase()),
         ColumnId::State => state_label(left).to_lowercase().cmp(&state_label(right).to_lowercase()),
         ColumnId::Startup => {
@@ -524,6 +568,19 @@ fn build_ui(app: &gtk::Application, demo: bool) {
     timer_meta.clone(),
     open_context_menu.clone(),
   ));
+  let templates = Rc::new(build_unit_list(
+    &[
+      ("Template", ColumnId::Name, false),
+      ("Type", ColumnId::Kind, false),
+      ("Description", ColumnId::Description, true),
+      ("Startup", ColumnId::Startup, false),
+      ("Origin", ColumnId::Origin, false),
+      ("Scope", ColumnId::Scope, false),
+    ],
+    rows.clone(),
+    timer_meta.clone(),
+    open_context_menu.clone(),
+  ));
   // Soonest-firing timers first, like `systemctl list-timers`
   if let Some(next_trigger_column) = timers.view.columns().item(2).and_downcast::<gtk::ColumnViewColumn>() {
     timers.view.sort_by_column(Some(&next_trigger_column), gtk::SortType::Ascending);
@@ -532,20 +589,31 @@ fn build_ui(app: &gtk::Application, demo: bool) {
   let stack = gtk::Stack::new();
   let services_scroller = gtk::ScrolledWindow::builder().child(&services.view).vexpand(true).hexpand(true).build();
   let timers_scroller = gtk::ScrolledWindow::builder().child(&timers.view).vexpand(true).hexpand(true).build();
+  let templates_scroller = gtk::ScrolledWindow::builder().child(&templates.view).vexpand(true).hexpand(true).build();
   stack.add_titled(&services_scroller, Some("services"), "Services");
   stack.add_titled(&timers_scroller, Some("timers"), "Timers");
+  stack.add_titled(&templates_scroller, Some("templates"), "Templates");
   let switcher = gtk::StackSwitcher::new();
   switcher.set_stack(Some(&stack));
 
-  let on_timers_page = {
+  let current_page = {
     let stack = stack.clone();
-    move || stack.visible_child_name().as_deref() == Some("timers")
+    move || match stack.visible_child_name().as_deref() {
+      Some("timers") => UnitPage::Timers,
+      Some("templates") => UnitPage::Templates,
+      _ => UnitPage::Services,
+    }
   };
   let current_selection = {
     let services = services.clone();
     let timers = timers.clone();
-    let on_timers_page = on_timers_page.clone();
-    move || if on_timers_page() { timers.selection.clone() } else { services.selection.clone() }
+    let templates = templates.clone();
+    let current_page = current_page.clone();
+    move || match current_page() {
+      UnitPage::Services => services.selection.clone(),
+      UnitPage::Timers => timers.selection.clone(),
+      UnitPage::Templates => templates.selection.clone(),
+    }
   };
   let selected_unit = {
     let rows = rows.clone();
@@ -564,9 +632,24 @@ fn build_ui(app: &gtk::Application, demo: bool) {
   let scope_filter = Rc::new(Cell::new(ScopeFilter::All));
   let scope = gtk::DropDown::from_strings(&["All scopes", "System", "User"]);
   scope.set_tooltip_text(Some("Filter by service scope"));
-  let show_hidden = gtk::ToggleButton::builder()
-    .icon_name("view-reveal-symbolic")
-    .tooltip_text("Show masked and not-found units")
+  let show_masked = gtk::CheckButton::with_label("Masked units");
+  let show_not_found = gtk::CheckButton::with_label("Not-found units");
+  let visibility_filters = gtk::Box::builder()
+    .orientation(gtk::Orientation::Vertical)
+    .spacing(6)
+    .margin_top(10)
+    .margin_bottom(10)
+    .margin_start(12)
+    .margin_end(12)
+    .build();
+  visibility_filters.append(&gtk::Label::builder().label("Include").xalign(0.0).css_classes(["heading"]).build());
+  visibility_filters.append(&show_masked);
+  visibility_filters.append(&show_not_found);
+  let visibility_popover = gtk::Popover::builder().child(&visibility_filters).build();
+  let visibility_button = gtk::MenuButton::builder()
+    .icon_name("view-filter-symbolic")
+    .tooltip_text("Choose which unavailable units to include")
+    .popover(&visibility_popover)
     .build();
   let search = gtk::SearchEntry::builder().placeholder_text("Filter units").hexpand(true).build();
   let start = gtk::Button::builder().icon_name("media-playback-start-symbolic").tooltip_text("Start service").build();
@@ -590,7 +673,7 @@ fn build_ui(app: &gtk::Application, demo: bool) {
   toolbar.append(&active_filter);
   toolbar.append(&failed_filter);
   toolbar.append(&inactive_filter);
-  toolbar.append(&show_hidden);
+  toolbar.append(&visibility_button);
   toolbar.append(&scope);
   toolbar.append(&search);
   toolbar.append(&start);
@@ -722,10 +805,20 @@ fn build_ui(app: &gtk::Application, demo: bool) {
     let rows = rows.clone();
     let services = services.clone();
     let timers = timers.clone();
+    let templates = templates.clone();
     let stack = stack.clone();
     move |unit: &UnitId| {
-      let is_timer = unit.name.ends_with(".timer");
-      let target = if is_timer { &timers.selection } else { &services.selection };
+      let page = rows
+        .borrow()
+        .iter()
+        .find(|row| row.unit.id() == *unit)
+        .map(|row| unit_page(&row.unit))
+        .unwrap_or_else(|| if unit.name.ends_with(".timer") { UnitPage::Timers } else { UnitPage::Services });
+      let target = match page {
+        UnitPage::Services => &services.selection,
+        UnitPage::Timers => &timers.selection,
+        UnitPage::Templates => &templates.selection,
+      };
       let position = (0..target.n_items()).find(|&position| {
         target
           .item(position)
@@ -735,7 +828,11 @@ fn build_ui(app: &gtk::Application, demo: bool) {
           .unwrap_or(false)
       });
       if let Some(position) = position {
-        stack.set_visible_child_name(if is_timer { "timers" } else { "services" });
+        stack.set_visible_child_name(match page {
+          UnitPage::Services => "services",
+          UnitPage::Timers => "timers",
+          UnitPage::Templates => "templates",
+        });
         target.set_selected(position);
       }
     }
@@ -789,22 +886,26 @@ fn build_ui(app: &gtk::Application, demo: bool) {
     let rows = rows.clone();
     let services = services.clone();
     let timers = timers.clone();
+    let templates = templates.clone();
     let search = search.clone();
     let filter = filter.clone();
     let scope_filter = scope_filter.clone();
-    let show_hidden = show_hidden.clone();
+    let show_masked = show_masked.clone();
+    let show_not_found = show_not_found.clone();
+    let visibility_button = visibility_button.clone();
     let all_filter = all_filter.clone();
     let active_filter = active_filter.clone();
     let failed_filter = failed_filter.clone();
     let inactive_filter = inactive_filter.clone();
-    let on_timers_page = on_timers_page.clone();
+    let current_page = current_page.clone();
     Rc::new(move || {
       let needle = search.text().to_lowercase();
       let selected_filter = filter.get();
       let selected_scope = scope_filter.get();
-      let include_hidden = show_hidden.is_active();
-      let count_timers = on_timers_page();
-      let previously_selected: Vec<Option<UnitId>> = [&services.selection, &timers.selection]
+      let include_masked = show_masked.is_active();
+      let include_not_found = show_not_found.is_active();
+      let visible_page = current_page();
+      let previously_selected: Vec<Option<UnitId>> = [&services.selection, &timers.selection, &templates.selection]
         .iter()
         .map(|selection| {
           selected_row_index(selection).and_then(|index| rows.borrow().get(index).map(|row| row.unit.id()))
@@ -816,8 +917,8 @@ fn build_ui(app: &gtk::Application, demo: bool) {
         // The filter counts describe the visible page, not the whole inventory
         let visible = borrowed_rows
           .iter()
-          .filter(|row| (row.unit.kind() == UnitKind::Timer) == count_timers)
-          .filter(|row| include_hidden || !is_hidden_by_default(&row.unit));
+          .filter(|row| unit_page(&row.unit) == visible_page)
+          .filter(|row| is_visible(&row.unit, include_masked, include_not_found));
         let (mut total, mut active, mut failed, mut inactive) = (0, 0, 0, 0);
         for row in visible {
           total += 1;
@@ -834,48 +935,55 @@ fn build_ui(app: &gtk::Application, demo: bool) {
         active_filter.set_label(&format!("Active {active}"));
         failed_filter.set_label(&format!("Failed {failed}"));
         inactive_filter.set_label(&format!("Inactive {inactive}"));
-        let hidden = borrowed_rows
-          .iter()
-          .filter(|row| (row.unit.kind() == UnitKind::Timer) == count_timers)
-          .filter(|row| is_hidden_by_default(&row.unit))
-          .count();
-        show_hidden.set_tooltip_text(Some(&format!("Show masked and not-found units ({hidden})")));
+        let masked =
+          borrowed_rows.iter().filter(|row| unit_page(&row.unit) == visible_page && is_masked(&row.unit)).count();
+        let not_found =
+          borrowed_rows.iter().filter(|row| unit_page(&row.unit) == visible_page && row.unit.is_not_found()).count();
+        visibility_button
+          .set_tooltip_text(Some(&format!("Additional units on this page: {masked} masked, {not_found} not found")));
       }
 
-      let (service_indices, timer_indices): (Vec<usize>, Vec<usize>) = {
+      let (service_indices, timer_indices, template_indices): (Vec<usize>, Vec<usize>, Vec<usize>) = {
         let borrowed_rows = rows.borrow();
         let mut service_indices = Vec::new();
         let mut timer_indices = Vec::new();
+        let mut template_indices = Vec::new();
         for (index, row) in borrowed_rows.iter().enumerate() {
           let unit = &row.unit;
           let matches_text =
             unit.name.to_lowercase().contains(&needle) || unit.description.to_lowercase().contains(&needle);
-          let matches_state = match selected_filter {
-            StatusFilter::All => true,
-            StatusFilter::Active => unit.activation_state == "active",
-            StatusFilter::Failed => unit.is_failed(),
-            StatusFilter::Inactive => unit.activation_state == "inactive",
+          let matches_state = if unit.is_template() {
+            true
+          } else {
+            match selected_filter {
+              StatusFilter::All => true,
+              StatusFilter::Active => unit.activation_state == "active",
+              StatusFilter::Failed => unit.is_failed(),
+              StatusFilter::Inactive => unit.activation_state == "inactive",
+            }
           };
           let matches_scope = match selected_scope {
             ScopeFilter::All => true,
             ScopeFilter::System => unit.scope == UnitScope::Global,
             ScopeFilter::User => unit.scope == UnitScope::User,
           };
-          let visible = include_hidden || !is_hidden_by_default(unit);
+          let visible = is_visible(unit, include_masked, include_not_found);
           if matches_text && matches_state && matches_scope && visible {
-            if unit.kind() == UnitKind::Timer {
-              timer_indices.push(index);
-            } else {
-              service_indices.push(index);
+            match unit_page(unit) {
+              UnitPage::Services => service_indices.push(index),
+              UnitPage::Timers => timer_indices.push(index),
+              UnitPage::Templates => template_indices.push(index),
             }
           }
         }
-        (service_indices, timer_indices)
+        (service_indices, timer_indices, template_indices)
       };
 
-      for (list, indices, previous) in
-        [(&services, &service_indices, &previously_selected[0]), (&timers, &timer_indices, &previously_selected[1])]
-      {
+      for (list, indices, previous) in [
+        (&services, &service_indices, &previously_selected[0]),
+        (&timers, &timer_indices, &previously_selected[1]),
+        (&templates, &template_indices, &previously_selected[2]),
+      ] {
         let strings: Vec<String> = indices.iter().map(|i| i.to_string()).collect();
         list.store.splice(0, list.store.n_items(), &strings.iter().map(String::as_str).collect::<Vec<_>>());
         // Keep the same unit selected across refreshes and filter changes
@@ -935,10 +1043,12 @@ fn build_ui(app: &gtk::Application, demo: bool) {
       rebuild();
     }
   });
-  show_hidden.connect_toggled({
-    let rebuild = rebuild.clone();
-    move |_| rebuild()
-  });
+  for button in [&show_masked, &show_not_found] {
+    button.connect_toggled({
+      let rebuild = rebuild.clone();
+      move |_| rebuild()
+    });
+  }
   for (button, value) in [
     (&all_filter, StatusFilter::All),
     (&active_filter, StatusFilter::Active),
@@ -1027,7 +1137,9 @@ fn build_ui(app: &gtk::Application, demo: bool) {
     let run_unit_action = run_unit_action.clone();
     move |kind: &'static str| {
       if let Some(unit) = selected_unit() {
-        run_unit_action(kind, unit.id());
+        if !unit.is_template() {
+          run_unit_action(kind, unit.id());
+        }
       }
     }
   });
@@ -1098,6 +1210,9 @@ fn build_ui(app: &gtk::Application, demo: bool) {
     move |_, parameter| {
       let Some(signal) = parameter.and_then(|p| p.str()).map(String::from) else { return };
       let Some(unit) = selected_unit() else { return };
+      if unit.is_template() {
+        return;
+      }
       let id = unit.id();
       if demo {
         status.set_text(&format!("Demo: kill {} with {signal}", id.name));
@@ -1186,19 +1301,24 @@ fn build_ui(app: &gtk::Application, demo: bool) {
     context_actions.add_action(&action);
   }
 
-  // The context menu is built per-click so it can be state-aware: timers get timer
-  // verbs and a jump to their service, services get kill signals and a jump to the
-  // timer that schedules them (when one does).
+  // The context menu is built per-click so it can be state-aware: templates only
+  // get unit-file operations, timers get timer verbs and a jump to their service,
+  // and services get kill signals and a jump to their timer (when one exists).
   *open_context_menu.borrow_mut() = Some(Box::new({
     let rows = rows.clone();
     let timer_meta = timer_meta.clone();
     let activated_by = activated_by.clone();
     let services = services.clone();
     let timers = timers.clone();
-    let on_timers_page = on_timers_page.clone();
+    let templates = templates.clone();
+    let current_page = current_page.clone();
     let context_actions = context_actions.clone();
     move |cell: &gtk::Widget, position: u32, x: f64, y: f64| {
-      let selection = if on_timers_page() { &timers.selection } else { &services.selection };
+      let selection = match current_page() {
+        UnitPage::Services => &services.selection,
+        UnitPage::Timers => &timers.selection,
+        UnitPage::Templates => &templates.selection,
+      };
       selection.set_selected(position);
       let Some(unit) =
         selected_row_index(selection).and_then(|index| rows.borrow().get(index).map(|row| row.unit.clone()))
@@ -1207,42 +1327,46 @@ fn build_ui(app: &gtk::Application, demo: bool) {
       };
 
       let menu = gtk::gio::Menu::new();
-      menu.append(Some("View Logs"), Some("context.view-logs"));
+      if !unit.is_template() {
+        menu.append(Some("View Logs"), Some("context.view-logs"));
+      }
       menu.append(Some("View Unit File"), Some("context.view-unit-file"));
-      if unit.kind() == UnitKind::Timer {
-        if unit.is_active() {
-          menu.append(Some("Stop Timer"), Some("context.stop-service"));
+      if !unit.is_template() {
+        if unit.kind() == UnitKind::Timer {
+          if unit.is_active() {
+            menu.append(Some("Stop Timer"), Some("context.stop-service"));
+          } else {
+            menu.append(Some("Start Timer"), Some("context.start-service"));
+          }
+          match unit.enablement_state.as_deref() {
+            Some("enabled" | "enabled-runtime") => menu.append(Some("Disable Timer"), Some("context.disable-service")),
+            Some("disabled") => menu.append(Some("Enable Timer"), Some("context.enable-service")),
+            _ => {},
+          }
+          if let Some(target) = timer_meta.borrow().get(&unit.id()).and_then(|meta| meta.activates.clone()) {
+            menu.append(Some(&format!("Run {target} Now")), Some("context.run-timer-service"));
+            menu.append(
+              Some(&format!("Go to {target}")),
+              Some(&format!("context.goto-unit('{}:{target}')", scope_prefix(unit.scope))),
+            );
+          }
         } else {
-          menu.append(Some("Start Timer"), Some("context.start-service"));
-        }
-        match unit.enablement_state.as_deref() {
-          Some("enabled" | "enabled-runtime") => menu.append(Some("Disable Timer"), Some("context.disable-service")),
-          Some("disabled") => menu.append(Some("Enable Timer"), Some("context.enable-service")),
-          _ => {},
-        }
-        if let Some(target) = timer_meta.borrow().get(&unit.id()).and_then(|meta| meta.activates.clone()) {
-          menu.append(Some(&format!("Run {target} Now")), Some("context.run-timer-service"));
-          menu.append(
-            Some(&format!("Go to {target}")),
-            Some(&format!("context.goto-unit('{}:{target}')", scope_prefix(unit.scope))),
-          );
-        }
-      } else {
-        menu.append(Some("Start"), Some("context.start-service"));
-        menu.append(Some("Stop"), Some("context.stop-service"));
-        menu.append(Some("Restart"), Some("context.restart-service"));
-        menu.append(Some("Enable at Startup"), Some("context.enable-service"));
-        menu.append(Some("Disable at Startup"), Some("context.disable-service"));
-        let kill = gtk::gio::Menu::new();
-        for signal in ["SIGTERM", "SIGHUP", "SIGINT", "SIGQUIT", "SIGKILL", "SIGUSR1", "SIGUSR2"] {
-          kill.append(Some(signal), Some(&format!("context.kill-service('{signal}')")));
-        }
-        menu.append_submenu(Some("Kill"), &kill);
-        if let Some(timer) = activated_by.borrow().get(&unit.id()) {
-          menu.append(
-            Some(&format!("Go to {}", timer.name)),
-            Some(&format!("context.goto-unit('{}:{}')", scope_prefix(timer.scope), timer.name)),
-          );
+          menu.append(Some("Start"), Some("context.start-service"));
+          menu.append(Some("Stop"), Some("context.stop-service"));
+          menu.append(Some("Restart"), Some("context.restart-service"));
+          menu.append(Some("Enable at Startup"), Some("context.enable-service"));
+          menu.append(Some("Disable at Startup"), Some("context.disable-service"));
+          let kill = gtk::gio::Menu::new();
+          for signal in ["SIGTERM", "SIGHUP", "SIGINT", "SIGQUIT", "SIGKILL", "SIGUSR1", "SIGUSR2"] {
+            kill.append(Some(signal), Some(&format!("context.kill-service('{signal}')")));
+          }
+          menu.append_submenu(Some("Kill"), &kill);
+          if let Some(timer) = activated_by.borrow().get(&unit.id()) {
+            menu.append(
+              Some(&format!("Go to {}", timer.name)),
+              Some(&format!("context.goto-unit('{}:{}')", scope_prefix(timer.scope), timer.name)),
+            );
+          }
         }
       }
       let files = gtk::gio::Menu::new();
@@ -1283,26 +1407,30 @@ fn build_ui(app: &gtk::Application, demo: bool) {
     move || {
       let selected = selected_unit();
       let is_timer = selected.as_ref().is_some_and(|unit| unit.kind() == UnitKind::Timer);
+      let is_template = selected.as_ref().is_some_and(UnitWithStatus::is_template);
       let active = selected.as_ref().map(|unit| unit.is_active());
-      start.set_sensitive(active == Some(false));
-      stop.set_sensitive(active == Some(true));
-      restart.set_sensitive(active.is_some() && !is_timer);
+      start.set_sensitive(active == Some(false) && !is_template);
+      stop.set_sensitive(active == Some(true) && !is_template);
+      restart.set_sensitive(active.is_some() && !is_timer && !is_template);
       let timer_target = selected
         .as_ref()
-        .filter(|unit| unit.kind() == UnitKind::Timer)
+        .filter(|unit| unit.kind() == UnitKind::Timer && !unit.is_template())
         .and_then(|unit| timer_meta.borrow().get(&unit.id()).and_then(|meta| meta.activates.clone()));
-      run_now.set_visible(is_timer);
+      run_now.set_visible(is_timer && !is_template);
       run_now.set_sensitive(timer_target.is_some());
       if let Some(target) = &timer_target {
         run_now.set_tooltip_text(Some(&format!("Run {target} now")));
       }
       let startup = selected.as_ref().and_then(|unit| unit.enablement_state.clone());
-      enable.set_sensitive(matches!(startup.as_deref(), Some("disabled")));
-      disable.set_sensitive(matches!(startup.as_deref(), Some("enabled" | "enabled-runtime")));
+      enable.set_sensitive(!is_template && matches!(startup.as_deref(), Some("disabled")));
+      disable.set_sensitive(!is_template && matches!(startup.as_deref(), Some("enabled" | "enabled-runtime")));
       if let Some(unit) = selected {
-        let mut summary =
-          format!("{}  ·  {}  ·  {}/{}", unit.name, unit.description, unit.activation_state, unit.sub_state);
-        if is_timer {
+        let mut summary = if is_template {
+          format!("{}  ·  {}  ·  template (not an instance)", unit.name, unit.description)
+        } else {
+          format!("{}  ·  {}  ·  {}/{}", unit.name, unit.description, unit.activation_state, unit.sub_state)
+        };
+        if is_timer && !is_template {
           if let Some(next) = timer_meta.borrow().get(&unit.id()).and_then(|meta| meta.next_elapse.as_deref()) {
             summary.push_str(&format!("  ·  next run {}", relative_timestamp(next)));
           }
@@ -1318,7 +1446,36 @@ fn build_ui(app: &gtk::Application, demo: bool) {
           let generation = log_generation.get().wrapping_add(1);
           log_generation.set(generation);
           let tx = tx.clone();
-          if demo {
+          if unit.is_template() {
+            let message = template_logs_message(&unit_id.name);
+            let details = UnitRuntimeInfo::default();
+            if demo {
+              let _ = tx.send(Reply::Details {
+                unit: unit_id,
+                generation,
+                details: Box::new(Ok(details)),
+                logs: Ok(vec![LogEntry::plain(message)]),
+                definition: Ok(format!(
+                  "# /usr/lib/systemd/system/{}\n[Unit]\nDescription={}\n\n[Service]\nExecStart=/usr/bin/backup %i\n",
+                  unit.name, unit.description
+                )),
+              });
+            } else {
+              std::thread::spawn(move || {
+                let definition = tokio::runtime::Runtime::new()
+                  .unwrap()
+                  .block_on(gui_backend::load_unit_definition(unit_id.clone()))
+                  .map_err(|e| format!("{e:#}"));
+                let _ = tx.send(Reply::Details {
+                  unit: unit_id,
+                  generation,
+                  details: Box::new(Ok(details)),
+                  logs: Ok(vec![LogEntry::plain(message)]),
+                  definition,
+                });
+              });
+            }
+          } else if demo {
             let is_demo_timer = unit.kind() == UnitKind::Timer;
             let details = UnitRuntimeInfo {
               fragment_path: format!("/usr/lib/systemd/system/{}", unit_id.name),
@@ -1414,10 +1571,20 @@ fn build_ui(app: &gtk::Application, demo: bool) {
     let update_actions = update_actions.clone();
     move |_| update_actions()
   });
+  templates.selection.connect_selected_notify({
+    let update_actions = update_actions.clone();
+    move |_| update_actions()
+  });
   stack.connect_visible_child_notify({
     let update_actions = update_actions.clone();
     let rebuild = rebuild.clone();
+    let current_page = current_page.clone();
+    let state_buttons = [all_filter.clone(), active_filter.clone(), failed_filter.clone(), inactive_filter.clone()];
     move |_| {
+      let show_state = current_page() != UnitPage::Templates;
+      for button in &state_buttons {
+        button.set_visible(show_state);
+      }
       rebuild();
       update_actions();
     }
@@ -1576,6 +1743,23 @@ fn build_detail_rows(
   timer_meta: &HashMap<UnitId, TimerListEntry>,
   activated_by: &HashMap<UnitId, UnitId>,
 ) -> Vec<DetailRow> {
+  if unit.is_template() {
+    let mut detail_rows = vec![
+      DetailRow::text("Status", "template (not an instance)"),
+      DetailRow::text("Instance", template_instance_example(&unit.name)),
+      DetailRow::text("Startup", unit.enablement_state.clone().unwrap_or_else(|| "—".into())),
+      DetailRow::text("Origin", unit_origin(unit)),
+      DetailRow::text("Scope", scope_label(unit.scope)),
+    ];
+    if let Some(Ok(path)) = &unit.file_path {
+      detail_rows.push(DetailRow::text("Unit file", path));
+    }
+    if let Some(about) = unit_descriptions::explain(&unit.name, unit.scope) {
+      detail_rows.push(DetailRow::wrapped("About", about));
+    }
+    return detail_rows;
+  }
+
   let mut detail_rows = vec![
     DetailRow::text("Status", format!("{} / {}", unit.activation_state, unit.sub_state)),
     DetailRow::text("Startup", unit.enablement_state.clone().unwrap_or_else(|| "—".into())),
@@ -1653,4 +1837,67 @@ fn build_detail_rows(
     detail_rows.push(DetailRow::wrapped("About", about));
   }
   detail_rows
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn test_unit(name: &str) -> UnitWithStatus {
+    UnitWithStatus {
+      name: name.into(),
+      scope: UnitScope::Global,
+      description: String::new(),
+      file_path: None,
+      load_state: "not-loaded".into(),
+      activation_state: "inactive".into(),
+      sub_state: "dead".into(),
+      enablement_state: Some("disabled".into()),
+    }
+  }
+
+  #[test]
+  fn templates_have_their_own_page() {
+    let template = test_unit("backup@.service");
+    let instance = test_unit("backup@nightly.service");
+    let timer_template = test_unit("cleanup@.timer");
+
+    assert!(unit_page(&template) == UnitPage::Templates);
+    assert!(unit_page(&timer_template) == UnitPage::Templates);
+    assert!(unit_page(&instance) == UnitPage::Services);
+  }
+
+  #[test]
+  fn unavailable_unit_filters_are_independent() {
+    let mut masked = test_unit("masked.service");
+    masked.enablement_state = Some("masked".into());
+    let mut not_found = test_unit("missing.service");
+    not_found.load_state = "not-found".into();
+
+    assert!(!is_visible(&masked, false, false));
+    assert!(is_visible(&masked, true, false));
+    assert!(!is_visible(&not_found, true, false));
+    assert!(is_visible(&not_found, false, true));
+  }
+
+  #[test]
+  fn template_copy_explains_instances() {
+    assert_eq!(state_label(&test_unit("backup@.service")), "Template");
+    assert_eq!(template_instance_example("backup@.service"), "backup@INSTANCE.service");
+    assert_eq!(
+      template_logs_message("backup@.service"),
+      "backup@.service is a unit template, not a running service. Logs belong to concrete instances such as backup@INSTANCE.service."
+    );
+  }
+
+  #[test]
+  fn template_details_do_not_claim_runtime_state() {
+    let rows =
+      build_detail_rows(&test_unit("backup@.service"), &UnitRuntimeInfo::default(), &HashMap::new(), &HashMap::new());
+    let values: Vec<(&str, &str)> = rows.iter().map(|row| (row.name, row.value.as_str())).collect();
+
+    assert!(values.contains(&("Status", "template (not an instance)")));
+    assert!(values.contains(&("Instance", "backup@INSTANCE.service")));
+    assert!(!values.iter().any(|(name, _)| *name == "PID"));
+  }
 }
