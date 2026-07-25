@@ -31,6 +31,29 @@ jobs:
     - name: Run tests
       run: cargo test
 
+  # The GUI is excluded from workspace default-members because it needs GTK 4
+  # system libraries, so it gets its own job.
+  build_gui:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Install toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache dependencies
+      uses: Swatinem/rust-cache@v2
+
+    - name: Install GTK 4
+      run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev
+
+    - name: Run Clippy
+      run: cargo clippy -p systemctl-gui --all-targets -- -D warnings
+
+    - name: Run tests
+      run: cargo test -p systemctl-gui
+
   # End-to-end tests: drives the real binary in tmux, both against local systemd
   # and in --host mode against sshd on the runner itself (runners run real systemd)
   integration:

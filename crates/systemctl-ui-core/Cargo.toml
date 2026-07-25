@@ -1,0 +1,19 @@
+[package]
+name = "systemctl-ui-core"
+description = "Internal library for systemctl-tui and systemctl-gui. Not a general-purpose systemd wrapper; no API stability guarantees."
+repository = "https://github.com/rgwood/systemctl-tui"
+version = "0.1.0"
+edition = "2021"
+authors = ["Reilly Wood"]
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0.71"
+chrono = { version = "0.4.31", default-features = false, features = ["clock"] }
+log = "0.4.19"
+nix = { version = "0.31.0", features = ["user", "signal"] }
+serde_json = "1"
+tokio = { version = "1.28.2", features = ["full"] }
+tokio-util = "0.7.8"
+tracing = "0.1.37"
+zbus = { version = "5", default-features = false, features = ["tokio"] }

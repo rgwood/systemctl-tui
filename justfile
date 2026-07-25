@@ -13,10 +13,23 @@ run:
 test:
     cargo test
 
+# The GUI is excluded from default-members (needs libgtk-4-dev), build/run it explicitly
+build-gui:
+    cargo build -p systemctl-gui
+
+run-gui:
+    cargo run -p systemctl-gui
+
 watch-tests:
     watchexec --exts=rs -- cargo test
 
 expected_filename := "systemctl-tui"
+
+# Publishes core + TUI to crates.io in dependency order. Plain `cargo publish`
+# from the repo root does the same thing (cargo 1.90+); this recipe just makes
+# the release step discoverable.
+publish-to-crates-io:
+    cargo publish --workspace
 
 build-release:
     cargo build --release
