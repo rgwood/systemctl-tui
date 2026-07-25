@@ -10,7 +10,7 @@ expression: terminal.backend()
 "│docker                      ││     Active: active (running)                                                           │"
 "│nginx                       ││ Enablement: enabled · global                                                           │"
 "│bad-config                 ╭─All commands─────────────────────────────────────────────────╮                           │"
-"│[T] backup                 │╭ Search commands ───────────────────────────────────────────╮│───────────────────────────╯"
+"│[T] backup                 │╭─Search commands────────────────────────────────────────────╮│───────────────────────────╯"
 "│ssh                        ││                                                            ││───────────────────────────╮"
 "│                           │╰────────────────────────────────────────────────────────────╯│                           │"
 "│                           │ Selected unit · cron.service                                 │                           │"

@@ -23,7 +23,7 @@ use tui_input::{backend::crossterm::EventHandler, Input};
 
 use std::{collections::HashSet, process::Stdio, time::Duration};
 
-use super::{logger::Logger, Component, Frame};
+use super::{block_title, logger::Logger, Component, Frame};
 use crate::{
   action::Action,
   format::{format_bytes, format_duration, format_systemd_timestamp},
@@ -2077,11 +2077,11 @@ impl Component for Home {
           } else {
             Style::default()
           })
-          .title(if self.is_status_filter_active() {
-            format!("─Units ({} hidden)", self.status_hidden_count)
+          .title(block_title(if self.is_status_filter_active() {
+            format!("Units ({} hidden)", self.status_hidden_count)
           } else {
-            "─Units".to_string()
-          }),
+            "Units".to_string()
+          })),
       )
       .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
 
@@ -2275,7 +2275,8 @@ impl Component for Home {
     let details_panel = right_panel[0];
     let logs_panel = right_panel[1];
 
-    let details_block = Block::default().title("─Details").borders(Borders::ALL).border_type(BorderType::Rounded);
+    let details_block =
+      Block::default().title(block_title("Details")).borders(Borders::ALL).border_type(BorderType::Rounded);
     let details_inner = details_block.inner(details_panel);
     f.render_widget(details_block, details_panel);
 
@@ -2428,7 +2429,7 @@ impl Component for Home {
     let paragraph = Paragraph::new(log_lines)
       .block(
         Block::default()
-          .title(format!("─Logs — {logs_unit} [{order_label}; ctrl+r to reverse]"))
+          .title(block_title(format!("Logs — {logs_unit} [{order_label}; ctrl+r to reverse]")))
           .borders(Borders::ALL)
           .border_type(BorderType::Rounded),
       )
@@ -2518,14 +2519,16 @@ impl Component for Home {
         _ => Style::default(),
       })
       .scroll((0, scroll as u16))
-      .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(Line::from(vec![
-        Span::raw("─Search "),
-        Span::styled("(", Style::default().fg(theme.muted_alt)),
-        Span::styled("ctrl+f", Style::default().add_modifier(Modifier::BOLD).fg(theme.kbd)),
-        Span::styled(" or ", Style::default().fg(theme.muted_alt)),
-        Span::styled("/", Style::default().add_modifier(Modifier::BOLD).fg(theme.kbd)),
-        Span::styled(")", Style::default().fg(theme.muted_alt)),
-      ])));
+      .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(block_title(Line::from(
+        vec![
+          Span::raw("Search "),
+          Span::styled("(", Style::default().fg(theme.muted_alt)),
+          Span::styled("ctrl+f", Style::default().add_modifier(Modifier::BOLD).fg(theme.kbd)),
+          Span::styled(" or ", Style::default().fg(theme.muted_alt)),
+          Span::styled("/", Style::default().add_modifier(Modifier::BOLD).fg(theme.kbd)),
+          Span::styled(")", Style::default().fg(theme.muted_alt)),
+        ],
+      ))));
     f.render_widget(input, search_panel);
     // clear top right of search panel so we can put help instructions there
     let help_width = 24;
@@ -2576,10 +2579,10 @@ impl Component for Home {
 
       let name = env!("CARGO_PKG_NAME");
       let version = env!("CARGO_PKG_VERSION");
-      let title = format!("─Help for {name} v{version}");
+      let title = format!("Help for {name} v{version}");
 
       let paragraph = Paragraph::new(help_lines)
-        .block(Block::default().title(title).borders(Borders::ALL).border_type(BorderType::Rounded))
+        .block(Block::default().title(block_title(title)).borders(Borders::ALL).border_type(BorderType::Rounded))
         .style(Style::default())
         .wrap(Wrap { trim: true });
 
@@ -2593,7 +2596,7 @@ impl Component for Home {
       let paragraph = Paragraph::new(error_lines)
         .block(
           Block::default()
-            .title("─Error")
+            .title(block_title("Error"))
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(Color::Red)),
@@ -2607,7 +2610,7 @@ impl Component for Home {
     if self.mode == Mode::UnitExplanation {
       let selected = self.filtered_units.selected();
       let text = selected.and_then(|s| crate::unit_descriptions::explain(&s.unit.name, s.unit.scope)).unwrap_or("");
-      let title = selected.map(|s| format!("─What is {}?", s.unit.name)).unwrap_or_else(|| "─What is it?".to_string());
+      let title = selected.map(|s| format!("What is {}?", s.unit.name)).unwrap_or_else(|| "What is it?".to_string());
 
       let area = f.area();
       let popup_width = 64u16.min(area.width.saturating_sub(4)).max(20);
@@ -2630,7 +2633,7 @@ impl Component for Home {
       let paragraph = Paragraph::new(lines)
         .block(
           Block::default()
-            .title(title)
+            .title(block_title(title))
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.accent))
@@ -2690,7 +2693,7 @@ impl Component for Home {
     f.render_widget(Line::from(version), version_rect);
 
     let title = format!("Commands for {}", selected_unit_name);
-    let mut min_width = title.len() as u16 + 2; // title plus corners
+    let mut min_width = block_title(title.as_str()).width() as u16 + 2; // title plus corners
     let item_width = self.menu_items.items.iter().map(|item| item.name.chars().count() as u16 + 5).max().unwrap_or(0);
     min_width = min_width.max(item_width);
 
@@ -2753,7 +2756,7 @@ impl Component for Home {
           .borders(Borders::ALL)
           .border_type(BorderType::Rounded)
           .border_style(Style::default().fg(theme.accent))
-          .title("─Unit filters"),
+          .title(block_title("Unit filters")),
       );
 
       f.render_widget(Clear, popup);
@@ -2829,7 +2832,7 @@ impl Component for Home {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.accent))
-        .title("─All commands");
+        .title(block_title("All commands"));
       f.render_widget(Clear, popup);
       f.render_widget(outer, popup);
 
@@ -2838,9 +2841,9 @@ impl Component for Home {
       let search_rect = Rect { x: inner.x, y: inner.y, width: inner.width, height: search_height };
       let search_width = search_rect.width.saturating_sub(2).max(1);
       let scroll = self.command_input.visual_scroll(search_width as usize);
-      let search = Paragraph::new(self.command_input.value())
-        .scroll((0, scroll as u16))
-        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Search commands "));
+      let search = Paragraph::new(self.command_input.value()).scroll((0, scroll as u16)).block(
+        Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(block_title("Search commands")),
+      );
       f.render_widget(search, search_rect);
 
       let list_rect = Rect {
@@ -2893,7 +2896,7 @@ impl Component for Home {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.accent))
-            .title(title),
+            .title(block_title(title)),
         )
         .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
 
@@ -2925,7 +2928,7 @@ impl Component for Home {
       let paragraph = Paragraph::new(vec![Line::from(format!("{spinner_char}"))])
         .block(
           Block::default()
-            .title("Processing")
+            .title(block_title("Processing"))
             .border_type(BorderType::Rounded)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.accent)),

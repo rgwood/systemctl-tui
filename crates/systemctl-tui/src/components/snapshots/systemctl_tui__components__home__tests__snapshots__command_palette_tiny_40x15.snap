@@ -3,7 +3,7 @@ source: crates/systemctl-tui/src/components/home.rs
 expression: terminal.backend()
 ---
 "╭─All commands─────────────────────────╮"
-"│╭ Search commands ───────────────────╮│"
+"│╭─Search commands────────────────────╮│"
 "││                                    ││"
 "│╰────────────────────────────────────╯│"
 "│  Stop                               t│"
