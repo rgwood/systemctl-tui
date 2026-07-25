@@ -8,7 +8,7 @@ use ratatui::{
 use tokio::sync::mpsc::UnboundedSender;
 use tui_logger::{TuiLoggerLevelOutput, TuiLoggerWidget, TuiWidgetState};
 
-use super::{Component, Frame};
+use super::{block_title, Component, Frame};
 use crate::action::Action;
 
 #[derive(Default)]
@@ -24,7 +24,12 @@ impl Component for Logger {
 
   fn render(&mut self, f: &mut Frame<'_>, rect: Rect) {
     let w = TuiLoggerWidget::default()
-      .block(Block::default().title("─systemctl-tui logs").borders(Borders::ALL).border_type(BorderType::Rounded))
+      .block(
+        Block::default()
+          .title(block_title("systemctl-tui logs"))
+          .borders(Borders::ALL)
+          .border_type(BorderType::Rounded),
+      )
       .style_error(Style::default().fg(Color::Red))
       .style_debug(Style::default().fg(Color::Green))
       .style_warn(Style::default().fg(Color::Yellow))

@@ -1,12 +1,24 @@
 use anyhow::Result;
 use crossterm::event::{KeyEvent, MouseEvent};
-use ratatui::{layout::Rect, Frame};
+use ratatui::{
+  layout::Rect,
+  text::{Line, Span},
+  Frame,
+};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{action::Action, event::Event};
 
 pub mod home;
 pub mod logger;
+
+/// Add one border cell of breathing room around a block title.
+pub fn block_title<'a>(title: impl Into<Line<'a>>) -> Line<'a> {
+  let mut title = title.into();
+  title.spans.insert(0, Span::raw("─"));
+  title.push_span("─");
+  title
+}
 
 pub trait Component {
   #[allow(unused_variables)]
@@ -38,4 +50,16 @@ pub trait Component {
     None
   }
   fn render(&mut self, f: &mut Frame<'_>, rect: Rect);
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn block_titles_include_border_padding() {
+    let title = block_title("Details");
+    let text = title.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
+    assert_eq!(text, "─Details─");
+  }
 }
