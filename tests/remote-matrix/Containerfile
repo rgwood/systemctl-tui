@@ -57,6 +57,9 @@ RUN mkdir -p /root/.ssh /home/testuser/.ssh /home/nojournal/.ssh \
 # Dummy unit at system scope: something safe for the tests to start/stop/restart
 COPY sctui-test.service /etc/systemd/system/sctui-test.service
 COPY sctui-test.timer /etc/systemd/system/sctui-test.timer
+# Keep this fixture in the vendor directory: systemd refuses to replace a
+# local unit file in /etc with the /etc symlink that implements masking.
+COPY sctui-mask-test.service /usr/lib/systemd/system/sctui-mask-test.service
 
 # User-scope dummy unit for testuser. Deliberately a *different* name from the system
 # unit: it only shows up if the user-bus bridge really connects to the user bus, which

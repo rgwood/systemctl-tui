@@ -6,6 +6,7 @@ Description=systemctl-tui integration test dummy unit
 # lines from ones already on screen (the logs pane holds ~26 lines and fills up
 # with identical Started/Stopped lines as restarts accumulate in the journal)
 ExecStart=/bin/sh -c 'echo "sctui-run-$(date +%%s%%N)"; exec sleep infinity'
+ExecReload=/bin/sh -c 'echo "sctui-reload-$(date +%%s%%N)"; touch /run/sctui-reloaded'
 
 [Install]
 WantedBy=multi-user.target default.target
