@@ -601,13 +601,7 @@ impl Home {
       .all_units
       .values()
       .filter(|u| {
-        // Templates are hidden while browsing by default, but searching should
-        // always be able to find one without making the user visit the filter first.
-        let passes_form = if u.is_template() {
-          !search_value.is_empty() || self.filtered_statuses.contains(&UnitStatus::Template)
-        } else {
-          true
-        };
+        let passes_form = !u.is_template() || self.filtered_statuses.contains(&UnitStatus::Template);
         let passes_type = self.filtered_statuses.contains(&UnitStatus::unit_kind_bucket(u.kind()));
         let passes_activation = self.filtered_statuses.contains(&UnitStatus::activation_bucket(&u.activation_state));
 
@@ -2908,7 +2902,7 @@ mod tests {
   }
 
   #[test]
-  fn search_finds_a_template_hidden_by_the_default_filter() {
+  fn search_respects_the_template_filter() {
     let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
     let (journalctl_tx, _journalctl_rx) = std::sync::mpsc::channel();
     home.journalctl_tx = Some(journalctl_tx);
@@ -2918,8 +2912,7 @@ mod tests {
 
     home.refresh_filtered_units();
 
-    assert_eq!(home.filtered_units.items.len(), 1);
-    assert_eq!(home.filtered_units.items[0].unit.name, "backup@.service");
+    assert!(home.filtered_units.items.is_empty());
   }
 
   #[test]
