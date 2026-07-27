@@ -1,5 +1,5 @@
 ---
-source: src/components/home.rs
+source: crates/systemctl-tui/src/components/home.rs
 expression: terminal.backend()
 ---
 "╭─Search (╭─Unit filters─────╮or help ─╮"
@@ -16,4 +16,4 @@ expression: terminal.backend()
 "│         │  ✓ masked       m││        │"
 "│         │  ✓ loaded       l││        │"
 "╰─────────│    not-found    u│╰────────╯"
-"Toggle: <s╰──────────────────╯e: nv0.7.0"
+"Toggle: <s╰──────────────────╯e: nv0.8.0"

@@ -16,4 +16,4 @@ expression: terminal.backend()
 "│                            ││        │"
 "│                            ││        │"
 "╰────────────────────────────╯╰────────╯"
-"Unit commands: enter | All commandv0.7.0"
+"Unit commands: enter | All commandv0.8.0"

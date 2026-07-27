@@ -1,5 +1,5 @@
 ---
-source: src/components/home.rs
+source: crates/systemctl-tui/src/components/home.rs
 expression: terminal.backend()
 ---
 "╭─Search (ctrl+f or /)──────────────────────────────────────────────────────────────────────── Press ? or F1 for help ─╮"
@@ -41,4 +41,4 @@ expression: terminal.backend()
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"
 "╰────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────────────────╯"
-"Close menu: <esc>                                                                                                 v0.7.0"
+"Close menu: <esc>                                                                                                 v0.8.0"

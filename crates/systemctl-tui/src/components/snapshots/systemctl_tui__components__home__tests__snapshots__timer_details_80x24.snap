@@ -25,4 +25,4 @@ expression: terminal.backend()
 "│                            ││                                                │"
 "│                            ││                                                │"
 "╰────────────────────────────╯╰────────────────────────────────────────────────╯"
-"Unit commands: enter | All commands: ctrl+p | Filter: F2 | Navigate: tab  v0.7.0"
+"Unit commands: enter | All commands: ctrl+p | Filter: F2 | Navigate: tab  v0.8.0"

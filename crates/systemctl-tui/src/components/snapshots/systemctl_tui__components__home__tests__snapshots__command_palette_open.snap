@@ -41,4 +41,4 @@ expression: terminal.backend()
 "│                            ││                                                                                        │"
 "│                            ││                                                                                        │"
 "╰────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────────────────╯"
-"Run command: <enter> | Navigate: <up>/<down> | Close: <esc>                                                       v0.7.0"
+"Run command: <enter> | Navigate: <up>/<down> | Close: <esc>                                                       v0.8.0"
