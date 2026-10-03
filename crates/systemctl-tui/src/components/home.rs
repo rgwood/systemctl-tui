@@ -2540,21 +2540,23 @@ impl Component for Home {
         ],
       ))));
     f.render_widget(input, search_panel);
-    // clear top right of search panel so we can put help instructions there
+    // Only draw the help hint when it fits inside the search panel.
     let help_width = 24;
-    let help_area = Rect::new(search_panel.x + search_panel.width - help_width - 2, search_panel.y, help_width, 1);
-    f.render_widget(Clear, help_area);
-    let help_text = Paragraph::new(Line::from(vec![
-      Span::raw(" Press "),
-      Span::styled("?", Style::default().add_modifier(Modifier::BOLD).fg(theme.kbd)),
-      Span::raw(" or "),
-      Span::styled("F1", Style::default().add_modifier(Modifier::BOLD).fg(theme.kbd)),
-      Span::raw(" for help "),
-    ]))
-    .style(Style::default().fg(theme.muted_alt));
-    f.render_widget(help_text, help_area);
+    if search_panel.width >= help_width + 2 && search_panel.height > 0 {
+      let help_area = Rect::new(search_panel.right() - help_width - 2, search_panel.y, help_width, 1);
+      f.render_widget(Clear, help_area);
+      let help_text = Paragraph::new(Line::from(vec![
+        Span::raw(" Press "),
+        Span::styled("?", Style::default().add_modifier(Modifier::BOLD).fg(theme.kbd)),
+        Span::raw(" or "),
+        Span::styled("F1", Style::default().add_modifier(Modifier::BOLD).fg(theme.kbd)),
+        Span::raw(" for help "),
+      ]))
+      .style(Style::default().fg(theme.muted_alt));
+      f.render_widget(help_text, help_area);
+    }
 
-    if self.mode == Mode::Search {
+    if self.mode == Mode::Search && search_panel.width > 2 && search_panel.height > 2 {
       f.set_cursor_position((
         (search_panel.x + 1 + self.input.cursor() as u16).min(search_panel.x + search_panel.width - 2),
         search_panel.y + 1,
@@ -3649,6 +3651,33 @@ mod tests {
       let mut home = fixture();
       let terminal = render(&mut home, 40, 15);
       insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn search_header_handles_narrow_terminals() {
+      let mut home = fixture();
+      let mut terminal = Terminal::new(TestBackend::new(120, 15)).unwrap();
+      for mode in [Mode::ServiceList, Mode::Search] {
+        home.mode = mode;
+        home.input = Input::default().with_value("ssh".to_string());
+        for height in [15, 2, 1, 0, 15] {
+          for width in [120].into_iter().chain((0..=27).rev()).chain([120]) {
+            terminal.backend_mut().resize(width, height);
+            terminal.draw(|frame| home.render(frame, frame.area())).unwrap();
+            let header: String =
+              terminal.backend().buffer().content.iter().take(width as usize).map(|cell| cell.symbol()).collect();
+            assert_eq!(
+              header.contains("Press ? or F1 for help"),
+              width >= 26 && height > 0,
+              "terminal size {width}x{height}"
+            );
+            if mode == Mode::Search && width > 2 && height > 2 {
+              let cursor = terminal.get_cursor_position().unwrap();
+              assert!(home.search_panel.inner(Margin::new(1, 1)).contains(cursor));
+            }
+          }
+        }
+      }
     }
 
     #[test]
