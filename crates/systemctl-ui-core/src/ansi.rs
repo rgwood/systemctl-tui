@@ -5,6 +5,7 @@
 //! Other sequences (cursor movement, hyperlinks, window titles) are dropped.
 
 use std::ops::Range;
+use vte::{Params, Parser, Perform};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnsiColor {
@@ -39,104 +40,104 @@ pub fn parse_ansi(input: &str) -> (String, Vec<StyledRun>) {
     return (input.to_string(), Vec::new());
   }
 
-  let mut text = String::with_capacity(input.len());
-  let mut runs = Vec::new();
-  let mut style = AnsiStyle::default();
-  let mut run_start = 0;
-  let mut rest = input;
+  let mut performer = AnsiText { text: String::with_capacity(input.len()), ..Default::default() };
+  Parser::new().advance(&mut performer, input.as_bytes());
+  performer.finish_run();
+  (performer.text, performer.runs)
+}
 
-  while let Some(esc) = rest.find('\x1b') {
-    text.push_str(&rest[..esc]);
-    let sequence = &rest[esc + 1..];
-    let len = sequence_len(sequence);
+#[derive(Default)]
+struct AnsiText {
+  text: String,
+  runs: Vec<StyledRun>,
+  style: AnsiStyle,
+  run_start: usize,
+}
 
-    if let Some(params) = sequence[..len].strip_prefix('[').and_then(|csi| csi.strip_suffix('m')) {
-      let mut new_style = style;
-      apply_sgr(&mut new_style, params);
-      if new_style != style {
-        if style != AnsiStyle::default() && text.len() > run_start {
-          runs.push(StyledRun { range: run_start..text.len(), style });
-        }
-        style = new_style;
-        run_start = text.len();
-      }
+impl AnsiText {
+  fn finish_run(&mut self) {
+    if self.style != AnsiStyle::default() && self.text.len() > self.run_start {
+      self.runs.push(StyledRun { range: self.run_start..self.text.len(), style: self.style });
     }
-    rest = &sequence[len..];
-  }
-  text.push_str(rest);
-
-  if style != AnsiStyle::default() && text.len() > run_start {
-    runs.push(StyledRun { range: run_start..text.len(), style });
-  }
-  (text, runs)
-}
-
-/// The length in bytes of the escape sequence whose ESC has just been consumed. Everything
-/// that gets counted is ASCII, so the result is always a char boundary.
-fn sequence_len(sequence: &str) -> usize {
-  let bytes = sequence.as_bytes();
-  match bytes.first() {
-    // CSI: parameter and intermediate bytes, then a final byte
-    Some(b'[') => {
-      let body = bytes[1..].iter().take_while(|b| (0x20..=0x3f).contains(*b)).count();
-      let has_final = bytes.get(1 + body).is_some_and(|b| (0x40..=0x7e).contains(b));
-      1 + body + usize::from(has_final)
-    },
-    // OSC, DCS, SOS, PM, APC: a string ended by BEL or ST (ESC \). If it's never ended,
-    // only remove the introducer; better to show junk than to lose log text.
-    Some(b']' | b'P' | b'X' | b'^' | b'_') => {
-      let bel = sequence.find('\x07').map(|i| i + 1);
-      let st = sequence.find("\x1b\\").map(|i| i + 2);
-      bel.into_iter().chain(st).min().unwrap_or(1)
-    },
-    // nF escapes like `ESC ( B` (which is part of what `tput sgr0` emits), and other 2-byte escapes
-    Some(_) => {
-      let intermediates = bytes.iter().take_while(|b| (0x20..=0x2f).contains(*b)).count();
-      let has_final = bytes.get(intermediates).is_some_and(|b| (0x30..=0x7e).contains(b));
-      intermediates + usize::from(has_final)
-    },
-    None => 0,
   }
 }
 
-fn apply_sgr(style: &mut AnsiStyle, params: &str) {
-  // An empty parameter means 0. Anything we can't parse (like colon-separated colors) is ignored.
-  let mut codes = params.split(';').map(|p| if p.is_empty() { Some(0) } else { p.parse::<u8>().ok() });
-  while let Some(code) = codes.next() {
-    match code {
-      Some(0) => *style = AnsiStyle::default(),
-      Some(1) => style.bold = true,
-      Some(2) => style.dim = true,
-      Some(3) => style.italic = true,
-      Some(4) => style.underline = true,
-      Some(7) => style.reverse = true,
-      Some(9) => style.strikethrough = true,
-      Some(22) => {
+impl Perform for AnsiText {
+  fn print(&mut self, c: char) {
+    self.text.push(c);
+  }
+
+  fn execute(&mut self, byte: u8) {
+    // The other control characters don't mean anything in a single line of text
+    if byte == b'\t' {
+      self.text.push('\t');
+    }
+  }
+
+  fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], ignore: bool, action: char) {
+    // Private sequences that end in `m`, like `ESC[>4;2m`, have their marker in `intermediates`
+    if action != 'm' || ignore || !intermediates.is_empty() {
+      return;
+    }
+    let mut new_style = self.style;
+    apply_sgr(&mut new_style, params);
+    if new_style != self.style {
+      self.finish_run();
+      self.style = new_style;
+      self.run_start = self.text.len();
+    }
+  }
+}
+
+fn apply_sgr(style: &mut AnsiStyle, params: &Params) {
+  let mut params = params.iter();
+  while let Some(param) = params.next() {
+    match param {
+      [0] => *style = AnsiStyle::default(),
+      [1] => style.bold = true,
+      [2] => style.dim = true,
+      [3] => style.italic = true,
+      [4, 0] => style.underline = false,
+      // Includes styled underlines like `4:3`
+      [4] | [4, _] => style.underline = true,
+      [7] => style.reverse = true,
+      [9] => style.strikethrough = true,
+      [22] => {
         style.bold = false;
         style.dim = false;
       },
-      Some(23) => style.italic = false,
-      Some(24) => style.underline = false,
-      Some(27) => style.reverse = false,
-      Some(29) => style.strikethrough = false,
-      Some(c @ 30..=37) => style.fg = Some(AnsiColor::Indexed(c - 30)),
-      Some(38) => style.fg = extended_color(&mut codes),
-      Some(39) => style.fg = None,
-      Some(c @ 40..=47) => style.bg = Some(AnsiColor::Indexed(c - 40)),
-      Some(48) => style.bg = extended_color(&mut codes),
-      Some(49) => style.bg = None,
-      Some(c @ 90..=97) => style.fg = Some(AnsiColor::Indexed(c - 90 + 8)),
-      Some(c @ 100..=107) => style.bg = Some(AnsiColor::Indexed(c - 100 + 8)),
+      [23] => style.italic = false,
+      [24] => style.underline = false,
+      [27] => style.reverse = false,
+      [29] => style.strikethrough = false,
+      [c @ 30..=37] => style.fg = Some(AnsiColor::Indexed(*c as u8 - 30)),
+      [38, subparams @ ..] => style.fg = extended_color(subparams, &mut params),
+      [39] => style.fg = None,
+      [c @ 40..=47] => style.bg = Some(AnsiColor::Indexed(*c as u8 - 40)),
+      [48, subparams @ ..] => style.bg = extended_color(subparams, &mut params),
+      [49] => style.bg = None,
+      [c @ 90..=97] => style.fg = Some(AnsiColor::Indexed(*c as u8 - 90 + 8)),
+      [c @ 100..=107] => style.bg = Some(AnsiColor::Indexed(*c as u8 - 100 + 8)),
       _ => {},
     }
   }
 }
 
-/// The rest of a `38;5;n` or `38;2;r;g;b` color.
-fn extended_color(codes: &mut impl Iterator<Item = Option<u8>>) -> Option<AnsiColor> {
-  match codes.next()?? {
-    5 => Some(AnsiColor::Indexed(codes.next()??)),
-    2 => Some(AnsiColor::Rgb(codes.next()??, codes.next()??, codes.next()??)),
+/// The rest of a 256-color or truecolor code, which can be `38;5;n` and `38;2;r;g;b`, or
+/// `38:5:n` and `38:2:r:g:b` (optionally with a colorspace, `38:2:cs:r:g:b`).
+fn extended_color<'a>(subparams: &[u16], params: &mut impl Iterator<Item = &'a [u16]>) -> Option<AnsiColor> {
+  let byte = |value: &u16| u8::try_from(*value).ok();
+  match subparams {
+    [5, n] => Some(AnsiColor::Indexed(byte(n)?)),
+    [2, r, g, b] | [2, _, r, g, b] => Some(AnsiColor::Rgb(byte(r)?, byte(g)?, byte(b)?)),
+    [] => {
+      let mut next = || params.next()?.first().and_then(byte);
+      match next()? {
+        5 => Some(AnsiColor::Indexed(next()?)),
+        2 => Some(AnsiColor::Rgb(next()?, next()?, next()?)),
+        _ => None,
+      }
+    },
     _ => None,
   }
 }
@@ -175,6 +176,27 @@ mod tests {
     assert_eq!(runs[1].style.fg, Some(AnsiColor::Rgb(1, 2, 3)));
     assert_eq!(runs[2].style.fg, Some(AnsiColor::Rgb(1, 2, 3)));
     assert_eq!(runs[2].style.bg, Some(AnsiColor::Indexed(4)));
+  }
+
+  #[test]
+  fn parses_colon_separated_colors() {
+    let (text, runs) = parse_ansi("\x1b[38:5:208ma\x1b[38:2:1:2:3mb\x1b[38:2::4:5:6mc");
+    assert_eq!(text, "abc");
+    assert_eq!(runs[0].style.fg, Some(AnsiColor::Indexed(208)));
+    assert_eq!(runs[1].style.fg, Some(AnsiColor::Rgb(1, 2, 3)));
+    assert_eq!(runs[2].style.fg, Some(AnsiColor::Rgb(4, 5, 6)));
+  }
+
+  #[test]
+  fn private_sequences_ending_in_m_are_not_styles() {
+    // xterm's modifyOtherKeys. The `2` here is not "dim".
+    assert_eq!(parse_ansi("\x1b[>4;2mx"), ("x".to_string(), vec![]));
+    assert_eq!(parse_ansi("\x1b[?4;2mx"), ("x".to_string(), vec![]));
+  }
+
+  #[test]
+  fn tabs_are_kept() {
+    assert_eq!(text_of("\x1b[0ma\tb"), "a\tb");
   }
 
   #[test]
@@ -217,16 +239,24 @@ mod tests {
   }
 
   #[test]
-  fn malformed_sequences_dont_panic_or_lose_text() {
+  fn malformed_sequences_lose_little_text() {
     assert_eq!(text_of("trailing\x1b"), "trailing");
     assert_eq!(text_of("trunc\x1b[3"), "trunc");
-    assert_eq!(text_of("\x1b]no terminator"), "no terminator");
-    assert_eq!(text_of("\x1b[1é"), "é");
-    assert_eq!(text_of("\x1bé"), "é");
+    // A new escape sequence ends an unterminated OSC, so the text after it survives
+    assert_eq!(text_of("\x1b]title\x1b[31mred"), "red");
+    // Non-ASCII inside an escape sequence is invalid. vte ignores everything up to the next final byte.
+    assert_eq!(text_of("\x1b[1é after"), "fter");
+    assert_eq!(text_of("\x1bé after"), "fter");
     assert_eq!(text_of("\x1b\x1b[0mdouble"), "double");
     // Bad colors don't take the following codes down with them, or leave a style behind
     assert_eq!(parse_ansi("\x1b[38;5mx"), ("x".to_string(), vec![]));
     assert_eq!(parse_ansi("\x1b[999mx"), ("x".to_string(), vec![]));
-    assert_eq!(parse_ansi("\x1b[38:5:208mx"), ("x".to_string(), vec![]));
+  }
+
+  #[test]
+  fn unterminated_osc_swallows_the_rest_of_the_string() {
+    // This matches what a real terminal does. Each log line is parsed separately, so the damage
+    // stops at the end of the line.
+    assert_eq!(text_of("before\x1b]no terminator"), "before");
   }
 }

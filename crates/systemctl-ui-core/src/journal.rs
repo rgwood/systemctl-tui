@@ -137,6 +137,14 @@ mod tests {
   }
 
   #[test]
+  fn unterminated_escape_does_not_affect_the_next_line() {
+    let line = r#"{"MESSAGE":"first\u001b]oops\nsecond"}"#;
+    let entries = parse_json_log_line(line);
+    assert_eq!(entries[0].content, "first");
+    assert_eq!(entries[1].content, "  second");
+  }
+
+  #[test]
   fn falls_back_to_plain_on_invalid_json() {
     let entries = parse_json_log_line("not json at all");
     assert_eq!(entries, vec![LogEntry::plain("not json at all")]);
