@@ -26,6 +26,7 @@ use std::{collections::HashSet, process::Stdio, time::Duration};
 use super::{block_title, logger::Logger, Component, Frame};
 use crate::{
   action::Action,
+  ansi::{AnsiColor, AnsiStyle},
   format::{format_bytes, format_duration, format_systemd_timestamp},
   journal::{parse_json_log_line, LogEntry},
   systemd::{
@@ -2420,14 +2421,20 @@ impl Component for Home {
           Some(7) => Style::default().add_modifier(Modifier::DIM),
           _ => Style::default(),
         };
-        match &entry.timestamp {
-          Some(timestamp) => Line::from(vec![
-            Span::styled(timestamp.as_str(), Style::default().add_modifier(Modifier::DIM)),
-            Span::raw(" "),
-            Span::styled(entry.content.as_str(), content_style),
-          ]),
-          None => Line::from(Span::styled(entry.content.as_str(), content_style)),
+        let mut spans = Vec::new();
+        if let Some(timestamp) = &entry.timestamp {
+          spans.push(Span::styled(timestamp.as_str(), Style::default().add_modifier(Modifier::DIM)));
+          spans.push(Span::raw(" "));
         }
+        // Colors from the service itself win over the priority color
+        let mut pos = 0;
+        for run in &entry.styled_runs {
+          spans.push(Span::styled(&entry.content[pos..run.range.start], content_style));
+          spans.push(Span::styled(&entry.content[run.range.clone()], content_style.patch(ansi_to_style(run.style))));
+          pos = run.range.end;
+        }
+        spans.push(Span::styled(&entry.content[pos..], content_style));
+        Line::from(spans)
       })
       .collect_vec();
 
@@ -3012,6 +3019,27 @@ fn command_palette_line(
   }
 }
 
+fn ansi_to_style(ansi: AnsiStyle) -> Style {
+  let color = |color| match color {
+    AnsiColor::Indexed(i) => Color::Indexed(i),
+    AnsiColor::Rgb(r, g, b) => Color::Rgb(r, g, b),
+  };
+  let mut style = Style { fg: ansi.fg.map(color), bg: ansi.bg.map(color), ..Default::default() };
+  for (enabled, modifier) in [
+    (ansi.bold, Modifier::BOLD),
+    (ansi.dim, Modifier::DIM),
+    (ansi.italic, Modifier::ITALIC),
+    (ansi.underline, Modifier::UNDERLINED),
+    (ansi.reverse, Modifier::REVERSED),
+    (ansi.strikethrough, Modifier::CROSSED_OUT),
+  ] {
+    if enabled {
+      style = style.add_modifier(modifier);
+    }
+  }
+  style
+}
+
 fn format_cpu_nsec(nsec: u64) -> String {
   if nsec < 1_000_000_000 {
     format!("{}ms", nsec / 1_000_000)
@@ -3243,9 +3271,9 @@ mod tests {
     home.filtered_units.items = vec![MatchedUnit { unit, match_indices: vec![] }];
     home.filtered_units.state.select(Some(0));
     home.logs = vec![
-      LogEntry { timestamp: None, content: "an error".into(), priority: Some(3) },
-      LogEntry { timestamp: None, content: "a warning".into(), priority: Some(4) },
-      LogEntry { timestamp: None, content: "plain info".into(), priority: Some(6) },
+      LogEntry { priority: Some(3), ..LogEntry::plain("an error") },
+      LogEntry { priority: Some(4), ..LogEntry::plain("a warning") },
+      LogEntry { priority: Some(6), ..LogEntry::plain("plain info") },
     ];
 
     let backend = TestBackend::new(120, 40);
@@ -3267,6 +3295,37 @@ mod tests {
     assert_eq!(style_of("an error").fg, Some(Color::Red));
     assert_eq!(style_of("a warning").fg, Some(Color::Yellow));
     assert_eq!(style_of("plain info").fg, Some(Color::Reset));
+  }
+
+  #[test]
+  fn log_lines_render_ansi_styles_on_top_of_priority() {
+    use ratatui::{backend::TestBackend, Terminal};
+
+    let mut home = Home::new(Scope::All, &[], LogOrder::NewestFirst);
+    let unit = test_unit("cron.service");
+    home.all_units.insert(unit.id(), unit.clone());
+    home.filtered_units.items = vec![MatchedUnit { unit, match_indices: vec![] }];
+    home.filtered_units.state.select(Some(0));
+    let line = r#"{"MESSAGE":"before \u001b[92mgreen\u001b[0m after","PRIORITY":"3"}"#;
+    home.logs = parse_json_log_line(line);
+
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| home.render(f, f.area())).unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let area = *buffer.area();
+    let (row, col) = (0..area.height)
+      .find_map(|y| {
+        let row: String = (0..area.width).map(|x| buffer[(x, y)].symbol()).collect();
+        row.find("before green after").map(|byte| (y, row[..byte].chars().count() as u16))
+      })
+      .expect("log line should render without escape sequences");
+
+    assert_eq!(buffer[(col, row)].style().fg, Some(Color::Red));
+    assert_eq!(buffer[(col + 7, row)].style().fg, Some(Color::Indexed(10)));
+    // A reset goes back to the priority color, not the terminal default
+    assert_eq!(buffer[(col + 13, row)].style().fg, Some(Color::Red));
   }
 
   #[test]

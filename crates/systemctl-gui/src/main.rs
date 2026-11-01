@@ -1500,21 +1500,25 @@ fn build_ui(app: &gtk::Application, demo: bool) {
                   timestamp: Some("2026-07-12 09:41".into()),
                   content: format!("systemd[1]: Starting {}…", unit_id.name),
                   priority: Some(6),
+                  styled_runs: Vec::new(),
                 },
                 LogEntry {
                   timestamp: Some("2026-07-12 09:41".into()),
                   content: format!("systemd[1]: Started {}.", unit_id.name),
                   priority: Some(6),
+                  styled_runs: Vec::new(),
                 },
                 LogEntry {
                   timestamp: Some("2026-07-12 09:42".into()),
                   content: "demo[1234]: something looks off".into(),
                   priority: Some(4),
+                  styled_runs: Vec::new(),
                 },
                 LogEntry {
                   timestamp: Some("2026-07-12 09:43".into()),
                   content: "demo[1234]: something went wrong".into(),
                   priority: Some(3),
+                  styled_runs: Vec::new(),
                 },
               ]),
               definition: Ok(format!(

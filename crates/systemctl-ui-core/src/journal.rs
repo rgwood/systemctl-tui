@@ -6,6 +6,8 @@
 use chrono::{Local, TimeZone};
 use serde_json::Value;
 
+use crate::ansi::{parse_ansi, StyledRun};
+
 /// One displayable log line. Multi-line journal messages are split into multiple
 /// entries (continuation lines have no timestamp).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,16 +15,19 @@ pub struct LogEntry {
   /// Local time, pre-formatted for display ("2026-07-15 10:04"). `None` for
   /// continuation lines and non-journal messages (diagnostics, errors).
   pub timestamp: Option<String>,
-  /// The rest of the line: "identifier[pid]: message" for journal entries.
+  /// The rest of the line: "identifier[pid]: message" for journal entries. ANSI escape
+  /// sequences have been removed.
   pub content: String,
   /// syslog priority 0-7 (0=emerg ... 7=debug), if the journal entry had one
   pub priority: Option<u8>,
+  /// Parts of `content` that the service styled with ANSI escape sequences
+  pub styled_runs: Vec<StyledRun>,
 }
 
 impl LogEntry {
   /// A plain text line with no timestamp or priority (diagnostics, error messages).
   pub fn plain(content: impl Into<String>) -> Self {
-    Self { timestamp: None, content: content.into(), priority: None }
+    Self { timestamp: None, content: content.into(), priority: None, styled_runs: Vec::new() }
   }
 
   /// Plain-text form, used when exporting logs to a pager.
@@ -63,9 +68,11 @@ pub fn parse_json_log_line(line: &str) -> Vec<LogEntry> {
 
   let mut lines = message.lines();
   let first = lines.next().unwrap_or_default();
-  let mut entries = vec![LogEntry { timestamp, content: format!("{prefix}{first}"), priority }];
+  let (content, styled_runs) = parse_ansi(&format!("{prefix}{first}"));
+  let mut entries = vec![LogEntry { timestamp, content, priority, styled_runs }];
   for continuation in lines {
-    entries.push(LogEntry { timestamp: None, content: format!("  {continuation}"), priority });
+    let (content, styled_runs) = parse_ansi(&format!("  {continuation}"));
+    entries.push(LogEntry { timestamp: None, content, priority, styled_runs });
   }
   entries
 }
@@ -115,6 +122,26 @@ mod tests {
     assert_eq!(entries.len(), 1);
     assert!(entries[0].content.starts_with("hi"));
     assert_eq!(entries[0].priority, Some(4));
+  }
+
+  #[test]
+  fn removes_ansi_escapes_from_byte_array_messages() {
+    // journalctl sends messages containing ESC as byte arrays: "\x1b[32mhi\x1b[0m"
+    let line = r#"{"MESSAGE":[27,91,51,50,109,104,105,27,91,48,109],"SYSLOG_IDENTIFIER":"app"}"#;
+    let entries = parse_json_log_line(line);
+    assert_eq!(entries[0].content, "app: hi");
+    assert_eq!(entries[0].to_plain_string(), "app: hi");
+    // The range accounts for the "app: " prefix
+    assert_eq!(entries[0].styled_runs.len(), 1);
+    assert_eq!(entries[0].styled_runs[0].range, 5..7);
+  }
+
+  #[test]
+  fn unterminated_escape_does_not_affect_the_next_line() {
+    let line = r#"{"MESSAGE":"first\u001b]oops\nsecond"}"#;
+    let entries = parse_json_log_line(line);
+    assert_eq!(entries[0].content, "first");
+    assert_eq!(entries[1].content, "  second");
   }
 
   #[test]
