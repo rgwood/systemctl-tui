@@ -21,3 +21,4 @@ target/
 # Samply
 profile.json
 .aider*
+.claude/settings.local.json
